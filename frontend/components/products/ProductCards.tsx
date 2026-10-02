@@ -142,6 +142,7 @@ export function ProductCards() {
             <h2 id="product-cards-heading" className="text-h3 font-semibold">
               Built to production standards
             </h2>
+            <span aria-hidden="true" className="heading-rule mt-4" />
             <p className="mt-3 text-sm text-muted">
               Every product ships with secure foundations, measurable performance and a roadmap we
               keep maintaining after launch.

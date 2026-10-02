@@ -2,7 +2,14 @@
 
 import { useEffect, useRef, type ElementType, type ReactNode, type CSSProperties } from "react";
 
-export type RevealVariant = "fade-up" | "fade-in" | "scale-in" | "left" | "right";
+export type RevealVariant =
+  | "fade-up"
+  | "fade-in"
+  | "fade-scale"
+  | "blur-in"
+  | "scale-in"
+  | "left"
+  | "right";
 
 interface RevealProps {
   children: ReactNode;

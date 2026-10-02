@@ -36,20 +36,25 @@ import { createLeafMaterial, createSupportMaterial, type MaterialTier } from "./
 import { disposeObject } from "./helpers/disposeScene";
 import { TAU } from "./helpers/math";
 
-/* ---- Composition constants (TUNING) -------------------------------------- */
+/* ---- Composition constants (TUNING) --------------------------------------
+ * Depth staging: the logo sits at z≈0 (foreground); supports are pushed back
+ * to midground (z −0.5…−2.6) and the atmosphere hangs furthest. The right side
+ * of the frame is deliberately populated (cloud top-right, shield right) so the
+ * hero no longer feels empty, while the bottom-right stays clear for the card.
+ */
 const SUPPORT_POSITIONS: Array<{ name: string; position: [number, number, number] }> = [
-  { name: "chip", position: [-2.45, 1.2, -0.4] },
-  { name: "cloud", position: [2.5, 1.75, -1.1] },
-  { name: "shield", position: [-2.7, -1.15, -0.7] },
-  { name: "gear", position: [-1.35, -2.05, -0.6] },
-  { name: "data", position: [0.15, 2.55, -2.0] }, // top-centre, deeper — clear of cloud + hotspot
+  { name: "chip", position: [-2.6, 1.55, -0.6] }, // top-left
+  { name: "cloud", position: [2.75, 1.8, -1.2] }, // top-right
+  { name: "shield", position: [2.95, -0.85, -0.6] }, // right
+  { name: "gear", position: [-2.35, -1.95, -0.7] }, // bottom-left
+  { name: "data", position: [-0.2, 2.9, -2.6] }, // top-centre, deepest
 ];
-const SUPPORT_SCALES = [0.62, 0.68, 0.72, 0.6, 0.66];
-const SHADOW_Y = -1.88;
-const SHADOW_SCALE: [number, number] = [5.6, 2.4];
+const SUPPORT_SCALES = [1.28, 1.45, 1.34, 1.22, 1.3];
+const SHADOW_Y = -2.05;
+const SHADOW_SCALE: [number, number] = [6.6, 2.7];
 const POINT_COUNT = 140;
-const POINT_SIZE = 0.05;
-const POINT_SPREAD = new Vector3(4.4, 3, 1.4);
+const POINT_SIZE = 0.055;
+const POINT_SPREAD = new Vector3(5.2, 3.6, 1.6);
 
 export interface SupportBase {
   position: Vector3;

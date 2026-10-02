@@ -42,3 +42,10 @@ export const visitorLimiter = buildLimiter({
   max: env.rateLimits.visitorMax,
   message: "Too many tracking events. Please try again later.",
 });
+
+// Team management and password changes — sensitive write operations.
+export const sensitiveLimiter = buildLimiter({
+  windowMs: env.rateLimits.generalWindowMs,
+  max: env.rateLimits.sensitiveMax,
+  message: "Too many security operations. Please wait a few minutes and try again.",
+});

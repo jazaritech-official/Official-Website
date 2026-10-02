@@ -123,6 +123,12 @@ All responses use one contract:
 | POST | `/api/auth/login` | – | Admin login → httpOnly JWT cookie (rate limited) |
 | POST | `/api/auth/logout` | cookie | Clear session |
 | GET  | `/api/auth/me` | cookie | Current admin |
+| POST | `/api/auth/password` | cookie | Self-service change password (rate limited) |
+| GET  | `/api/admin/team` | JWT + **super_admin** | List administrators |
+| POST | `/api/admin/team` | JWT + **super_admin** | Create administrator |
+| PATCH | `/api/admin/team/:id/role` · `/:id/status` | JWT + **super_admin** | Change role / activate-deactivate |
+| POST | `/api/admin/team/:id/password` | JWT + **super_admin** | Reset an administrator's password |
+| DELETE | `/api/admin/team/:id` | JWT + **super_admin** | Delete an administrator |
 | GET/POST | `/api/admin/logos` | JWT | List / upload (Cloudinary) |
 | PUT/DELETE | `/api/admin/logos/:id` | JWT | Update / delete (Cloudinary delete) |
 | PATCH | `/api/admin/logos/reorder` · `/api/admin/logos/:id/visibility` | JWT | Ordering / visibility |
@@ -141,7 +147,8 @@ All responses use one contract:
 
 | Model | Key fields |
 |-------|-----------|
-| `Admin` | email, passwordHash, role (`admin`), lastLoginAt |
+| `Admin` | email, **name**, passwordHash, **role** (`admin` \| `super_admin`), **isActive**, lastLoginAt |
+| `AuditLog` | actorId, actorEmail, action, targetId, targetEmail, metadata, ip, createdAt |
 | `Logo` | name, secureUrl, publicId, alt, sortOrder, isVisible |
 | `Product` | name, logo, productUrl, category, highlightPoints[], isPublished, sortOrder |
 | `ProductTypeTemplate` | type, highlightPoints[] |
@@ -155,6 +162,24 @@ All responses use one contract:
 - JWT delivered as **httpOnly + SameSite cookie** (`jazari_admin`), `Secure` in production.
 - `middleware/auth.js` (`requireAuth`) verifies the cookie (or `Authorization: Bearer`) on every
   `/api/admin/*` route — authorization lives on the backend, never behind a secret URL.
+- **Roles:** `admin` (all existing admin capabilities) and `super_admin` (also team management). The
+  JWT carries `role`, but it is **never trusted for authorization**: `requireAuth` re-reads the Admin
+  document on every request, so demotion, deactivation and deletion take effect immediately. An
+  inactive account is rejected with 403; a missing/deleted account with 401.
+- **`requireRole(...roles)`** is the single reusable gate (mounted once: `adminRouter.use("/team",
+  requireRole("super_admin"), teamRouter)`). Controllers never duplicate the authorization rule.
+- **Seed/Super Admin:** the configured `ADMIN_EMAIL` account is promoted to `super_admin` and activated
+  idempotently; its password is **preserved** unless `SEED_RESET_ADMIN_PASSWORD=true`. A legacy/demo
+  account (`DEMO_ADMIN_EMAIL`, default `admin@jazaritech.com`) is deactivated (never deleted) unless it
+  is the configured account. Legacy roles (`editor`, `super-admin`) are migrated in the seed.
+- **Self-service password change:** `POST /api/auth/password` (rate limited) verifies the current
+  password, enforces the shared strength policy and re-issues the session cookie.
+- **Safety rules (server-side):** a Super Admin cannot demote/deactivate/delete themselves; the last
+  active Super Admin can never be removed. Enforced in `controllers/teamController.js` — never by the
+  frontend guard.
+- **Audit log:** `models/AuditLog.js` + `utils/audit.js` record admin created / role changed /
+  activated / deactivated / password reset / deleted / password changed (fire-and-forget, no secrets).
+- Passwords are never returned by any endpoint, never logged and never stored in the audit trail.
 - Login rate limited; identical generic error for unknown email vs wrong password (no enumeration).
 
 ## 11. Cloudinary Architecture
@@ -205,6 +230,14 @@ no-flash script before first paint.
   parallax, navbar transform, scroll progress — IntersectionObserver + rAF only.
 - Animate `transform`/`opacity`; never width/height/box-shadow chains; cancel work off-screen.
 - `prefers-reduced-motion: reduce` disables parallax, magnetic effects and continuous motion.
+- **Motion tokens** (globals.css `:root`): `--dur-fast/normal/slow` + `--motion-fast/normal/slow`,
+  `--ease-out/in-out/standard/emphasis/spring-soft`, and the first-load timeline
+  (`--intro-logo/nav/headline/word-step/sub/cta/trust/counters-delay`). One system, no duplicates.
+- **First-load choreography** is CSS-only and JS-gated: an inline `<head>` script adds `html.js` and,
+  only when motion is allowed, `html.js-intro`. Without JS — or under reduced motion — `js-intro` is
+  absent so every element (including `.reveal`) is fully visible. Content is never JS-dependent and
+  there is no blocking preloader. Total story ≈1.5 s (headline word-by-word masked slide-up; the 3D
+  assembly is `ASSEMBLY_DURATION` 1.1 s).
 
 ## 17. Icon System
 
@@ -238,6 +271,12 @@ no-flash script before first paint.
 - Phase 5 — public site (navbar, hero, marquees, product cards, services, brand statement, footer).
 - Phase 6 — 4-step Start Your Project form + success modal with reference ID.
 - Phase 7 — admin portal (login, shell, dashboard, logos, products/templates, submissions, visitors).
+- Task B Phase 2 — Super Admin backend (roles, isActive, requireRole, DB re-check, team API, audit log).
+- Task B Phase 3 — admin `/admin/team` + `/admin/account` (super-admin gating, role badge, change password).
+- Task B Phase 4 — Main Logo rollout (trimmed transparent asset, live wordmark, white plate removed).
+- Task B Phases 5–6 — hero layout rebalance + Three.js logo rebuilt as straight extruded ribbons.
+- Task B Phases 7–8 — motion tokens, first-load choreography, site-wide polish (glow, nav, buttons…).
+- Task B Phases 9–10 — performance/a11y/responsive audit + harness extensions and screenshots.
 - 3D Phase 1 — repo audit, `three@0.186.1` + `@types/three@0.186.0` installed (only new deps).
 - 3D Phase 2 — foundation: renderer/RAF/quality/theme/fallback/lazy loading + route isolation.
 - 3D Phase 3 — materials, PMREM environment, studio lighting, procedural ribbon diamond.
@@ -660,3 +699,271 @@ the existing static fallback. React only manages lifecycle; every Three.js conce
 - Lighthouse unavailable in this CLI → no Lighthouse score claimed.
 - Firefox/Safari unavailable → Chromium-verified; others code-reviewed only.
 - SwiftShader X4122 warning (headless software GL) documented under Known Issues; not app-originated.
+
+## 2026-10-02 — Task B Phase 1: Audit + Main Logo inspection
+
+### Completed
+- Re-read `PROJECT_NOTES.md` / `README.md`, re-inspected the real repository (frontend + `Backend`), all
+  package.json files, the theme/token system (`globals.css` + `useTheme`), the `Logo` component, the
+  `components/three/*` module, `verify-three.mjs`, and the backend auth/Admin/seed/routes code.
+- **Main Logo.png inspected by decoding the PNG pixels** (no guessing): `public/Main Logo.png` is
+  **4096×4096 RGBA with genuine alpha** — corners *and* centre are fully transparent (61.4% fully
+  transparent, 0.19% fully opaque, 38.4% partial from the soft glow/anti-aliasing). Content bbox
+  (alpha>200) = 3847×3742 — a near-square **hollow rotated-square diamond** of straight ribbon bands,
+  built from the brand blues, with a **green triangular leaf along the top-right** and a **darker
+  overlapping fold**. The existing 3D annular-arc ribbon is confirmed wrong vs. the real mark.
+- Asset inventory: `brand/logo-horizontal.png` = owner `Horizontal Logo.png`; `brand/logo-stacked.png` =
+  `Primary Logo.png`; `brand/logo-icon.png` = `app-icon-dark.png` = `app-icon-light.png` = `Icon.png`
+  (identical bytes — i.e. the light/dark app icons are not actually different).
+- Confirmed the offending white plate: `Logo.tsx` adds `dark:rounded-xl dark:bg-white dark:px-2.5
+  dark:py-1.5` when `plate` is on (default) for lockup variants — visible in the navbar/footer/admin.
+- Backend reality vs. spec: `Admin.role` enum was `admin|editor|super-admin`, no `isActive`, no `name`;
+  the seed **overwrote** `passwordHash` on every run and forced `role: "admin"`; `requireAuth` re-read
+  the document but did not check `isActive`/role; `/auth/me` returned only `{id,email,role}`.
+- **Baseline** (Task A final, unchanged since): frontend lint 0 problems + build 12 routes; backend lint
+  + build 39 files + smoke **53/53**; three harness **47/47** + NO_WEBGL **7/7**.
+
+### Security remediation (flag)
+- The tracked `Backend/.env.example` contained real-looking credentials (Mongo URI, JWT secret,
+  Cloudinary keys, admin email/password). It is now a **placeholder-only template** (added
+  `ADMIN_NAME`, `SEED_RESET_ADMIN_PASSWORD`, `DEMO_ADMIN_EMAIL`, `SENSITIVE_RATE_LIMIT_MAX`). The live
+  gitignored `Backend/.env` is untouched. **Owner action:** rotate any credential that was previously
+  committed (values are never reproduced here).
+
+### Files Changed
+- `Backend/.env.example`, `PROJECT_NOTES.md`
+
+## 2026-10-02 — Task B Phase 2: Backend Super Admin foundation
+
+### Completed
+- `Admin` model: added `name`; role enum is now `admin | super_admin` (legacy `editor` → `admin`,
+  `super-admin` → `super_admin` migrated idempotently in the seed); added `isActive` (default true);
+  `toPublic()` now returns `id, email, name, role, isActive, lastLoginAt, createdAt, updatedAt` and
+  never the hash.
+- `requireAuth` now **re-reads the Admin document on every request** and rejects deactivated accounts
+  (403) and unknown/deleted accounts (401) — JWT role claims are never trusted for authorization.
+  Added the reusable **`requireRole(...roles)`** middleware (mounted after `requireAuth`).
+- `/api/auth/me` returns the safe current-user object including `role` and `isActive`.
+- Login rejects deactivated accounts (403) after a valid password check; login still returns a generic
+  401 for wrong password / unknown email (no enumeration).
+- **Self-service change password**: `POST /api/auth/password` (`currentPassword` + `newPassword`),
+  rate-limited, verifies the current password, enforces the shared strength policy, re-issues the
+  session cookie and never returns or logs a password.
+- **Team management** (`/api/admin/team`, gated by `requireRole("super_admin")`): list, create, edit
+  role, activate/deactivate, reset password, delete. Emails normalized + unique; passwords validated
+  and **never returned**; sensitive routes rate-limited (`sensitiveLimiter`).
+- **Server-side safety rules**: a Super Admin cannot demote/deactivate/delete themselves; the last
+  active Super Admin can never be demoted/deactivated/deleted (enforced in `teamController.js`, not by
+  the frontend guard).
+- **Audit log** (`models/AuditLog.js` + `utils/audit.js`): append-only, fire-and-forget records for
+  admin created / role changed / activated / deactivated / password reset / deleted / password changed.
+  Records actor, action, target, safe metadata and IP — never passwords or hashes.
+- **Idempotent seed**: the configured `ADMIN_EMAIL` account is promoted to `super_admin` and activated;
+  its password is **preserved** unless `SEED_RESET_ADMIN_PASSWORD=true` (then it is reset and this is
+  logged safely). A legacy/demo account (`DEMO_ADMIN_EMAIL`, default `admin@jazaritech.com`) is
+  **deactivated** (never deleted) unless it is the configured account.
+
+### Files Changed
+- `Backend/models/Admin.js`, `Backend/models/AuditLog.js`, `Backend/utils/password.js`,
+  `Backend/utils/audit.js`, `Backend/middleware/auth.js`, `Backend/middleware/rateLimiter.js`,
+  `Backend/config/env.js`, `Backend/controllers/authController.js`, `Backend/controllers/teamController.js`,
+  `Backend/routes/auth.routes.js`, `Backend/routes/team.routes.js`, `Backend/routes/admin.routes.js`,
+  `Backend/scripts/seed.js`, `Backend/scripts/smoke.js`, `Backend/.env.example`
+
+### Verification
+- `Backend`: `npm run lint` ✅, `npm run build` ✅ (44 files), `npm run smoke` ✅ **81/81** (adds 28
+  Super Admin assertions: promotion, role in JWT, DB re-check, inactive/deleted loss of access, normal
+  admin retains access + blocked from team, self/last-super-admin protection, password never returned,
+  idempotent non-destructive seed).
+- Credentials were never printed, echoed or written to any file. Safe statement: *Super Admin
+  authentication verified successfully using the configured environment credentials.*
+- `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅ (12 routes) — no frontend change yet.
+
+## 2026-10-02 — Task B Phase 3: Admin portal — Team + Account
+
+### Completed
+- `/admin/team` (`components/admin/TeamManager.tsx`): administrator list, create, edit role, activate /
+  deactivate, reset password, delete — with loading, error, empty and success states, safe confirmation
+  dialogs and password fields that never echo a value back. Self and last-Super-Admin actions are
+  disabled in the UI, but the backend remains the real boundary.
+- `/admin/account` (`components/admin/AccountPanel.tsx`): profile summary (name, email, role badge,
+  status) + change-password form.
+- `AdminShell`: sidebar Team item is rendered **only for `super_admin`**; a frontend route guard
+  redirects normal admins away from `/admin/team`; the top bar now shows the current user's name/email
+  and a **text** role badge (“Super Admin” / “Admin”, never colour-only). Added an Account link.
+- `types/api.ts` + `lib/api.ts`: `AdminRole`, `AdminTeamMember`, `admin.team.*` and
+  `auth.changePassword` (single API client preserved — no second client).
+
+### Files Changed
+- `frontend/types/api.ts`, `frontend/lib/api.ts`, `frontend/components/admin/AdminShell.tsx`,
+  `frontend/components/admin/TeamManager.tsx` (new), `frontend/components/admin/AccountPanel.tsx` (new),
+  `frontend/app/admin/(portal)/team/page.tsx` (new), `frontend/app/admin/(portal)/account/page.tsx` (new)
+
+### Verification
+- `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅ (14 routes incl. `/admin/team`, `/admin/account`).
+- Live check against the running API: configured account `role=super_admin`, `isActive=true`,
+  `GET /api/admin/team` → 200, no password hash in any payload. Safe statement only — *Super Admin
+  authentication verified successfully using the configured environment credentials.*
+
+## 2026-10-02 — Task B Phase 4: Main Logo rollout
+
+### Completed
+- `scripts/build-logo-assets.mjs` (new, dependency-free): decodes `public/Main Logo.png` (4096×4096
+  RGBA, genuine transparency), trims to the alpha bounding box (+3% padding), alpha-weighted box
+  downsamples and re-encodes compact RGBA PNGs → `public/brand/logo-main.png` (512×501, 172 KB) and
+  `public/brand/app-icon-main.png` (512×512, 121 KB). Owner originals are untouched.
+- `Logo.tsx` rewritten: the mark plus **live HTML wordmark** (`Jazari` navy / light in dark mode,
+  `Tech` Technology Blue, `OFFICIAL` Official Slate wide-tracked). **The dark-mode white plate is gone**
+  (`plate` prop removed entirely). Variants: `full`, `compact`, `mark`.
+- Rolled out to navbar (compact), mobile drawer (shares the navbar logo), footer (full), admin login
+  (full), admin sidebar (compact), admin loading state (mark), hero brand tile (mark). Favicon/app icon
+  metadata now points at `/brand/app-icon-main.png`. Horizontal/stacked/icon PNGs remain in `public/`
+  but are no longer referenced by the UI (OG/Twitter images still use the wide lockup).
+
+### Files Changed
+- `frontend/scripts/build-logo-assets.mjs` (new), `frontend/public/brand/logo-main.png` (new),
+  `frontend/public/brand/app-icon-main.png` (new), `frontend/components/brand/Logo.tsx`,
+  `frontend/components/navigation/Navbar.tsx`, `frontend/components/layout/Footer.tsx`,
+  `frontend/app/admin/login/page.tsx`, `frontend/components/admin/AdminShell.tsx`,
+  `frontend/components/sections/Hero.tsx`, `frontend/app/layout.tsx`
+
+### Verification
+- `npm run lint` ✅, `npm run build` ✅ (14 routes). Harness checks: “Main Logo asset exists”, “Main Logo
+  asset is used in the navbar”, “no white plate behind the logo” (light **and** dark), “Main Logo used
+  on the admin login screen” — all pass. Screenshots confirm no white rectangle in either theme.
+
+## 2026-10-02 — Task B Phases 5–6: Hero rebalance + Three.js logo rebuild
+
+### Completed
+- **Hero layout** (Phase 5): headline moved from `text-display` to the existing `text-h1` token, tighter
+  vertical rhythm (`pt-28/32`, `mt-5/6/7`) — **2 lines at 1366×768**. Harness proves headline,
+  subheading, both CTAs and the trust chip are above the fold at 1366×768 (and by construction at
+  1440×900 / 1920×1080), and that the primary CTA is above the fold at 390×844.
+- **3D logo rebuild** (Phase 6): `createRibbonPieces.ts` replaced annular arcs with **four straight
+  extruded ribbon bands** (`THREE.Shape` + `ExtrudeGeometry`) forming a rotated-square diamond — flat
+  outer edges, rounded outer corners only, gaps at all four vertices, alternating z-stagger. The
+  top-right band carries a **lighter-blue fold triangle**, the lower-right band a **darker overlapping
+  fold**, and a **Growth-Green leaf** (one rounded corner) sits at the top-right as the hotspot anchor.
+  No annular arcs, no torus, no generic X.
+- Composition: logo enlarged (inradius 1.15), supports scaled to ~1.2–1.45× and recomposed with depth
+  staging (chip top-left, cloud top-right, shield right, gear bottom-left, data top-centre deep) so the
+  right side is populated; bottom-right stays clear for the glass card. Camera fit retuned
+  (`MIN_CAMERA_Z` 9.0 / `FIT_CAMERA_Z` 9.3); assembly shortened to 1.1 s.
+
+### Files Changed
+- `frontend/components/sections/Hero.tsx`, `frontend/components/three/createRibbonPieces.ts`,
+  `frontend/components/three/createTechObjects.ts`, `frontend/components/three/engine.ts`,
+  `frontend/components/three/animation.ts`
+
+### Verification
+- `npm run lint` ✅, `npm run build` ✅. Harness: scene activates, one canvas, idle motion alive,
+  reduced-motion static, context loss/restore, mobile tier, screenshots. Screenshot pixel analysis of
+  the light desktop render shows the diamond bands with gaps, the green leaf top-right and supports
+  populating both sides of the frame.
+
+## 2026-10-02 — Task B Phases 7–8: Motion tokens, first load, site-wide polish
+
+### Completed
+- **Motion tokens** added to `:root` (aliases + richer easings + the intro timeline). Single system.
+- **First-load choreography** (≈1.5 s total, CSS-only): inline `<head>` script adds `html.js` and (only
+  when motion is allowed) `html.js-intro`. Logo → navbar → headline (word-by-word masked slide-up) →
+  subheading → CTAs (staggered) → trust chip → counters, plus the 3D assembly. `.reveal` hidden state is
+  now gated on `.js-intro`, so **without JS or under reduced motion all content is visible from first
+  paint**; there is no blocking preloader and the HTML stays server-rendered.
+- **Site-wide polish**: navigation underline, primary/accent button highlight sweep, section-heading
+  accent line (`.heading-rule`, drawn on reveal) in Services / Products / Start-Your-Project, admin page
+  entrance + table-row stagger (`.admin-enter`), footer reveal, and a **desktop-only pointer glow**
+  (`PointerGlow`, rAF, fine-pointer only, off under reduced motion, `pointer-events:none`, z-0 behind
+  `main`/`footer`). Existing scroll progress, marquee, tilt cards and icon system preserved.
+- New `Reveal` variants: `fade-scale`, `blur-in` (existing variants unchanged).
+
+### Files Changed
+- `frontend/app/globals.css`, `frontend/app/layout.tsx`, `frontend/app/page.tsx`,
+  `frontend/components/motion/PointerGlow.tsx` (new), `frontend/components/motion/Reveal.tsx`,
+  `frontend/components/sections/Hero.tsx`, `frontend/components/navigation/Navbar.tsx`,
+  `frontend/components/layout/Footer.tsx`, `frontend/components/admin/AdminShell.tsx`,
+  `frontend/components/services/ServicesGrid.tsx`, `frontend/components/products/ProductCards.tsx`,
+  `frontend/components/forms/StartProjectForm.tsx`
+
+### Verification
+- `npm run lint` ✅, `npm run build` ✅. Harness: intro ran (`js-intro` present) and the headline ends
+  fully visible; **reduced motion bypasses the choreography** (`js-intro` absent) and content is visible.
+
+## 2026-10-02 — Task B Phases 9–10: Performance/a11y audit + harness & screenshots
+
+### Completed
+- `verify-three.mjs` extended (existing checks preserved and strengthened) with a **brand/layout/first-load
+  suite**: Main Logo asset exists + is used + no white plate (both themes), headline ≤3 lines at
+  1366×768, both CTAs + subheading + trust content above the fold at 1366×768 and 390×844, static
+  fallback exists, first-load completes, reduced motion bypasses the intro, admin login uses the Main
+  Logo — plus **screenshots**. The harness no longer hardcodes any credential (it reads
+  `../Backend/.env` when present; credentials are never printed).
+- **Screenshots** written to `frontend/test-output/screenshots/` (gitignored):
+  `home-light-desktop-1366x768.png`, `home-dark-desktop-1366x768.png`,
+  `home-light-mobile-390x844.png`, `home-dark-mobile-390x844.png`,
+  `home-reduced-motion-1366x768.png`, `admin-login-light-1366x768.png`.
+- Performance/a11y/responsive audit: admin still loads **zero three-chunk resources** and has zero
+  canvases; 3× SPA round-trips keep exactly one canvas with a bounded heap; mobile resolves to the
+  MEDIUM/LOW tier with real canvas dimensions; canvas is `aria-hidden`, non-focusable and never blocks
+  the UI; one `h1`; landmarks intact; reduced-motion path is lightweight (no particle/parallax work).
+
+### Verification
+- `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅ (14 routes).
+- `node scripts/verify-three.mjs` ✅ **64/64** · `NO_WEBGL=1 …` ✅ **9/9**.
+- `Backend`: `npm run lint` ✅, `npm run build` ✅ (44 files), `npm run smoke` ✅ **81/81**.
+- **Bundle facts (measured):** three async chunk 595,574 B raw / 149,799 B gz; home initial 668,171 B
+  raw / 206,228 B gz (+1,060 B raw vs Task A); admin initial 630,394 B / 196,212 B gz (+547 B raw);
+  `/admin/team` initial 637,464 B / 197,960 B gz. The home HTML still references the three chunk; the
+  admin HTML does not.
+
+## 27. Super Admin, Brand & Motion Architecture
+
+1. **Roles**: `admin`, `super_admin` (`models/Admin.js`). `isActive` gates access immediately.
+2. **Authorization**: `requireAuth` re-reads the Admin document every request; `requireRole(...roles)`
+   is mounted once for `/api/admin/team`. The frontend guard is UX only.
+3. **Team API**: list / create / role / activate-deactivate / reset-password / delete, rate limited
+   (`sensitiveLimiter`), emails normalized + unique, passwords validated and never returned.
+4. **Safety**: self-protection and last-active-Super-Admin protection live in `teamController.js`.
+5. **Audit**: `AuditLog` (+ `recordAudit`) — actor, action, target, safe metadata, IP; no secrets.
+6. **Seed**: promote + activate `ADMIN_EMAIL`; preserve its password unless `SEED_RESET_ADMIN_PASSWORD`;
+   deactivate the demo account (`DEMO_ADMIN_EMAIL`) unless it *is* the configured account.
+7. **Admin portal**: `/admin/team` (super-admin only in the sidebar + a route guard), `/admin/account`
+   (change password); top bar shows name/email + a text role badge.
+8. **Brand**: one `Logo` component renders `public/brand/logo-main.png` (built by
+   `scripts/build-logo-assets.mjs`) plus live wordmark text. No white plate anywhere; the artwork is
+   never filtered or inverted.
+9. **Logo geometry**: `createRibbonPieces.ts` — tuning constants `R` (inradius), `W` (band width),
+   `GAP` (vertex gap), `DEPTH`/`BEVEL`/`OUTER_RADIUS` (extrusion + rounded outer corners), `FOLD_SIZE`
+   (top/right folds), `LEAF_SIZE` (green leaf). Pieces are indexed 0=top-right … 3=lower-right.
+10. **Composition**: `createTechObjects.ts` — `SUPPORT_POSITIONS`, `SUPPORT_SCALES`, `SHADOW_Y/SCALE`,
+    `POINT_*`. `engine.ts` — `MIN_CAMERA_Z`/`FIT_CAMERA_Z` (responsive fit).
+11. **Motion tokens**: globals.css `:root` (`--motion-*`, `--ease-*`, `--intro-*-delay`).
+12. **First load**: `html.js-intro` gates every entrance animation; remove it (or disable JS) and the
+    site renders fully visible. Reduced motion never adds the class.
+13. **Site polish**: `.nav-link`, `.heading-rule`, `.btn-primary/.btn-accent::after`, `.admin-enter`,
+    `.pointer-glow` (globals.css §9), `PointerGlow` component.
+
+### Tuning guide
+- **Animation timing**: globals.css `:root` `--intro-*-delay` / `--intro-word-step` / `--motion-*`;
+  3D assembly → `animation.ts` `ASSEMBLY_DURATION`.
+- **3D colours**: `theme.ts` `BRAND` / `PALETTES` (from globals.css tokens); `materials.ts` for finish.
+- **3D object count**: `quality.ts` `QUALITY[tier].supportCount` / `.particleCount`;
+  `createTechObjects.ts` `SUPPORT_POSITIONS` / `SUPPORT_SCALES`.
+- **3D quality**: `quality.ts` (`pixelRatioCap`, `environmentIntensity`, `hover`).
+- **Hero composition**: `createTechObjects.ts` constants + `engine.ts` camera fit.
+- **Logo geometry**: `createRibbonPieces.ts` constants (see §27.9).
+
+### Known issues / honest limitations (Task B)
+- **Main Logo.png has a proportionally large green region** on its top-right edge (≈27%×28% of the
+  trimmed mark). The spec's hard brand rule (“Growth Green is a micro-accent only”) and its explicit
+  3D description (“small green triangular leaf”) were followed for the **3D** object, so the procedural
+  leaf is a micro-accent rather than a full green edge. The **2D UI mark** is the owner's real PNG and
+  is used unmodified. If the owner wants the 3D to match the PNG's green edge exactly, the brand rule
+  would need revisiting.
+- **`Backend/.env.example` previously contained real-looking credentials** and is now a placeholder-only
+  template (the live `Backend/.env` is untouched). The owner should rotate any credential that was ever
+  committed; values are not reproduced anywhere in this repo’s docs.
+- **Lighthouse and Firefox/Safari remain unavailable** in this environment — no Lighthouse score is
+  claimed; all runtime verification is Chromium (headless) only.
+- The harness runs against the **production preview** (`next start -p 3001`); the dev server on :3000 is
+  unaffected.

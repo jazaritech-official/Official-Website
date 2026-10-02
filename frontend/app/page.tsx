@@ -7,12 +7,15 @@ import { StartProjectForm } from "@/components/forms/StartProjectForm";
 import { BrandStatement } from "@/components/sections/BrandStatement";
 import { Footer } from "@/components/layout/Footer";
 import { VisitTracker } from "@/components/tracking/VisitTracker";
+import { PointerGlow } from "@/components/motion/PointerGlow";
 
 export default function Home() {
   return (
     <>
+      {/* Desktop-only subtle spotlight (z-0); main/footer sit above it (z-1). */}
+      <PointerGlow />
       <Navbar />
-      <main id="main" className="flex-1">
+      <main id="main" className="relative z-[1] flex-1">
         <Hero />
         <LogoMarquee />
         <ProductCards />

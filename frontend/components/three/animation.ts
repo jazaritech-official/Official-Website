@@ -15,7 +15,7 @@ import type { SupportSystem } from "./createTechObjects";
 import type { ScenePhase } from "./types";
 import { clamp, damp, easeOutCubic, lerp } from "./helpers/math";
 
-export const ASSEMBLY_DURATION = 1.4; // seconds — short and premium
+export const ASSEMBLY_DURATION = 1.1; // seconds — keeps the first-load story ≈1.5 s
 const PIECE_STAGGER = 0.08; // fraction of duration between piece starts
 const LEAF_START = 0.55; // leaf joins the assembly late
 

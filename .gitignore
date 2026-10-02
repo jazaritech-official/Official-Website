@@ -21,6 +21,9 @@ npm-debug.log*
 Backend/uploads/*
 !Backend/uploads/.gitkeep
 
+# Verification output (screenshots)
+frontend/test-output/
+
 # Misc
 .DS_Store
 *.tsbuildinfo

@@ -243,6 +243,7 @@ export function StartProjectForm() {
             <h2 id="start-heading" className="mt-3 text-h3 font-semibold">
               Tell us what you want to build
             </h2>
+            <span aria-hidden="true" className="heading-rule mt-4" />
           </Reveal>
           <Reveal delay={150}>
             <p className="mt-4 max-w-md text-sm leading-relaxed text-muted">

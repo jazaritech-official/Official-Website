@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Logo } from "@/components/brand/Logo";
+import { Reveal } from "@/components/motion/Reveal";
 import { ServiceLinks } from "@/components/layout/ServiceLinks";
 import { ArrowRightIcon } from "@/components/icons";
 
@@ -22,12 +23,12 @@ export function Footer() {
   const year = new Date().getFullYear();
 
   return (
-    <footer className="border-t border-line bg-background">
+    <footer className="relative z-[1] border-t border-line bg-background">
       <div className="container-page py-14">
-        <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_1fr_1.2fr]">
+        <Reveal className="grid gap-10 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_1fr_1.2fr]">
           {/* Brand */}
           <div>
-            <Logo variant="horizontal" sizes="200px" className="h-8 w-auto" />
+            <Logo variant="full" sizes="96px" className="h-9" />
             <p className="mt-4 max-w-xs text-sm leading-relaxed text-muted">
               Jazari Tech Official builds software, commerce, AI and cloud systems for businesses
               that intend to scale — engineered properly the first time.
@@ -85,7 +86,7 @@ export function Footer() {
               <ArrowRightIcon size={15} />
             </Link>
           </div>
-        </div>
+        </Reveal>
 
         {/* Privacy notice */}
         <p className="mt-12 flex items-center gap-2 rounded-2xl border border-line bg-surface px-4 py-3 text-xs text-muted">

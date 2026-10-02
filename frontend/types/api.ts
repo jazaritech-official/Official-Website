@@ -180,12 +180,34 @@ export interface DashboardStats {
 
 /* --- Auth ----------------------------------------------------------------- */
 
+/** Admin roles, mirroring the backend enum exactly. */
+export type AdminRole = "admin" | "super_admin";
+
 export interface AdminSession {
   id: string;
   email: string;
-  role: "admin" | "editor" | "super-admin";
+  name: string;
+  role: AdminRole;
+  isActive: boolean;
   lastLoginAt?: string | null;
   createdAt?: string;
+  updatedAt?: string;
+}
+
+/* --- Team management (Super Admin only) ----------------------------------- */
+
+export type AdminTeamMember = AdminSession;
+
+export interface AdminTeamResponse {
+  admins: AdminTeamMember[];
+}
+
+export interface CreateAdminInput {
+  email: string;
+  name: string;
+  role: AdminRole;
+  /** Temporary password supplied by the Super Admin — never returned by the API. */
+  password: string;
 }
 
 export interface HealthData {

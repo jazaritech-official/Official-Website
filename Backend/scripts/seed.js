@@ -261,15 +261,65 @@ async function run() {
   await connectDb();
   console.log("[seed] connected to MongoDB");
 
-  // --- Admin --------------------------------------------------------------
-  const email = env.admin.email.toLowerCase().trim();
-  const passwordHash = await Admin.hashPassword(env.admin.password);
-  const admin = await Admin.findOneAndUpdate(
-    { email },
-    { $set: { passwordHash, role: "admin" }, $setOnInsert: { email } },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+  // --- Role migration (legacy documents) ----------------------------------
+  // Older installs used `editor` / `super-admin`; fold them onto the current
+  // role set without deactivating anyone.
+  const demotedLegacy = await Admin.updateMany(
+    { role: "editor" },
+    { $set: { role: "admin" } },
   );
-  console.log(`[seed] admin ready: ${admin.email} (${admin._id})`);
+  const promotedLegacy = await Admin.updateMany(
+    { role: "super-admin" },
+    { $set: { role: "super_admin" } },
+  );
+  if (demotedLegacy.modifiedCount || promotedLegacy.modifiedCount) {
+    console.log(
+      `[seed] normalized legacy admin roles (${demotedLegacy.modifiedCount + promotedLegacy.modifiedCount} document(s))`,
+    );
+  }
+
+  // --- Configured admin → super_admin (idempotent) ------------------------
+  const email = env.admin.email.toLowerCase().trim();
+  const existingAdmin = await Admin.findOne({ email });
+  const descriptor = env.admin.name || existingAdmin?.name || "Super Admin";
+
+  let admin;
+  if (existingAdmin) {
+    // Promote + activate. The password is preserved unless the explicit reset
+    // flag is enabled — re-running the seed never clobbers a live password.
+    existingAdmin.role = Admin.SUPER_ADMIN;
+    existingAdmin.isActive = true;
+    if (!existingAdmin.name) existingAdmin.name = descriptor;
+    if (env.admin.resetPasswordOnSeed) {
+      existingAdmin.passwordHash = await Admin.hashPassword(env.admin.password);
+      console.log("[seed] configured admin password was reset (SEED_RESET_ADMIN_PASSWORD=true).");
+    }
+    admin = await existingAdmin.save();
+  } else {
+    admin = await Admin.create({
+      email,
+      name: descriptor,
+      role: Admin.SUPER_ADMIN,
+      isActive: true,
+      passwordHash: await Admin.hashPassword(env.admin.password),
+    });
+  }
+  console.log(`[seed] super admin ready: ${admin.email} (${admin._id})`);
+
+  // --- Legacy/demo admin cleanup ------------------------------------------
+  // A previously shipped demo account is deactivated (never deleted) unless it
+  // is the configured account. Its password is never read or printed.
+  const demoEmail = String(env.admin.demoEmail || "").toLowerCase().trim();
+  if (demoEmail && demoEmail !== email) {
+    const demo = await Admin.findOne({ email: demoEmail });
+    if (demo && demo.isActive !== false) {
+      demo.isActive = false;
+      await demo.save();
+      console.log(
+        `[seed] previous demo admin deactivated (not the configured account): ${demo.email}`,
+      );
+    }
+  }
 
   // --- Product type templates --------------------------------------------
   let templatesUpserted = 0;

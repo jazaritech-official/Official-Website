@@ -41,8 +41,8 @@ import { createInteraction, type InteractionHandle } from "./interaction";
 import { projectToContainerPx, type ScreenPoint } from "./helpers/projection";
 
 const TIERS: Array<Exclude<QualityTier, "static">> = ["high", "medium", "low"];
-const MIN_CAMERA_Z = 8.2;
-const FIT_CAMERA_Z = 9.05; // keeps half-width ≥ ~3.1 units on narrow containers
+const MIN_CAMERA_Z = 9.0;
+const FIT_CAMERA_Z = 9.3; // keeps the enlarged logo + recomposed supports in frame
 
 export function createHeroEngine(options: EngineOptions): EngineHandle {
   const { container, theme, tier: initialTier, reducedMotion, onFirstFrame, onAnchor } = options;

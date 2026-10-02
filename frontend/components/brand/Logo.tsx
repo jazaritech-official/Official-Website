@@ -1,69 +1,89 @@
 import Image from "next/image";
-import logoHorizontal from "@/public/brand/logo-horizontal.png";
-import logoStacked from "@/public/brand/logo-stacked.png";
-import logoIcon from "@/public/brand/logo-icon.png";
-import appIconLight from "@/public/brand/app-icon-light.png";
-import appIconDark from "@/public/brand/app-icon-dark.png";
+import logoMain from "@/public/brand/logo-main.png";
 
-export type LogoVariant = "horizontal" | "stacked" | "icon" | "app-light" | "app-dark";
+/**
+ * `full`    — mark + stacked wordmark ("Jazari Tech" / "OFFICIAL")
+ * `compact` — mark + single-line wordmark ("Jazari Tech")
+ * `mark`    — the mark on its own (favicon-style / icon tiles)
+ */
+export type LogoVariant = "full" | "compact" | "mark";
 
-const SOURCES = {
-  horizontal: logoHorizontal,
-  stacked: logoStacked,
-  icon: logoIcon,
-  "app-light": appIconLight,
-  "app-dark": appIconDark,
-} satisfies Record<LogoVariant, { src: string; width: number; height: number }>;
-
-interface LogoProps {
+export interface LogoProps {
   variant?: LogoVariant;
+  /** Accessible name for the mark. Defaults to the full company name. */
   alt?: string;
+  /** Wrapper classes — set the height here (e.g. `h-8`). */
   className?: string;
+  /** Optional classes for the mark image itself. */
+  markClassName?: string;
   /** Tailwind `sizes` hint — keeps the optimized payload small. */
   sizes?: string;
   /** Load eagerly (above-the-fold brand marks only). */
   priority?: boolean;
-  /**
-   * On dark surfaces the navy lockup sits on a soft light plate so it stays
-   * readable — the artwork itself is never filtered, inverted or distorted.
-   */
-  plate?: boolean;
 }
 
 /**
- * Jazari brand marks, always rendered from the owner-supplied files in
- * `public/brand/`. Never recreate, crop or recolour the logo in code.
+ * The single reusable Jazari brand mark.
+ *
+ * Renders the trimmed `Main Logo` artwork (a genuinely transparent PNG built by
+ * `scripts/build-logo-assets.mjs`) plus **live HTML text** — there is no white
+ * plate and nothing is baked into an image. Colours come from the design tokens
+ * so the wordmark is correct in Light and Dark:
+ *   - "Jazari"  → Deep Navy (Light) / readable light tone (Dark)
+ *   - "Tech"    → Technology Blue
+ *   - "OFFICIAL" → Official Slate with wide tracking
  */
 export function Logo({
-  variant = "horizontal",
-  alt = "Jazari Tech",
+  variant = "full",
+  alt = "Jazari Tech Official",
   className = "",
-  sizes,
+  markClassName = "",
+  sizes = "200px",
   priority = false,
-  plate = true,
 }: LogoProps) {
-  const source = SOURCES[variant];
-  const isLockup = variant === "horizontal" || variant === "stacked";
+  if (variant === "mark") {
+    return (
+      <span className={`relative inline-flex items-center justify-center ${className}`.trim()}>
+        <Image
+          src={logoMain.src}
+          width={logoMain.width}
+          height={logoMain.height}
+          alt={alt}
+          sizes={sizes}
+          priority={priority}
+          className={`h-full w-auto object-contain ${markClassName}`.trim()}
+        />
+      </span>
+    );
+  }
 
   return (
     <span
-      className={[
-        "relative inline-flex items-center justify-center",
-        plate && isLockup ? "dark:rounded-xl dark:bg-white dark:px-2.5 dark:py-1.5" : "",
-        className,
-      ]
-        .filter(Boolean)
-        .join(" ")}
+      className={`relative inline-flex items-center gap-2.5 ${className}`.trim()}
     >
+      {/* Decorative: the live wordmark below carries the accessible name. */}
       <Image
-        src={source.src}
-        width={source.width}
-        height={source.height}
-        alt={alt}
-        sizes={sizes ?? "100vw"}
+        src={logoMain.src}
+        width={logoMain.width}
+        height={logoMain.height}
+        alt=""
+        aria-hidden="true"
+        sizes={sizes}
         priority={priority}
-        className="h-auto w-full object-contain"
+        className={`h-full w-auto shrink-0 object-contain ${markClassName}`.trim()}
       />
+
+      <span className="flex flex-col justify-center leading-none">
+        <span className="text-[0.95rem] font-semibold tracking-tight text-primary dark:text-foreground">
+          Jazari <span className="text-accent">Tech</span>
+          {variant === "compact" ? <span className="sr-only">Official</span> : null}
+        </span>
+        {variant === "full" ? (
+          <span className="mt-1 text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-slate">
+            Official
+          </span>
+        ) : null}
+      </span>
     </span>
   );
 }

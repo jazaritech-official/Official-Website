@@ -11,16 +11,26 @@
  *   5  Mobile metrics → LOW/MEDIUM tier (never the desktop scene)
  *   6  /admin loads ZERO three-chunk resources (runtime proof, not just build)
  *   7  SPA round-trips (hero unmount/remount ×3): no leak, one canvas, clean console
+ *   8  Accessibility structure
+ *   9  Homepage section + API regression
+ *  10  Start-Your-Project form end-to-end
+ *  11  Brand (Main Logo) + hero layout + first-load choreography + screenshots
+ *
+ * Super Admin role/security logic is covered by the BACKEND smoke test
+ * (`cd Backend && npm run smoke`) — 81 assertions.
  *
  * Usage: node scripts/verify-three.mjs [baseUrl]   (default http://localhost:3001)
  * Requires: a production build (`npm run build && npm run start -p 3001`) and
  * the backend running for card data.
+ * Screenshots are written to `frontend/test-output/screenshots/`.
  */
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+const SCREENSHOT_DIR = join(process.cwd(), "test-output", "screenshots");
 
 const BASE = process.argv[2] ?? "http://localhost:3001";
 const NO_WEBGL = process.env.NO_WEBGL === "1"; // fallback-verification mode
@@ -35,15 +45,34 @@ const API = process.env.API_BASE ?? "http://localhost:5000/api";
 const PNG_1PX =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
+/**
+ * Reads `../Backend/.env` so the harness can sign in without any credential
+ * being hardcoded here (never printed). Returns {} when unavailable.
+ */
+function readBackendEnv() {
+  try {
+    const text = readFileSync(join(process.cwd(), "..", "Backend", ".env"), "utf8");
+    const out = {};
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^\s*([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line);
+      if (match) out[match[1]] = match[2].trim().replace(/^["']|["']$/g, "");
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 async function ensureLogos() {
   try {
+    const backendEnv = readBackendEnv();
+    const email = process.env.ADMIN_EMAIL ?? backendEnv.ADMIN_EMAIL;
+    const password = process.env.ADMIN_PASSWORD ?? backendEnv.ADMIN_PASSWORD;
+    if (!email || !password) return false;
     const login = await fetch(`${API}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: process.env.ADMIN_EMAIL ?? "admin@jazaritech.com",
-        password: process.env.ADMIN_PASSWORD ?? "ChangeMe!2026",
-      }),
+      body: JSON.stringify({ email, password }),
     });
     if (!login.ok) return false;
     const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
@@ -173,6 +202,15 @@ const BRING_HERO_INTO_VIEW = `(() => {
 async function main() {
   const threeChunk = findThreeChunk();
   if (!threeChunk) throw new Error("three chunk not found in .next/static/chunks");
+  console.log("[0] Static assets");
+  check(
+    "Main Logo application asset exists (public/brand/logo-main.png)",
+    existsSync(join(process.cwd(), "public", "brand", "logo-main.png")),
+  );
+  check(
+    "square app icon asset exists (public/brand/app-icon-main.png)",
+    existsSync(join(process.cwd(), "public", "brand", "app-icon-main.png")),
+  );
   const logosReady = await ensureLogos();
 
   const profile = mkdtempSync(join(tmpdir(), "jazari-cdp-"));
@@ -636,6 +674,156 @@ async function main() {
     );
     check("success modal shows server reference ID", Boolean(reference), String(reference));
     assertClean("form-e2e");
+
+    /* -- TEST 11: Main Logo + hero layout + first-load choreography -------- */
+    console.log("\n[11] Brand logo, hero layout, first-load choreography + screenshots");
+    resetErrors();
+    mkdirSync(SCREENSHOT_DIR, { recursive: true });
+
+    const capture = async (name) => {
+      const { data } = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      const file = join(SCREENSHOT_DIR, name);
+      writeFileSync(file, Buffer.from(data, "base64"));
+      console.log(`    · screenshot → ${file}`);
+    };
+
+    const setViewport = async (width, height, mobile = false) => {
+      await cdp.send("Emulation.setDeviceMetricsOverride", {
+        width,
+        height,
+        deviceScaleFactor: 1,
+        mobile,
+      });
+    };
+    const setThemeThenReload = async (theme) => {
+      await evaluate(cdp, `localStorage.setItem("jazari-theme", ${JSON.stringify(theme)}); true`);
+      await reload();
+      await waitFor(cdp, `document.readyState === "complete"`, 12000, "reload");
+      // Chrome restores scroll across reloads; the hero must be judged from the top.
+      await evaluate(cdp, `window.scrollTo(0, 0); true`);
+      await sleep(150);
+    };
+
+    const HERO_PROBE = `(() => {
+      const ctas = [...document.querySelectorAll("#home a")].filter((a) =>
+        /Start your project|Explore our products/.test(a.textContent || ""),
+      );
+      const h1 = document.querySelector("h1");
+      const lh = h1 ? parseFloat(getComputedStyle(h1).lineHeight) : 0;
+      const lines = h1 && lh ? Math.round(h1.getBoundingClientRect().height / lh) : 0;
+      const sub = document.querySelector("#home p");
+      const rating = [...document.querySelectorAll("#home span")].find((s) => /client rating/.test(s.textContent || ""));
+      const inView = (el) => { if (!el) return false; const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= window.innerHeight + 1; };
+      const logoImg = document.querySelector('header img[src*="logo-main"]');
+      let whitePlate = false;
+      let node = logoImg ? logoImg.parentElement : null;
+      for (let depth = 0; depth < 4 && node; depth += 1) {
+        const bg = getComputedStyle(node).backgroundColor || "";
+        const m = bg.match(/rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)/);
+        if (m) {
+          const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
+          const alpha = m[4] === undefined ? 1 : Number(m[4]);
+          if (alpha > 0.05 && r > 240 && g > 240 && b > 240) whitePlate = true;
+        }
+        node = node.parentElement;
+      }
+      return {
+        ctas: ctas.length,
+        ctasInView: ctas.map(inView),
+        lines,
+        subInView: inView(sub),
+        trustInView: inView(rating),
+        logoMain: Boolean(logoImg),
+        whitePlate,
+        decor: Boolean(document.querySelector(".hero-decor")),
+        scene: document.querySelector("[data-scene]")?.dataset.scene ?? "missing",
+        jsIntro: document.documentElement.classList.contains("js-intro"),
+        heading: document.querySelector("h1")?.textContent?.slice(0, 24) ?? "",
+      };
+    })()`;
+
+    // --- 1366×768 desktop, light theme ------------------------------------
+    await setViewport(1366, 768);
+    await setThemeThenReload("light");
+    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 12000, "scene (light desktop)");
+    await sleep(1800); // let the ~1.5 s choreography finish
+    const desktop = await evaluate(cdp, HERO_PROBE);
+    check("Main Logo asset is used in the navbar", desktop.logoMain);
+    check("no white plate behind the logo", desktop.whitePlate === false);
+    check("hero headline is ≤ 3 lines at 1366×768", desktop.lines > 0 && desktop.lines <= 3, `lines=${desktop.lines}`);
+    check("both hero CTAs are above the fold", desktop.ctas >= 2 && desktop.ctasInView.every(Boolean), JSON.stringify(desktop.ctasInView));
+    check("subheading + trust content above the fold", desktop.subInView && desktop.trustInView);
+    check("static fallback layer exists", desktop.decor);
+    const words = await evaluate(
+      cdp,
+      `[...document.querySelectorAll(".jt-word-inner")].map((e) => parseFloat(getComputedStyle(e).opacity))`,
+    );
+    check(
+      "first-load headline finishes fully visible",
+      Array.isArray(words) && words.length > 0 && words.every((o) => o >= 0.99),
+      JSON.stringify(words),
+    );
+    check("intro choreography actually ran (js-intro present)", desktop.jsIntro === true);
+    await capture("home-light-desktop-1366x768.png");
+
+    // --- reduced motion: intro must be bypassed ---------------------------
+    await cdp.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+    });
+    await reload();
+    await waitFor(cdp, `document.readyState === "complete"`, 12000, "reduced-motion reload");
+    await sleep(900);
+    const rm = await evaluate(
+      cdp,
+      `(() => ({
+        jsIntro: document.documentElement.classList.contains("js-intro"),
+        h1Opacity: getComputedStyle(document.querySelector("h1")).opacity,
+      }))()`,
+    );
+    check("reduced motion bypasses the entrance choreography", rm.jsIntro === false);
+    check("reduced motion keeps hero content visible", rm.h1Opacity === "1", rm.h1Opacity);
+    await capture("home-reduced-motion-1366x768.png");
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+
+    // --- 1366×768 desktop, dark theme -------------------------------------
+    await setThemeThenReload("dark");
+    await waitFor(cdp, `document.documentElement.classList.contains("dark")`, 8000, "dark class");
+    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 12000, "scene (dark desktop)");
+    await sleep(1700);
+    const darkDesktop = await evaluate(cdp, HERO_PROBE);
+    check("dark mode: no white plate behind the logo", darkDesktop.whitePlate === false);
+    check("dark mode: CTAs still above the fold", darkDesktop.ctasInView.every(Boolean), JSON.stringify(darkDesktop.ctasInView));
+    await capture("home-dark-desktop-1366x768.png");
+
+    // --- 390×844 mobile, dark then light ----------------------------------
+    await setViewport(390, 844, true);
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    await setThemeThenReload("dark");
+    await waitFor(cdp, `document.readyState === "complete"`, 12000, "mobile dark");
+    await sleep(1700);
+    const mobileDark = await evaluate(cdp, HERO_PROBE);
+    check("390×844 mobile hero usable (primary CTA above the fold)", mobileDark.ctasInView[0] === true, JSON.stringify(mobileDark.ctasInView));
+    check("390×844 mobile: no white plate", mobileDark.whitePlate === false);
+    await capture("home-dark-mobile-390x844.png");
+
+    await setThemeThenReload("light");
+    await waitFor(cdp, `document.readyState === "complete"`, 12000, "mobile light");
+    await sleep(1700);
+    await capture("home-light-mobile-390x844.png");
+
+    // --- admin login capture (no credentials ever entered) ----------------
+    await cdp.send("Page.navigate", { url: `${BASE}/admin/login` });
+    await waitFor(cdp, `location.pathname === "/admin/login" && document.readyState === "complete"`, 12000, "admin login");
+    await sleep(900);
+    const adminLogo = await evaluate(
+      cdp,
+      `Boolean(document.querySelector('img[src*="logo-main"]'))`,
+    );
+    check("Main Logo used on the admin login screen", adminLogo === true);
+    await capture("admin-login-light-1366x768.png");
+
+    await cdp.send("Emulation.clearDeviceMetricsOverride");
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
   } finally {
     cdp?.close();
     chrome.kill();

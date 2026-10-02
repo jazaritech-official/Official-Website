@@ -61,9 +61,9 @@ export const metadata: Metadata = {
   },
   icons: {
     icon: [
-      { url: "/brand/logo-icon.png", type: "image/png", sizes: "any" },
+      { url: "/brand/app-icon-main.png", type: "image/png", sizes: "512x512" },
     ],
-    apple: [{ url: "/brand/app-icon-light.png", sizes: "180x180" }],
+    apple: [{ url: "/brand/app-icon-main.png", sizes: "512x512" }],
   },
 };
 
@@ -80,7 +80,13 @@ export const viewport: Viewport = {
  * Runs synchronously during HTML parsing — before first paint — so the stored
  * Light/Dark/System preference is applied without a theme flash.
  */
-const themeInitScript = `(function(){try{var t=localStorage.getItem("jazari-theme");var d=t==="dark"||((!t||t==="system")&&window.matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.classList.toggle("dark",d);document.documentElement.style.colorScheme=d?"dark":"light";}catch(e){}})();`;
+/**
+ * Runs synchronously during HTML parsing — before first paint — so the stored
+ * theme is applied without a flash, and the first-load choreography (`js-intro`)
+ * is only enabled when JavaScript is available AND motion is allowed. Without
+ * JS (or under prefers-reduced-motion) all content renders fully visible.
+ */
+const themeInitScript = `(function(){try{var t=localStorage.getItem("jazari-theme");var d=t==="dark"||((!t||t==="system")&&window.matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.classList.toggle("dark",d);document.documentElement.style.colorScheme=d?"dark":"light";document.documentElement.classList.add("js");if(!window.matchMedia("(prefers-reduced-motion: reduce)").matches){document.documentElement.classList.add("js-intro");}}catch(e){}})();`;
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (

@@ -10,21 +10,33 @@ import { Spinner } from "@/components/ui/Spinner";
 import {
   AnalyticsIcon,
   CloseIcon,
+  GearIcon,
   InboxIcon,
   LayersIcon,
   LogoutIcon,
   MenuIcon,
   PaletteIcon,
+  ShieldIcon,
   UsersIcon,
 } from "@/components/icons";
-import type { AdminSession } from "@/types/api";
+import type { AdminRole, AdminSession } from "@/types/api";
 
-const NAV_ITEMS = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: typeof AnalyticsIcon;
+  /** Visible only to Super Admins. The backend remains the real boundary. */
+  superOnly?: boolean;
+}
+
+const NAV_ITEMS: NavItem[] = [
   { href: "/admin/dashboard", label: "Dashboard", icon: AnalyticsIcon },
   { href: "/admin/logos", label: "Logos", icon: PaletteIcon },
   { href: "/admin/products", label: "Products", icon: LayersIcon },
   { href: "/admin/submissions", label: "Submissions", icon: InboxIcon },
   { href: "/admin/visitors", label: "Visitors", icon: UsersIcon },
+  { href: "/admin/team", label: "Team", icon: ShieldIcon, superOnly: true },
+  { href: "/admin/account", label: "Account", icon: GearIcon },
 ];
 
 const TITLES: Record<string, string> = {
@@ -33,7 +45,14 @@ const TITLES: Record<string, string> = {
   "/admin/products": "Products",
   "/admin/submissions": "Submissions",
   "/admin/visitors": "Visitors",
+  "/admin/team": "Team",
+  "/admin/account": "Account",
 };
+
+/** Human-readable role label — never rely on colour alone to convey role. */
+export function roleLabel(role: AdminRole | undefined): string {
+  return role === "super_admin" ? "Super Admin" : "Admin";
+}
 
 function SidebarContent({
   pathname,
@@ -46,11 +65,13 @@ function SidebarContent({
   onLogout: () => void;
   onNavigate?: () => void;
 }) {
+  const items = NAV_ITEMS.filter((item) => !item.superOnly || admin?.role === "super_admin");
+
   return (
     <>
       <div className="flex items-center gap-3 px-5 py-5">
         <Link href="/admin/dashboard" aria-label="Jazari admin — dashboard" onClick={onNavigate}>
-          <Logo variant="horizontal" sizes="160px" className="h-7 w-auto" />
+          <Logo variant="compact" sizes="72px" className="h-7" />
         </Link>
         <span className="rounded-full border border-line bg-surface-elevated px-2 py-0.5 text-[0.62rem] font-bold uppercase tracking-[0.14em] text-muted">
           Admin
@@ -58,7 +79,7 @@ function SidebarContent({
       </div>
 
       <nav aria-label="Admin" className="flex-1 space-y-1 px-3">
-        {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+        {items.map(({ href, label, icon: Icon }) => {
           const active = pathname === href;
           return (
             <Link
@@ -93,9 +114,21 @@ function SidebarContent({
           </button>
         </div>
         {admin && (
-          <p className="truncate text-xs text-muted" title={admin.email}>
-            Signed in as <span className="font-medium text-foreground">{admin.email}</span>
-          </p>
+          <div className="space-y-1.5">
+            <p className="truncate text-xs text-muted" title={admin.email}>
+              Signed in as <span className="font-medium text-foreground">{admin.name || admin.email}</span>
+            </p>
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.68rem] font-semibold ${
+                admin.role === "super_admin"
+                  ? "border-accent/35 bg-accent-soft text-accent"
+                  : "border-line bg-surface-elevated text-muted"
+              }`}
+            >
+              <ShieldIcon size={12} />
+              {roleLabel(admin.role)}
+            </span>
+          </div>
         )}
       </div>
     </>
@@ -132,6 +165,15 @@ export function AdminShell({ children }: { children: ReactNode }) {
     };
   }, [router]);
 
+  // Frontend route guard (UX only): a normal admin must not reach /admin/team.
+  // The backend `requireRole("super_admin")` remains the real security boundary.
+  useEffect(() => {
+    if (!ready) return;
+    if (pathname === "/admin/team" && admin?.role !== "super_admin") {
+      router.replace("/admin/dashboard");
+    }
+  }, [ready, pathname, admin, router]);
+
   const logout = useCallback(async () => {
     try {
       await api.auth.logout();
@@ -146,7 +188,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-4">
-          <Logo variant="icon" sizes="48px" className="size-12" />
+          <Logo variant="mark" sizes="48px" className="size-12" />
           <Spinner label="Verifying session" />
         </div>
       </div>
@@ -212,9 +254,20 @@ export function AdminShell({ children }: { children: ReactNode }) {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
-            <span className="hidden rounded-full border border-line bg-surface px-3 py-1.5 text-xs text-muted sm:inline-flex">
-              {admin?.email}
-            </span>
+            {admin && (
+              <span className="hidden items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 text-xs text-muted sm:inline-flex">
+                <span className="max-w-[12rem] truncate">{admin.name || admin.email}</span>
+                <span
+                  className={`rounded-full border px-2 py-0.5 text-[0.66rem] font-semibold ${
+                    admin.role === "super_admin"
+                      ? "border-accent/35 bg-accent-soft text-accent"
+                      : "border-line bg-surface-elevated text-muted"
+                  }`}
+                >
+                  {roleLabel(admin.role)}
+                </span>
+              </span>
+            )}
             <button
               type="button"
               onClick={logout}
@@ -227,7 +280,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        <main className="flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
+        <main key={pathname} className="admin-enter flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
       </div>
     </div>
   );

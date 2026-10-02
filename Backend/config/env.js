@@ -88,6 +88,12 @@ if (isProd && (!cloudinary.cloudName || !cloudinary.apiKey || !cloudinary.apiSec
 const admin = {
   email: readOptional("ADMIN_EMAIL"),
   password: readOptional("ADMIN_PASSWORD"),
+  name: readOptional("ADMIN_NAME"),
+  // The configured account is promoted to `super_admin`; its password is only
+  // overwritten when this flag is explicitly enabled.
+  resetPasswordOnSeed: readBool("SEED_RESET_ADMIN_PASSWORD", false),
+  // Legacy/demo account that is deactivated unless it IS the configured account.
+  demoEmail: readOptional("DEMO_ADMIN_EMAIL", "admin@jazaritech.com"),
 };
 
 const config = {
@@ -125,6 +131,8 @@ const config = {
     loginMax: readInt("LOGIN_RATE_LIMIT_MAX", 10),
     submissionMax: readInt("SUBMISSION_RATE_LIMIT_MAX", 5),
     visitorMax: readInt("VISITOR_RATE_LIMIT_MAX", 120),
+    // Team management + password changes (sensitive write operations).
+    sensitiveMax: readInt("SENSITIVE_RATE_LIMIT_MAX", 30),
   },
 };
 

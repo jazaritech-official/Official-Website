@@ -66,6 +66,7 @@ export function ServicesGrid() {
             <h2 id="services-heading" className="mt-3 text-h3 font-semibold">
               One partner across engineering, growth and design
             </h2>
+            <span aria-hidden="true" className="heading-rule mt-4" />
           </Reveal>
           <Reveal delay={150}>
             <p className="mt-4 text-sm leading-relaxed text-muted">

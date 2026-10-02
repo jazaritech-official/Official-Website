@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { body, param, query } from "express-validator";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+import teamRouter from "./team.routes.js";
 import { validate } from "../middleware/validate.js";
 import {
   listAdminProducts,
@@ -37,7 +38,12 @@ import { getDashboardStats } from "../controllers/dashboardController.js";
 const adminRouter = Router();
 
 // Every route below is protected by backend authentication.
+// `requireAuth` re-reads role + isActive from the database on every request.
 adminRouter.use(requireAuth);
+
+// --- Team management (Super Admin only) ------------------------------------
+// Mounted before the general admin routes; `requireRole` is the real gate.
+adminRouter.use("/team", requireRole("super_admin"), teamRouter);
 
 const idRules = [param("id").isMongoId().withMessage("Invalid identifier."), validate];
 

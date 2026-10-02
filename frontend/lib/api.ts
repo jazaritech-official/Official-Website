@@ -9,8 +9,12 @@
 import type {
   AdminLogo,
   AdminLogosResponse,
+  AdminRole,
   AdminSession,
+  AdminTeamMember,
+  AdminTeamResponse,
   ApiEnvelope,
+  CreateAdminInput,
   DashboardStats,
   HealthData,
   LogoInput,
@@ -283,6 +287,8 @@ export const api = {
     },
     logout: () => request<{ loggedOut: boolean }>("/auth/logout", { method: "POST" }),
     me: async () => (await request<{ admin: AdminSession }>("/auth/me")).admin,
+    changePassword: (input: { currentPassword: string; newPassword: string }) =>
+      request<{ changed: boolean }>("/auth/password", { method: "POST", body: input }),
   },
 
   /* --- Admin ------------------------------------------------------------ */
@@ -339,6 +345,27 @@ export const api = {
     visitors: {
       list: (query: Query = {}, signal?: AbortSignal) =>
         requestWithMeta<Visitor[]>("/admin/visitors", { query, signal }),
+    },
+
+    /** Super-admin-only team management (backend enforces the role). */
+    team: {
+      list: () => request<AdminTeamResponse>("/admin/team"),
+      create: (input: CreateAdminInput) =>
+        request<{ admin: AdminTeamMember }>("/admin/team", { method: "POST", body: input }),
+      updateRole: (id: string, role: AdminRole) =>
+        request<{ admin: AdminTeamMember }>(`/admin/team/${id}/role`, { method: "PATCH", body: { role } }),
+      setActive: (id: string, isActive: boolean) =>
+        request<{ admin: AdminTeamMember }>(`/admin/team/${id}/status`, {
+          method: "PATCH",
+          body: { isActive },
+        }),
+      resetPassword: (id: string, password: string) =>
+        request<{ admin: AdminTeamMember; reset: boolean }>(`/admin/team/${id}/password`, {
+          method: "POST",
+          body: { password },
+        }),
+      remove: (id: string) =>
+        request<{ id: string; deleted: boolean }>(`/admin/team/${id}`, { method: "DELETE" }),
     },
   },
 };

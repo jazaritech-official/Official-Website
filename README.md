@@ -58,9 +58,12 @@ cp .env.example .env
 | `TRUST_PROXY` | Proxy hops trusted for client IP extraction | `1` |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Logo/image uploads | **required in production** — startup fails without them outside development |
 | `PUBLIC_API_URL` | Public base URL of the API (local asset URLs) | `http://localhost:5000` |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Admin account created by `npm run seed` | change before deploying |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | **Super Admin** account created/promoted by `npm run seed` | change before deploying |
+| `ADMIN_NAME` | Optional display name for the seeded Super Admin | optional |
+| `SEED_RESET_ADMIN_PASSWORD` | Reset the configured account's password on seed | `false` — the password is preserved unless explicitly `true` |
+| `DEMO_ADMIN_EMAIL` | Legacy/demo account to deactivate on seed (unless it *is* the configured account) | `admin@jazaritech.com` |
 | `JSON_BODY_LIMIT` | Body size (logos arrive as base64 data URIs) | `15mb` |
-| `RATE_LIMIT_*`, `LOGIN_RATE_LIMIT_MAX`, `SUBMISSION_RATE_LIMIT_MAX`, `VISITOR_RATE_LIMIT_MAX` | Rate limits | see `.env.example` |
+| `RATE_LIMIT_*`, `LOGIN_RATE_LIMIT_MAX`, `SUBMISSION_RATE_LIMIT_MAX`, `VISITOR_RATE_LIMIT_MAX`, `SENSITIVE_RATE_LIMIT_MAX` | Rate limits (`SENSITIVE_*` covers team + password operations) | see `.env.example` |
 | `VISITOR_DEDUPE_HOURS` | Visitor dedupe window | `24` = one record per IP per day |
 | `LOG_FORMAT` | morgan format | `dev` |
 
@@ -101,11 +104,14 @@ Then open **http://localhost:3000** — public site at `/`, admin portal at `/ad
 
 1. `cd Backend && cp .env.example .env`, fill in `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`
    (and `MONGODB_URI` if you have a real MongoDB).
-2. Seed: `npm run seed` (or `npm run seed:mem:once` for the in-memory flow) — creates the admin
-   account, 8 product-type templates, 14 services and 4 clearly-labelled sample products.
-   It never fabricates visitor traffic or submissions.
-3. Sign in at `/admin/login` with the seeded `ADMIN_EMAIL` / `ADMIN_PASSWORD` and replace the
-   sample content, upload brand logos, and review submissions on the dashboard.
+2. Seed: `npm run seed` (or `npm run seed:mem:once` for the in-memory flow) — creates/promotes the
+   **Super Admin** account (`ADMIN_EMAIL`, password preserved unless `SEED_RESET_ADMIN_PASSWORD=true`),
+   deactivates the legacy demo account unless it *is* the configured account, and creates 8 product-type
+   templates, 14 services and 4 clearly-labelled sample products. It never fabricates visitor traffic
+   or submissions.
+3. Sign in at `/admin/login` with the seeded `ADMIN_EMAIL` / `ADMIN_PASSWORD`. Super Admins additionally
+   get **Team** (`/admin/team`) in the sidebar; every admin gets **Account** (`/admin/account`) to change
+   their own password.
 
 ## 5. Scripts
 
@@ -126,7 +132,7 @@ Then open **http://localhost:3000** — public site at `/`, admin portal at `/ad
 | `npm run dev:mem` | API + in-memory MongoDB (no local Mongo needed) |
 | `npm start` | Production entry (`node server.js`) |
 | `npm run seed` / `npm run seed:mem` / `npm run seed:mem:once` | Seed admin, templates, services, sample products |
-| `npm run smoke` | Full end-to-end API test (real HTTP + in-memory Mongo, 53 assertions) |
+| `npm run smoke` | Full end-to-end API test (real HTTP + in-memory Mongo, **81 assertions**) |
 | `npm run lint` | ESLint 10 flat config |
 | `npm run build` | Syntax check across all backend files |
 
@@ -138,8 +144,9 @@ Envelope: `{ success: true, data, meta? }` or `{ success: false, error: { code, 
 |------|-----------|
 | Health | `GET /api/health` |
 | Public | `GET /api/logos`, `GET /api/products`, `GET /api/services`, `POST /api/submission`, `POST /api/visitor-track` |
-| Auth | `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me` (httpOnly cookie `jazari_admin`) |
+| Auth | `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `POST /api/auth/password` (httpOnly cookie `jazari_admin`) |
 | Admin | dashboard stats, products + templates CRUD, logos upload/replace/reorder/visibility, submissions list/status/CSV export, visitors list — all under `/api/admin/*` behind `requireAuth` |
+| Team (**super_admin only**) | `GET/POST /api/admin/team`, `PATCH /api/admin/team/:id/role`, `PATCH /api/admin/team/:id/status`, `POST /api/admin/team/:id/password`, `DELETE /api/admin/team/:id` |
 
 Submission references are server-generated as `JT-YYYYMMDD-XXXXXX`. Visitors are deduplicated to
 one document per IP per `VISITOR_DEDUPE_HOURS` (default 24 h) with a `visitCount`.
@@ -154,6 +161,7 @@ Full tables: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §8–§12.
 - [ ] Rate limits on general, login, submission and visitor endpoints
 - [ ] Admin login returns a generic 401 and is timing-equalized; bcrypt-hashed passwords never leave the model layer
 - [ ] JWT in httpOnly cookie (`SameSite=Lax`, `Secure` in production); every `/api/admin/*` route guarded by `requireAuth`
+- [ ] Roles `admin`/`super_admin`; `role`+`isActive` re-read from the database on every request; `requireRole("super_admin")` gates `/api/admin/team`; self/last-Super-Admin protection enforced server-side; passwords never returned; sensitive routes rate-limited; audit trail recorded
 - [ ] express-validator on every write endpoint with `{code, message, details}` field errors
 - [ ] Submission honeypot + duplicate window; CSV export escapes RFC quirks and formula injection
 - [ ] Uploads: MIME allow-list, 8 MB cap, path-traversal-guarded local driver; production refuses to boot without Cloudinary
@@ -166,10 +174,11 @@ Full tables: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §8–§12.
 ### Frontend correctness
 - [ ] Exact homepage order: Navbar → Hero → Products Logos → Products Cards → Services → Start Your Project → Brand Statement → Footer
 - [ ] Brand palette only (Deep Navy / Technology Blue / Growth Green micro-accent / Official Slate); dark mode derived from `#0a0f24`, never pure black
-- [ ] Supplied logo artwork used as-is from `public/brand/` (never recreated or filtered)
+- [ ] Supplied `Main Logo` mark served as a trimmed transparent asset (`public/brand/logo-main.png`) + **live** wordmark; **no dark-mode white plate** anywhere
 - [ ] Type scale emitted by Tailwind v4 (`text-display`/`text-h1…h3`/`text-body-lg` live in `@theme`)
 - [ ] No-flash theme switch (inline `<head>` script + `suppressHydrationWarning`), 3-way Light/Dark/System toggle
-- [ ] All animation respects `prefers-reduced-motion`; zero new frontend dependencies
+- [ ] All animation respects `prefers-reduced-motion`; zero new frontend dependencies (only `three` + `@types/three`)
+- [ ] First-load choreography is CSS-only and JS-gated (`html.js-intro`); without JS or under reduced motion all content is visible — no blocking preloader
 
 ### Experience
 - [ ] 4-step Start Your Project form with per-step validation, phone-OR-email rule, honeypot, double-submit guard
@@ -187,9 +196,10 @@ Full tables: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §8–§12.
 - [ ] Metadata: title template, OG/Twitter, robots, sitemap, canonical production URL
 
 ### Verification
-- [ ] `frontend`: `npm run lint` ✅ `npm run build` ✅ (12 routes)
-- [ ] `Backend`: `npm run lint` ✅ `npm run build` ✅ `npm run smoke` ✅ (53/53 assertions)
+- [ ] `frontend`: `npm run lint` ✅ (0 problems) `npm run build` ✅ (14 routes)
+- [ ] `Backend`: `npm run lint` ✅ `npm run build` ✅ (44 files) `npm run smoke` ✅ (81/81 assertions)
 - [ ] Full-stack smoke: public content, intake + reference ID, visitor dedupe, admin login/stats/CSV/logout, logo upload lifecycle, all routes 200
+- [ ] Three.js harness: `node scripts/verify-three.mjs` ✅ 64/64 · `NO_WEBGL=1 …` ✅ 9/9 (incl. brand/layout/first-load checks + screenshots in `frontend/test-output/screenshots/`)
 
 ## 8. Production notes
 
@@ -221,13 +231,33 @@ fallback. It is a progressive enhancement:
 - **Verify** (headless Chrome harness, no extra dependencies):
   ```bash
   cd frontend && npm run build && npx next start -p 3001   # terminal A
-  node scripts/verify-three.mjs                            # 47 checks
-  NO_WEBGL=1 node scripts/verify-three.mjs                 # 7 fallback checks
+  node scripts/verify-three.mjs                            # 64 checks
+  NO_WEBGL=1 node scripts/verify-three.mjs                 # 9 fallback checks
   ```
   Requires the backend running (the harness seeds two test logos via the admin API).
 - **Troubleshooting WebGL fallback**: if the hero shows rings/tiles instead of the 3D diamond, the
   scene is on its static fallback — check `data-scene` on the hero container (`fallback` = WebGL
   unavailable/context lost/chunk failed, all silent by design), check `data-quality` on the canvas,
   and confirm the browser supports WebGL2. No errors are thrown; content is never blocked.
+
+## 10. Super Admin, Main Logo & motion (latest work)
+
+- **Super Admin system** — `Admin.role` (`admin` | `super_admin`) + `Admin.isActive`; the seed promotes
+  the configured account and deactivates the legacy demo account; `requireAuth` re-reads role/`isActive`
+  from the database on every request and `requireRole("super_admin")` gates `/api/admin/team`; self and
+  last-Super-Admin protections are enforced server-side; a lightweight `AuditLog` records security
+  actions. `/admin/team` is visible only to Super Admins (with a frontend route guard), and every admin
+  can change their own password at `/admin/account`.
+- **Main Logo** — the owner's `public/Main Logo.png` (genuine transparency) is processed by
+  `node scripts/build-logo-assets.mjs` into `public/brand/logo-main.png` + `public/brand/app-icon-main.png`.
+  One `Logo` component renders the mark with **live** wordmark text and no white plate; used in the
+  navbar, mobile drawer, footer, admin login, admin sidebar and favicon.
+- **3D hero** — the ribbon diamond is now four **straight extruded ribbon bands** (not annular arcs) with
+  a lighter top fold, a darker right fold and a small green leaf, composed as a premium product shot.
+- **Motion** — centralized motion tokens plus a CSS-only, JS-gated first-load choreography (~1.5 s) and
+  site-wide polish (nav underline, button sweep, section heading lines, pointer glow, admin entrance).
+  Reduced motion bypasses the choreography entirely.
+
+Full architecture + tuning guides: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §27.
 
 Development commands are unchanged (see §4): `npm run dev` in `Backend/` and `frontend/`.

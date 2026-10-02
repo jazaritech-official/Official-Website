@@ -69,6 +69,24 @@
   --dur-normal: 300ms;
   --dur-slow: 650ms;
 
+  /* Motion — extended tokens (same single system, richer easing set) */
+  --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-emphasis: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring-soft: cubic-bezier(0.34, 1.4, 0.5, 1);
+  --motion-fast: var(--dur-fast);
+  --motion-normal: var(--dur-normal);
+  --motion-slow: var(--dur-slow);
+
+  /* First-load choreography timing (TUNING — total ≈1.5s, never blocking) */
+  --intro-logo-delay: 0ms;
+  --intro-nav-delay: 100ms;
+  --intro-headline-delay: 150ms;
+  --intro-word-step: 55ms;
+  --intro-sub-delay: 300ms;
+  --intro-cta-delay: 400ms;
+  --intro-trust-delay: 620ms;
+  --intro-counters-delay: 700ms;
+
   /* Z-index */
   --z-base: 0;
   --z-content: 10;
@@ -456,35 +474,61 @@
    6. ANIMATION SYSTEM
    ============================================================ */
 @layer components {
-  /* Scroll reveal */
+  /* Scroll reveal — the hidden initial state only applies when JavaScript is
+     available AND motion is allowed (`html.js-intro`). Without JS, or under
+     prefers-reduced-motion, revealed content is fully visible from the start
+     — content is never JS-dependent. */
   .reveal {
-    opacity: 0;
-    transform: translate3d(0, 20px, 0);
     transition:
-      opacity var(--dur-slow) var(--ease-out),
-      transform var(--dur-slow) var(--ease-out);
+      opacity var(--motion-slow) var(--ease-standard),
+      transform var(--motion-slow) var(--ease-standard);
     transition-delay: var(--reveal-delay, 0ms);
     will-change: opacity, transform;
   }
 
-  .reveal[data-reveal="fade-in"] {
+  .js-intro .reveal {
+    opacity: 0;
+    transform: translate3d(0, 20px, 0);
+  }
+
+  .js-intro .reveal[data-reveal="fade-in"] {
     transform: none;
   }
 
-  .reveal[data-reveal="scale-in"] {
+  .js-intro .reveal[data-reveal="fade-up"] {
+    transform: translate3d(0, 20px, 0);
+  }
+
+  .js-intro .reveal[data-reveal="fade-scale"] {
+    opacity: 0;
     transform: scale(0.965) translate3d(0, 12px, 0);
   }
 
-  .reveal[data-reveal="left"] {
+  .js-intro .reveal[data-reveal="blur-in"] {
+    opacity: 0;
+    filter: blur(10px);
+    transform: translate3d(0, 14px, 0);
+    transition:
+      opacity var(--motion-slow) var(--ease-standard),
+      transform var(--motion-slow) var(--ease-standard),
+      filter var(--motion-slow) var(--ease-standard);
+  }
+
+  .js-intro .reveal[data-reveal="scale-in"] {
+    transform: scale(0.965) translate3d(0, 12px, 0);
+  }
+
+  .js-intro .reveal[data-reveal="left"] {
     transform: translate3d(-28px, 0, 0);
   }
 
-  .reveal[data-reveal="right"] {
+  .js-intro .reveal[data-reveal="right"] {
     transform: translate3d(28px, 0, 0);
   }
 
-  .reveal.is-visible {
+  .js-intro .reveal.is-visible {
     opacity: 1;
+    filter: none;
     transform: none;
   }
 
@@ -921,7 +965,204 @@
 }
 
 /* ============================================================
-   8. REDUCED MOTION
+   9. FIRST-LOAD CHOREOGRAPHY + SITE-WIDE MOTION POLISH
+   ============================================================ */
+
+/* The intro only runs when JavaScript is available and motion is allowed
+   (`html.js-intro`, added by an inline <head> script before first paint).
+   Without JS — or under reduced motion — every element below is simply visible,
+   so content is never JS-dependent and there is no blocking preloader. */
+@keyframes jt-intro-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 16px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes jt-logo-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes jt-nav-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -14px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes jt-word-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 118%, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.js-intro .jt-intro {
+  animation: jt-intro-up var(--motion-slow) var(--ease-emphasis) both;
+  animation-delay: var(--jt-intro-delay, 0ms);
+}
+
+.js-intro .jt-logo {
+  animation: jt-logo-in 700ms var(--ease-emphasis) both;
+  animation-delay: var(--jt-intro-delay, var(--intro-logo-delay));
+}
+
+.js-intro .jt-nav {
+  animation: jt-nav-in 700ms var(--ease-emphasis) both;
+  animation-delay: var(--jt-intro-delay, var(--intro-nav-delay));
+}
+
+/* Headline — word-by-word masked slide-up (mask padding protects descenders) */
+.jt-word {
+  display: inline-block;
+  overflow: hidden;
+  padding-bottom: 0.16em;
+  margin-bottom: -0.16em;
+  vertical-align: bottom;
+}
+
+.jt-word-inner {
+  display: inline-block;
+}
+
+.js-intro .jt-word-inner {
+  animation: jt-word-up 760ms var(--ease-emphasis) both;
+  animation-delay: var(--jt-intro-delay, 0ms);
+}
+
+/* Section heading accent line — draws when its Reveal appears */
+.heading-rule {
+  display: block;
+  width: 3rem;
+  height: 3px;
+  border-radius: 999px;
+  background-image: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--growth) 60%, transparent));
+  transform-origin: left center;
+}
+
+.reveal .heading-rule {
+  transform: scaleX(0);
+  transition: transform 850ms var(--ease-emphasis) 120ms;
+}
+
+.reveal.is-visible .heading-rule {
+  transform: scaleX(1);
+}
+
+html:not(.js-intro) .heading-rule {
+  transform: none;
+}
+
+/* Navigation — animated underline */
+.nav-link {
+  position: relative;
+}
+
+.nav-link::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 0.3rem;
+  height: 2px;
+  width: 0;
+  border-radius: 999px;
+  background-image: linear-gradient(90deg, var(--accent), var(--primary));
+  transform: translateX(-50%);
+  transition: width var(--motion-normal) var(--ease-emphasis);
+}
+
+.nav-link:hover::after,
+.nav-link:focus-visible::after {
+  width: 46%;
+}
+
+/* Primary / accent buttons — soft highlight sweep (never neon) */
+.btn-primary,
+.btn-accent {
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-primary::after,
+.btn-accent::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(105deg, transparent 32%, rgba(255, 255, 255, 0.22) 50%, transparent 68%);
+  transform: translateX(-130%);
+  transition: transform 800ms var(--ease-standard);
+  pointer-events: none;
+}
+
+.btn-primary:hover::after,
+.btn-accent:hover::after {
+  transform: translateX(130%);
+}
+
+/* Admin portal entrance + table-row stagger */
+.admin-enter {
+  animation: jt-intro-up 460ms var(--ease-emphasis) both;
+}
+
+.admin-enter tbody tr {
+  animation: jt-intro-up 420ms var(--ease-emphasis) both;
+}
+
+.admin-enter tbody tr:nth-child(1) { animation-delay: 40ms; }
+.admin-enter tbody tr:nth-child(2) { animation-delay: 80ms; }
+.admin-enter tbody tr:nth-child(3) { animation-delay: 120ms; }
+.admin-enter tbody tr:nth-child(4) { animation-delay: 160ms; }
+.admin-enter tbody tr:nth-child(5) { animation-delay: 200ms; }
+.admin-enter tbody tr:nth-child(6) { animation-delay: 240ms; }
+.admin-enter tbody tr:nth-child(7) { animation-delay: 280ms; }
+.admin-enter tbody tr:nth-child(8) { animation-delay: 320ms; }
+
+/* Desktop-only pointer glow (cheap, rAF-driven, no pointer capture) */
+.pointer-glow {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 400ms var(--ease-standard);
+  background: radial-gradient(
+    240px circle at var(--glow-x, 50%) var(--glow-y, 30%),
+    color-mix(in srgb, var(--accent) 11%, transparent),
+    transparent 72%
+  );
+}
+
+.pointer-glow.is-on {
+  opacity: 1;
+}
+
+@media (pointer: coarse), (max-width: 767px) {
+  .pointer-glow {
+    display: none;
+  }
+}
+
+/* ============================================================
+   10. REDUCED MOTION
    ============================================================ */
 @media (prefers-reduced-motion: reduce) {
   *,

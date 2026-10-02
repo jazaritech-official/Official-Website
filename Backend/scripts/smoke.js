@@ -337,7 +337,130 @@ console.log("[smoke] 9. logo upload lifecycle");
   check("unauthenticated upload → 401", unauthorizedUpload.status === 401);
 }
 
-console.log("[smoke] 10. logout");
+console.log("[smoke] 10. super admin + team management");
+{
+  // Configured account is promoted to super_admin and active.
+  const me = await json("/auth/me", { cookie });
+  check("configured admin is super_admin", me.body?.data?.admin?.role === "super_admin", `got ${me.body?.data?.admin?.role}`);
+  check("/auth/me reports isActive", me.body?.data?.admin?.isActive === true);
+  check("/auth/me never returns a password hash", !JSON.stringify(me.body).includes("$2"));
+
+  // JWT carries the role (decoded payload only — signature not trusted here).
+  try {
+    const payloadPart = cookie.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(Buffer.from(payloadPart, "base64").toString("utf8"));
+    check("JWT payload includes super_admin role", payload.role === "super_admin");
+  } catch {
+    check("JWT payload includes super_admin role", false, "could not decode");
+  }
+
+  // Team listing (super admin allowed).
+  const team = await json("/admin/team", { cookie });
+  check("super admin can list team", team.status === 200 && Array.isArray(team.body?.data?.admins));
+  check("team list never exposes password hashes", !JSON.stringify(team.body).includes("$2"));
+
+  // Create a normal administrator.
+  const TEST_PASSWORD = "SmokeTeam!2026";
+  const createdN = await json("/admin/team", {
+    method: "POST",
+    cookie,
+    body: { email: "Smoke.Admin@Example.com", name: "Smoke Admin", role: "admin", password: TEST_PASSWORD },
+  });
+  const nId = createdN.body?.data?.admin?.id;
+  check("create admin → 201", createdN.status === 201, JSON.stringify(createdN.body));
+  check("created email normalized", createdN.body?.data?.admin?.email === "smoke.admin@example.com");
+  check("create response has no password field", !JSON.stringify(createdN.body).toLowerCase().includes("password"));
+
+  const dup = await json("/admin/team", {
+    method: "POST",
+    cookie,
+    body: { email: "smoke.admin@example.com", name: "Dup", role: "admin", password: TEST_PASSWORD },
+  });
+  check("duplicate email → 409", dup.status === 409);
+
+  const weak = await json("/admin/team", {
+    method: "POST",
+    cookie,
+    body: { email: "weak@example.com", name: "Weak", role: "admin", password: "short" },
+  });
+  check("weak password rejected", weak.status === 400);
+
+  // Normal admin logs in and keeps existing permissions, but cannot reach Team.
+  const nLogin = await json("/auth/login", {
+    method: "POST",
+    body: { email: "smoke.admin@example.com", password: TEST_PASSWORD },
+  });
+  const nCookie = cookieFrom(nLogin.response);
+  check("normal admin can sign in", nLogin.status === 200 && nCookie.startsWith("jazari_admin="));
+  const nProducts = await json("/admin/products", { cookie: nCookie });
+  check("normal admin retains existing admin access", nProducts.status === 200);
+  const nTeam = await json("/admin/team", { cookie: nCookie });
+  check("normal admin cannot call team API → 403", nTeam.status === 403);
+
+  // Password reset by a super admin (password is never returned).
+  const NEW_PASSWORD = "SmokeTeam!2027";
+  const reset = await json(`/admin/team/${nId}/password`, {
+    method: "POST",
+    cookie,
+    body: { password: NEW_PASSWORD },
+  });
+  check("super admin can reset a password", reset.status === 200 && reset.body?.data?.reset === true);
+  check("reset response has no password", !JSON.stringify(reset.body).includes(NEW_PASSWORD));
+  const nRelogin = await json("/auth/login", {
+    method: "POST",
+    body: { email: "smoke.admin@example.com", password: NEW_PASSWORD },
+  });
+  check("new password works", nRelogin.status === 200);
+
+  // Deactivation / reactivation take effect immediately (DB re-check).
+  const deactivated = await json(`/admin/team/${nId}/status`, {
+    method: "PATCH",
+    cookie,
+    body: { isActive: false },
+  });
+  check("super admin can deactivate an admin", deactivated.status === 200 && deactivated.body?.data?.admin?.isActive === false);
+  const nBlocked = await json("/admin/products", { cookie: nCookie });
+  check("inactive admin loses access immediately → 403", nBlocked.status === 403);
+
+  const reactivated = await json(`/admin/team/${nId}/status`, {
+    method: "PATCH",
+    cookie,
+    body: { isActive: true },
+  });
+  check("super admin can reactivate an admin", reactivated.status === 200 && reactivated.body?.data?.admin?.isActive === true);
+  const nRestored = await json("/admin/products", { cookie: nCookie });
+  check("reactivated admin regains access", nRestored.status === 200);
+
+  // Self-protection / last-active-super-admin protection.
+  const selfDemote = await json(`/admin/team/${me.body.data.admin.id}/role`, {
+    method: "PATCH",
+    cookie,
+    body: { role: "admin" },
+  });
+  check("cannot demote self → 403", selfDemote.status === 403);
+  const selfDeactivate = await json(`/admin/team/${me.body.data.admin.id}/status`, {
+    method: "PATCH",
+    cookie,
+    body: { isActive: false },
+  });
+  check("cannot deactivate self → 403", selfDeactivate.status === 403);
+  const selfDelete = await json(`/admin/team/${me.body.data.admin.id}`, { method: "DELETE", cookie });
+  check("cannot delete self (last super admin) → 403", selfDelete.status === 403);
+
+  // Delete the normal admin — its session dies immediately.
+  const deleted = await json(`/admin/team/${nId}`, { method: "DELETE", cookie });
+  check("super admin can delete an admin", deleted.status === 200 && deleted.body?.data?.deleted === true);
+  const nGone = await json("/admin/products", { cookie: nCookie });
+  check("deleted admin loses access immediately → 401", nGone.status === 401);
+
+  // Seed is idempotent and never overwrites the configured password by default.
+  const reseed = await runScript(["scripts/seed.js"], { MONGODB_URI: uri });
+  check("re-running seed succeeds", reseed === 0);
+  const relogin = await json("/auth/login", { method: "POST", body: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD } });
+  check("seed preserved the configured password", relogin.status === 200);
+}
+
+console.log("[smoke] 11. logout");
 {
   const out = await json("/auth/logout", { method: "POST", cookie });
   check("logout → 200", out.status === 200);

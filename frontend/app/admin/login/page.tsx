@@ -77,7 +77,7 @@ export default function AdminLoginPage() {
 
       <div className="w-full max-w-sm">
         <div className="mb-7 flex flex-col items-center gap-3 text-center">
-          <Logo variant="horizontal" sizes="220px" className="h-9 w-auto" />
+          <Logo variant="full" sizes="104px" className="h-10" />
           <p className="flex items-center gap-1.5 text-xs text-muted">
             <ShieldIcon size={13} className="text-growth" />
             Secure administration area

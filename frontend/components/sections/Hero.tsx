@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef, type CSSProperties } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/Button";
 import { Counter } from "@/components/motion/Counter";
-import { Reveal } from "@/components/motion/Reveal";
 import { Logo } from "@/components/brand/Logo";
 import { HeroScene } from "@/components/three/HeroScene";
 import {
@@ -22,6 +21,19 @@ const FLOATING_TILES = [
   { Icon: ChipIcon, position: "left-[10%] bottom-[14%]", animation: "float-medium", delay: 1400 },
   { Icon: GlobeIcon, position: "right-[12%] bottom-[6%]", animation: "float-slow", delay: 400 },
 ];
+
+/** Headline split into words for the masked, word-by-word first-load reveal. */
+const HEADLINE_WORDS: Array<{ text: string; accent?: boolean }> = [
+  { text: "Technology" },
+  { text: "that" },
+  { text: "moves" },
+  { text: "your" },
+  { text: "business", accent: true },
+  { text: "forward." },
+];
+
+/** Inline custom property cast for the intro choreography delay. */
+const intro = (delay: string): CSSProperties => ({ "--jt-intro-delay": delay }) as CSSProperties;
 
 const STATS = [
   { value: 10, suffix: "k+", label: "users served" },
@@ -73,7 +85,7 @@ export function Hero() {
   }, []);
 
   return (
-    <section id="home" className="relative overflow-hidden pb-16 pt-32 sm:pb-20 sm:pt-40">
+    <section id="home" className="relative overflow-hidden pb-14 pt-28 sm:pb-20 sm:pt-32">
       {/* Decorative backdrop */}
       <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10">
         <div className="absolute -top-32 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,color-mix(in_srgb,var(--accent)_16%,transparent),transparent_65%)]" />
@@ -93,45 +105,49 @@ export function Hero() {
       <div className="container-page grid items-center gap-14 lg:grid-cols-[1.02fr_0.98fr] lg:gap-8">
         {/* ---------------- Copy ---------------- */}
         <div className="max-w-2xl">
-          <Reveal variant="fade-in">
-            <span className="badge bg-surface-elevated">
-              <span className="badge-dot" aria-hidden="true" />
-              Trusted technology partner
-            </span>
-          </Reveal>
+          <span className="jt-intro badge bg-surface-elevated" style={intro("calc(var(--intro-cta-delay) + 70ms)")}>
+            <span className="badge-dot" aria-hidden="true" />
+            Trusted technology partner
+          </span>
 
-          <Reveal delay={90}>
-            <h1 className="mt-6 text-display font-semibold leading-[1.03] tracking-tight">
-              Technology that moves your{" "}
-              <span className="text-gradient">business</span> forward.
-            </h1>
-          </Reveal>
+          <h1 className="mt-5 text-h1 font-semibold leading-[1.08] tracking-tight">
+            {HEADLINE_WORDS.map((word, index) => (
+              <Fragment key={word.text}>
+                <span
+                  className="jt-word"
+                  style={intro(`calc(var(--intro-headline-delay) + var(--intro-word-step) * ${index})`)}
+                >
+                  <span className={`jt-word-inner${word.accent ? " text-gradient" : ""}`}>{word.text}</span>
+                </span>
+                {index < HEADLINE_WORDS.length - 1 ? " " : null}
+              </Fragment>
+            ))}
+          </h1>
 
-          <Reveal delay={180}>
-            <p className="mt-6 max-w-xl text-base leading-relaxed text-muted sm:text-lg">
-              Jazari Tech designs, builds and operates the software, commerce and AI systems growing
-              companies depend on — from first prototype to production scale, with the engineering
-              discipline of a long-term partner.
-            </p>
-          </Reveal>
+          <p className="jt-intro mt-5 max-w-xl text-base leading-relaxed text-muted sm:text-lg" style={intro("var(--intro-sub-delay)")}>
+            Jazari Tech designs, builds and operates the software, commerce and AI systems growing
+            companies depend on — from first prototype to production scale, with the engineering
+            discipline of a long-term partner.
+          </p>
 
-          <Reveal delay={260}>
-            <div className="mt-9 flex flex-wrap items-center gap-3">
-              <Link href="#start">
-                <Button size="sm" className="px-6 py-3.5 text-sm" iconRight={<ArrowRightIcon size={16} />}>
-                  Start your project
-                </Button>
-              </Link>
-              <Link href="#products">
-                <Button variant="outline" size="sm" className="px-6 py-3.5 text-sm">
-                  Explore our products
-                </Button>
-              </Link>
-            </div>
-          </Reveal>
+          <div className="mt-7 flex flex-wrap items-center gap-3">
+            <Link href="#start" className="jt-intro" style={intro("var(--intro-cta-delay)")}>
+              <Button size="sm" className="px-6 py-3.5 text-sm" iconRight={<ArrowRightIcon size={16} />}>
+                Start your project
+              </Button>
+            </Link>
+            <Link
+              href="#products"
+              className="jt-intro"
+              style={intro("calc(var(--intro-cta-delay) + 80ms)")}
+            >
+              <Button variant="outline" size="sm" className="px-6 py-3.5 text-sm">
+                Explore our products
+              </Button>
+            </Link>
+          </div>
 
-          <Reveal delay={340}>
-            <div className="mt-10 flex flex-wrap items-center gap-x-7 gap-y-4">
+          <div className="jt-intro mt-6 flex flex-wrap items-center gap-x-7 gap-y-4" style={intro("var(--intro-trust-delay)")}>
               {/* Rating */}
               <div className="flex items-center gap-2.5">
                 <div className="flex gap-0.5 text-accent" aria-hidden="true">
@@ -167,23 +183,23 @@ export function Hero() {
                   users onboarded
                 </p>
               </div>
-            </div>
-          </Reveal>
+          </div>
 
           {/* Animated counters */}
-          <Reveal delay={420}>
-            <dl className="mt-10 grid max-w-lg grid-cols-3 gap-4 border-t border-line pt-7">
-              {STATS.map((stat) => (
-                <div key={stat.label}>
-                  <dt className="sr-only">{stat.label}</dt>
-                  <dd className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-                    <Counter value={stat.value} suffix={stat.suffix} decimals={stat.decimals ?? 0} />
-                  </dd>
-                  <p className="mt-1 text-xs text-muted">{stat.label}</p>
-                </div>
-              ))}
-            </dl>
-          </Reveal>
+          <dl
+            className="jt-intro mt-6 grid max-w-lg grid-cols-3 gap-4 border-t border-line pt-6"
+            style={intro("var(--intro-counters-delay)")}
+          >
+            {STATS.map((stat) => (
+              <div key={stat.label}>
+                <dt className="sr-only">{stat.label}</dt>
+                <dd className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+                  <Counter value={stat.value} suffix={stat.suffix} decimals={stat.decimals ?? 0} />
+                </dd>
+                <p className="mt-1 text-xs text-muted">{stat.label}</p>
+              </div>
+            ))}
+          </dl>
         </div>
 
         {/* ---------------- Visual composition ---------------- */}
@@ -235,7 +251,7 @@ export function Hero() {
             className="glass absolute left-0 top-6 hidden size-16 items-center justify-center rounded-2xl shadow-[var(--shadow-card)] sm:flex"
             data-parallax="0.08"
           >
-            <Logo variant="icon" sizes="48px" className="float-medium size-11 dark:bg-transparent dark:p-0" />
+            <Logo variant="mark" sizes="48px" className="float-medium size-11" />
           </div>
           </div>{/* /.hero-decor */}
 

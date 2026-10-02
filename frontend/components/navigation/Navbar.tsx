@@ -78,7 +78,7 @@ export function Navbar() {
   }, [open]);
 
   return (
-    <header className="fixed inset-x-0 top-0 z-[var(--z-navigation)] pt-3 sm:pt-4">
+    <header className="jt-nav fixed inset-x-0 top-0 z-[var(--z-navigation)] pt-3 sm:pt-4">
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[var(--z-toast)] focus:rounded-full focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:text-primary-contrast"
@@ -99,7 +99,7 @@ export function Navbar() {
             className="shrink-0 rounded-full"
             onClick={() => setOpen(false)}
           >
-            <Logo variant="horizontal" sizes="180px" priority className="h-7 w-auto sm:h-8" />
+            <Logo variant="compact" sizes="72px" priority className="jt-logo h-7 sm:h-8" />
           </Link>
 
           <nav aria-label="Primary" className="hidden items-center gap-1 lg:flex">
@@ -107,7 +107,7 @@ export function Navbar() {
               <a
                 key={link.href}
                 href={link.href}
-                className="rounded-full px-3.5 py-2 text-sm font-medium text-muted transition-colors duration-200 hover:bg-surface hover:text-foreground"
+                className="nav-link rounded-full px-3.5 py-2 text-sm font-medium text-muted transition-colors duration-200 hover:bg-surface hover:text-foreground"
               >
                 {link.label}
               </a>
