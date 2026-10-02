@@ -33,16 +33,34 @@ export interface PaginationMeta {
 
 /* --- Public content ------------------------------------------------------- */
 
+export type LogoTone = "light" | "dark" | "colorful";
+export type LogoBackgroundStatus = "removed" | "kept" | "needs-transparent-png";
+
+/** Safe, frontend-facing logo projection returned by the public API. */
 export interface PublicLogo {
   _id: string;
   name: string;
+  /** Human-friendly display name (falls back to `name`). */
+  displayName: string;
   secureUrl: string;
-  alt?: string;
+  alt: string;
+  /** Optional external product link (safe http/https only). */
+  websiteUrl: string;
   sortOrder: number;
+  width: number | null;
+  height: number | null;
+  aspectRatio: number | null;
+  hasAlpha: boolean | null;
+  tone: LogoTone;
+  backgroundStatus: LogoBackgroundStatus;
+  dominantColors: string[];
 }
 
 export interface AdminLogo extends PublicLogo {
   publicId: string;
+  originalUrl?: string;
+  originalPublicId?: string;
+  averageLuminance?: number | null;
   isVisible: boolean;
   createdAt: string;
   updatedAt: string;
@@ -53,13 +71,54 @@ export interface AdminLogosResponse {
   driver: "cloudinary" | "local";
 }
 
-export interface LogoInput {
+/** Server-side processing controls shared by upload / reprocess / bulk fix. */
+export interface LogoProcessingOptions {
+  removeBackground?: boolean;
+  trim?: boolean;
+  tolerance?: number;
+}
+
+export interface LogoInput extends LogoProcessingOptions {
   name: string;
+  displayName?: string;
   alt?: string;
+  websiteUrl?: string;
   isVisible?: boolean;
   sortOrder?: number;
   /** Base64 data URI — sent with progress tracking, never to the browser directly. */
   image?: string;
+}
+
+export interface LogoProcessingResult {
+  status: LogoBackgroundStatus;
+  changed: boolean;
+  alreadyGood?: boolean;
+  reason?: string;
+}
+
+export interface ReprocessLogoResponse {
+  logo: AdminLogo;
+  result: LogoProcessingResult;
+}
+
+export interface BulkFixItem {
+  id: string;
+  name: string;
+  status: "processed" | "already-good" | "needs-transparent-png" | "failed";
+  message?: string;
+}
+
+export interface BulkFixSummary {
+  processed: number;
+  alreadyGood: number;
+  needsTransparentPng: number;
+  failed: number;
+  total: number;
+}
+
+export interface BulkFixResponse {
+  summary: BulkFixSummary;
+  items: BulkFixItem[];
 }
 
 export interface Product {

@@ -75,53 +75,69 @@ function toPublicLogo(doc) {
   };
 }
 
+/** Run the pipeline and return the fields a Logo document would carry. */
+function processedFields(processed) {
+  if (!processed.buffer) {
+    return {
+      width: null,
+      height: null,
+      aspectRatio: null,
+      hasAlpha: null,
+      dominantColors: [],
+      averageLuminance: null,
+      tone: "light",
+      backgroundStatus: "needs-transparent-png",
+    };
+  }
+  const m = processed.metadata;
+  return {
+    width: m.width,
+    height: m.height,
+    aspectRatio: m.aspectRatio,
+    hasAlpha: m.hasAlpha,
+    dominantColors: m.dominantColors,
+    averageLuminance: m.averageLuminance,
+    tone: m.tone,
+    backgroundStatus: processed.backgroundStatus,
+  };
+}
+
+/** True when re-processing would produce the same result (no asset churn). */
+function isEquivalent(logo, fields) {
+  return (
+    logo.width === fields.width &&
+    logo.height === fields.height &&
+    logo.hasAlpha === fields.hasAlpha &&
+    logo.backgroundStatus === fields.backgroundStatus
+  );
+}
+
 /**
- * Run the processing pipeline from an original buffer and persist the processed
- * asset, returning the fields to merge into the Logo document. The original is
- * never overwritten and never deleted here.
+ * Persist a processed result to storage and return the Logo fields to merge.
+ * Falls back to storing the original bytes when the input could not be decoded.
+ */
+async function persistProcessed(originalBuffer, processed) {
+  if (!processed.buffer) {
+    const stored = await storeProcessed(originalBuffer);
+    return { secureUrl: stored.secureUrl, publicId: stored.publicId, ...processedFields(processed) };
+  }
+  const stored = await storeProcessed(processed.buffer);
+  return { secureUrl: stored.secureUrl, publicId: stored.publicId, ...processedFields(processed) };
+}
+
+/**
+ * Process from an original buffer and store the result (used by upload/replace).
+ * The original is never overwritten and never deleted here.
  */
 async function buildProcessedFields(originalBuffer, options) {
   const processed = await processLogoImage(originalBuffer, options);
-
-  if (!processed.buffer) {
-    // Undecodable (e.g. vector-only asset): keep the original bytes as the
-    // delivered asset and report honestly — never fake a transparent result.
-    const stored = await storeProcessed(originalBuffer);
-    return {
-      fields: {
-        secureUrl: stored.secureUrl,
-        publicId: stored.publicId,
-        width: null,
-        height: null,
-        aspectRatio: null,
-        hasAlpha: null,
-        dominantColors: [],
-        averageLuminance: null,
-        tone: "light",
-        backgroundStatus: "needs-transparent-png",
-      },
-      result: { status: "needs-transparent-png", reason: processed.reason, changed: false },
-    };
-  }
-
-  const stored = await storeProcessed(processed.buffer);
-  const m = processed.metadata;
+  const fields = await persistProcessed(originalBuffer, processed);
   return {
-    fields: {
-      secureUrl: stored.secureUrl,
-      publicId: stored.publicId,
-      width: m.width,
-      height: m.height,
-      aspectRatio: m.aspectRatio,
-      hasAlpha: m.hasAlpha,
-      dominantColors: m.dominantColors,
-      averageLuminance: m.averageLuminance,
-      tone: m.tone,
-      backgroundStatus: processed.backgroundStatus,
-    },
+    fields,
     result: {
-      status: processed.backgroundStatus,
-      changed: processed.changed,
+      status: processed.buffer ? processed.backgroundStatus : "needs-transparent-png",
+      changed: processed.buffer ? processed.changed : false,
+      reason: processed.reason,
     },
   };
 }
@@ -269,9 +285,20 @@ export const reprocessLogo = asyncHandler(async (req, res) => {
 
   const options = readProcessingOptions(req.body);
   const bytes = await fetchStoredBytes(logo.originalPublicId);
-  const previousProcessedId = logo.publicId;
-  const { fields, result } = await buildProcessedFields(bytes, options);
+  const processed = await processLogoImage(bytes, options);
+  const next = processedFields(processed);
 
+  // Idempotent: if the pipeline would produce the same asset, keep the existing
+  // processed file (no churn, no orphan) and just report the outcome.
+  if (isEquivalent(logo, next)) {
+    return sendData(res, {
+      logo,
+      result: { status: logo.backgroundStatus, changed: false, alreadyGood: true, reason: processed.reason },
+    });
+  }
+
+  const previousProcessedId = logo.publicId;
+  const fields = await persistProcessed(bytes, processed);
   Object.assign(logo, fields);
   await logo.save();
 
@@ -281,7 +308,14 @@ export const reprocessLogo = asyncHandler(async (req, res) => {
     });
   }
 
-  sendData(res, { logo, result });
+  sendData(res, {
+    logo,
+    result: {
+      status: fields.backgroundStatus,
+      changed: processed.buffer ? processed.changed : false,
+      reason: processed.reason,
+    },
+  });
 });
 
 /** POST /api/admin/logos/:id/revert — restore the untouched original upload. */
@@ -296,6 +330,8 @@ export const revertLogo = asyncHandler(async (req, res) => {
   logo.secureUrl = logo.originalUrl;
   logo.publicId = logo.originalPublicId;
   logo.backgroundStatus = "kept";
+  // The untouched original may not have alpha — never claim it does.
+  logo.hasAlpha = null;
   await logo.save();
 
   if (previousProcessedId && previousProcessedId !== logo.publicId) {
@@ -323,19 +359,33 @@ export const bulkFixLogos = asyncHandler(async (req, res) => {
     try {
       await ensureOriginal(logo);
       const bytes = await fetchStoredBytes(logo.originalPublicId);
-      const previousProcessedId = logo.publicId;
-      const { fields, result } = await buildProcessedFields(bytes, options);
+      const processed = await processLogoImage(bytes, options);
+      const next = processedFields(processed);
 
+      if (isEquivalent(logo, next)) {
+        // Nothing to do — never re-store or delete anything (idempotent).
+        if (next.backgroundStatus === "needs-transparent-png") {
+          summary.needsTransparentPng += 1;
+          items.push({ id: logo._id, name: logo.name, status: "needs-transparent-png" });
+        } else {
+          summary.alreadyGood += 1;
+          items.push({ id: logo._id, name: logo.name, status: "already-good" });
+        }
+        continue;
+      }
+
+      const previousProcessedId = logo.publicId;
+      const fields = await persistProcessed(bytes, processed);
       Object.assign(logo, fields);
       await logo.save();
       if (previousProcessedId && previousProcessedId !== fields.publicId) {
         await deleteImage(previousProcessedId).catch(() => {});
       }
 
-      if (result.status === "needs-transparent-png") {
+      if (fields.backgroundStatus === "needs-transparent-png") {
         summary.needsTransparentPng += 1;
         items.push({ id: logo._id, name: logo.name, status: "needs-transparent-png" });
-      } else if (result.changed) {
+      } else if (processed.buffer && processed.changed) {
         summary.processed += 1;
         items.push({ id: logo._id, name: logo.name, status: "processed" });
       } else {

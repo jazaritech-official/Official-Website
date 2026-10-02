@@ -146,6 +146,7 @@ Envelope: `{ success: true, data, meta? }` or `{ success: false, error: { code, 
 | Public | `GET /api/logos`, `GET /api/products`, `GET /api/services`, `POST /api/submission`, `POST /api/visitor-track` |
 | Auth | `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `POST /api/auth/password` (httpOnly cookie `jazari_admin`) |
 | Admin | dashboard stats, products + templates CRUD, logos upload/replace/reorder/visibility, submissions list/status/CSV export, visitors list — all under `/api/admin/*` behind `requireAuth` |
+| Logo pipeline | `POST /api/admin/logos` (preserve original → process → store), `PUT/DELETE /api/admin/logos/:id`, `POST /api/admin/logos/:id/reprocess`, `POST /api/admin/logos/:id/revert`, `POST /api/admin/logos/bulk-fix` |
 | Team (**super_admin only**) | `GET/POST /api/admin/team`, `PATCH /api/admin/team/:id/role`, `PATCH /api/admin/team/:id/status`, `POST /api/admin/team/:id/password`, `DELETE /api/admin/team/:id` |
 
 Submission references are server-generated as `JT-YYYYMMDD-XXXXXX`. Visitors are deduplicated to
@@ -259,5 +260,25 @@ fallback. It is a progressive enhancement:
   Reduced motion bypasses the choreography entirely.
 
 Full architecture + tuning guides: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §27.
+
+## 11. Logo showcase & image pipeline (Task C)
+
+- **Pipeline** — uploads preserve the untouched original, then run `sharp`: auto-orient → bound to
+  1280×720 (no upscaling) → border-ring analysis → **border-connected flood fill** (never a global
+  colour replace, so enclosed artwork survives) → feathered true alpha → trim → PNG + metadata
+  (`width`, `height`, `aspectRatio`, `hasAlpha`, `dominantColors`, `averageLuminance`, `tone`).
+  `backgroundStatus` is `removed` / `kept` / `needs-transparent-png`; integrity beats forced
+  transparency, so complex or framed backgrounds are preserved and flagged.
+- **Admin** — `/admin/logos` adds a checkerboard before/after preview, remove-background/trim toggles, a
+  tolerance slider, text status badges, **Reprocess**, **Revert to original** and **Fix all existing
+  logos** (idempotent, per-item isolation, summary). Display name and safe http/https website URL are
+  supported. Existing upload/replace/reorder/visibility/delete are preserved.
+- **Public showcase** — `LogoMarquee` is a logo-only wall: **no pill, card or plate** behind any logo.
+  Optical normalization, counter-scrolling seamless rows, tone-aware contrast aids, hover/focus pause +
+  floating label, damped scroll-velocity, off-screen/hidden-tab pause, and a **static wrapped grid**
+  under reduced motion.
+- **Verification** — backend smoke **117/117**; frontend harness **95/95** (+ NO_WEBGL 9/9).
+
+Full architecture + tuning guide: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §28.
 
 Development commands are unchanged (see §4): `npm run dev` in `Backend/` and `frontend/`.

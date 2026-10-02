@@ -14,11 +14,14 @@ import type {
   AdminTeamMember,
   AdminTeamResponse,
   ApiEnvelope,
+  BulkFixResponse,
   CreateAdminInput,
   DashboardStats,
   HealthData,
   LogoInput,
+  LogoProcessingOptions,
   PaginationMeta,
+  ReprocessLogoResponse,
   Product,
   ProductTypeTemplate,
   PublicLogo,
@@ -305,6 +308,11 @@ export const api = {
       reorder: (ids: string[]) => request<{ reordered: number }>("/admin/logos/reorder", { method: "PATCH", body: { ids } }),
       setVisibility: (id: string, isVisible: boolean) =>
         request<AdminLogo>(`/admin/logos/${id}/visibility`, { method: "PATCH", body: { isVisible } }),
+      reprocess: (id: string, options?: LogoProcessingOptions) =>
+        request<ReprocessLogoResponse>(`/admin/logos/${id}/reprocess`, { method: "POST", body: options ?? {} }),
+      revert: (id: string) => request<AdminLogo>(`/admin/logos/${id}/revert`, { method: "POST", body: {} }),
+      bulkFix: (options?: LogoProcessingOptions) =>
+        request<BulkFixResponse>("/admin/logos/bulk-fix", { method: "POST", body: options ?? {} }),
     },
 
     products: {

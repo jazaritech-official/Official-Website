@@ -58,7 +58,7 @@ async function normalizeBuffer(input) {
  * Sample the outer ring of pixels. Returns the dominant quantized border colour,
  * its share of the ring and how transparent the ring already is.
  */
-function analyzeBorder(data, width, height, channels) {
+function analyzeBorder(data, width, height, channels, tolerance) {
   const idx = (x, y) => (y * width + x) * channels;
   const ring = [];
   for (let x = 0; x < width; x += 1) {
@@ -90,13 +90,65 @@ function analyzeBorder(data, width, height, channels) {
     ? { r: sorted[0].r / sorted[0].count, g: sorted[0].g / sorted[0].count, b: sorted[0].b / sorted[0].count }
     : null;
 
+  // Dominance is measured by *colour distance*, not a single quantized bucket —
+  // JPEG noise spreads one solid colour across adjacent buckets, which would
+  // otherwise make a genuinely solid background look "complex".
+  const maxDist = (clamp(tolerance, 0, 100) / 100) * 441;
+  let near = 0;
+  if (dominant) {
+    for (const i of ring) {
+      if (data[i + 3] < 16) continue;
+      const dr = data[i] - dominant.r;
+      const dg = data[i + 1] - dominant.g;
+      const db = data[i + 2] - dominant.b;
+      if (Math.sqrt(dr * dr + dg * dg + db * db) <= maxDist) near += 1;
+    }
+  }
+
   return {
     transparentShare: transparent / total,
     opaqueShare: 1 - transparent / total,
-    dominantShare: sorted[0] ? sorted[0].count / total : 0,
+    dominantShare: total ? near / total : 0,
     dominant,
     distinctBuckets: sorted.length,
   };
+}
+
+/** Global dominant opaque colour and its share of the whole image. */
+function globalDominant(data, width, height, channels) {
+  const buckets = new Map();
+  let opaque = 0;
+  for (let i = 0; i < data.length; i += channels) {
+    if (data[i + 3] < 16) continue;
+    opaque += 1;
+    const key = `${data[i] >> 4},${data[i + 1] >> 4},${data[i + 2] >> 4}`;
+    const entry = buckets.get(key) ?? { count: 0, r: 0, g: 0, b: 0 };
+    entry.count += 1;
+    entry.r += data[i];
+    entry.g += data[i + 1];
+    entry.b += data[i + 2];
+    buckets.set(key, entry);
+  }
+  const top = [...buckets.values()].sort((a, b) => b.count - a.count)[0];
+  if (!top || opaque === 0) return null;
+  return {
+    color: { r: top.r / top.count, g: top.g / top.count, b: top.b / top.count },
+    share: top.count / opaque,
+  };
+}
+
+/** Share of the whole image within `maxDist` of a reference colour. */
+function colorShare(data, channels, color, maxDist) {
+  let count = 0;
+  let total = 0;
+  for (let i = 0; i < data.length; i += channels) {
+    total += 1;
+    const dr = data[i] - color.r;
+    const dg = data[i + 1] - color.g;
+    const db = data[i + 2] - color.b;
+    if (Math.sqrt(dr * dr + dg * dg + db * db) <= maxDist) count += 1;
+  }
+  return total ? count / total : 0;
 }
 
 /**
@@ -283,14 +335,32 @@ export async function processLogoImage(input, options = {}) {
   const width = info.width;
   const height = info.height;
 
-  const border = analyzeBorder(data, width, height, channels);
+  const border = analyzeBorder(data, width, height, channels, tolerance);
 
   // Already transparent (border is mostly transparent): just trim + metadata.
   let alpha = null;
   let backgroundStatus;
   let changed = false;
 
-  const isComplex = border.opaqueShare > 0.4 && border.dominantShare < 0.5;
+  const global = globalDominant(data, width, height, channels);
+  const maxDist = (clamp(tolerance, 0, 100) / 100) * 441;
+  const borderVsGlobalDist =
+    border.dominant && global
+      ? Math.hypot(border.dominant.r - global.color.r, border.dominant.g - global.color.g, border.dominant.b - global.color.b)
+      : 0;
+  // Frame detection: the border colour is *different* from the image's dominant
+  // colour, but only a thin sliver of the image is the border colour while a
+  // large share is one enclosed colour. That is a decorative frame around an
+  // opaque field (black inside a gold frame) — removing it would eat the frame
+  // and leave a solid block, so we treat it as complex and keep the original.
+  const borderImageShare = border.dominant ? colorShare(data, channels, border.dominant, maxDist) : 1;
+  const isFramed =
+    Boolean(global) &&
+    borderVsGlobalDist > maxDist &&
+    borderImageShare < 0.2 &&
+    global.share > 0.4;
+
+  const isComplex = isFramed || (border.opaqueShare > 0.4 && border.dominantShare < 0.5);
 
   if (border.transparentShare >= 0.6) {
     backgroundStatus = "removed";
@@ -298,14 +368,17 @@ export async function processLogoImage(input, options = {}) {
     // 5–7. border-connected flood fill + true alpha.
     const filled = floodFillBackground(data, width, height, channels, border.dominant, tolerance);
     const removedShare = filled.removedCount / (width * height);
-    // Integrity guards: if we removed almost nothing, or (nearly) everything, the
-    // "background" is not a safe solid — keep the artwork untouched.
-    if (removedShare >= 0.02 && removedShare <= 0.9 && filled.removedCount > 0) {
+    // Integrity guards. A real background field is a substantial share of the
+    // image; a tiny (<3%) removal means we are eating a decorative *border*
+    // (e.g. a logo whose gold frame outlines a black field), and removing
+    // everything means the image is one flat colour. In both cases we keep the
+    // artwork intact and flag it instead of faking transparency.
+    if (removedShare >= 0.03 && removedShare <= 0.9 && filled.removedCount > 0) {
       alpha = filled.alpha;
       backgroundStatus = "removed";
       changed = true;
     } else {
-      backgroundStatus = removedShare > 0.9 ? "needs-transparent-png" : "kept";
+      backgroundStatus = "needs-transparent-png";
     }
   } else if (isComplex) {
     // Complex/opaque outer field (photo, textured, enclosed frame): preserve.

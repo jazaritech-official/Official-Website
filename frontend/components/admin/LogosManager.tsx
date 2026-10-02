@@ -5,11 +5,12 @@ import Image from "next/image";
 import { api, ApiError } from "@/lib/api";
 import { useAsync } from "@/hooks/useAsync";
 import { Button } from "@/components/ui/Button";
-import { Badge } from "@/components/ui/Badge";
+import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Spinner } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
+  CheckIcon,
   ChevronRightIcon,
   CloseIcon,
   EyeIcon,
@@ -18,7 +19,7 @@ import {
   TrashIcon,
   UploadIcon,
 } from "@/components/icons";
-import type { AdminLogo } from "@/types/api";
+import type { AdminLogo, BulkFixResponse, LogoBackgroundStatus } from "@/types/api";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"];
@@ -38,6 +39,23 @@ function readAsDataUri(file: File): Promise<string> {
   });
 }
 
+/** Text badge for the processing outcome — never colour-only. */
+const STATUS_META: Record<LogoBackgroundStatus, { label: string; tone: BadgeTone }> = {
+  removed: { label: "Transparent", tone: "success" },
+  kept: { label: "Background kept", tone: "neutral" },
+  "needs-transparent-png": { label: "Needs transparent PNG", tone: "warning" },
+};
+
+function StatusBadge({ logo }: { logo: AdminLogo }) {
+  const meta = STATUS_META[logo.backgroundStatus] ?? STATUS_META.kept;
+  return <Badge tone={meta.tone}>{meta.label}</Badge>;
+}
+
+/** Checkerboard surface — a *preview-only* transparency backdrop, never a plate. */
+function CheckerSurface({ children }: { children: React.ReactNode }) {
+  return <div className="logo-checker flex items-center justify-center rounded-xl p-3">{children}</div>;
+}
+
 function LogoSkeleton() {
   return (
     <div className="card flex items-center gap-4 p-4" aria-hidden="true">
@@ -50,11 +68,6 @@ function LogoSkeleton() {
   );
 }
 
-/**
- * Logo library: drag-and-drop upload to storage (Cloudinary in production),
- * metadata editing, reordering, visibility control and safe deletion
- * (storage asset first, database record second).
- */
 export function LogosManager() {
   const { data, loading, error, run, setData } = useAsync(() => api.admin.logos.list());
 
@@ -62,7 +75,12 @@ export function LogosManager() {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [name, setName] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [alt, setAlt] = useState("");
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [removeBackground, setRemoveBackground] = useState(true);
+  const [trim, setTrim] = useState(true);
+  const [tolerance, setTolerance] = useState(22);
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
@@ -73,6 +91,10 @@ export function LogosManager() {
   const [pendingDelete, setPendingDelete] = useState<AdminLogo | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkResult, setBulkResult] = useState<BulkFixResponse | null>(null);
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);
@@ -80,7 +102,6 @@ export function LogosManager() {
 
   const logos = data?.logos ?? [];
 
-  /* Release object URLs on unmount / replacement. */
   useEffect(() => {
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -121,7 +142,9 @@ export function LogosManager() {
       return null;
     });
     setName("");
+    setDisplayName("");
     setAlt("");
+    setWebsiteUrl("");
     setFieldError(null);
     setUploadError(null);
     setProgress(0);
@@ -147,7 +170,16 @@ export function LogosManager() {
     try {
       const dataUri = await readAsDataUri(file);
       await api.admin.logos.create(
-        { name: name.trim(), alt: alt.trim() || name.trim(), image: dataUri },
+        {
+          name: name.trim(),
+          displayName: displayName.trim() || undefined,
+          alt: alt.trim() || displayName.trim() || name.trim(),
+          websiteUrl: websiteUrl.trim() || undefined,
+          image: dataUri,
+          removeBackground,
+          trim,
+          tolerance,
+        },
         { onProgress: setProgress, signal: controller.signal },
       );
       resetPanel();
@@ -183,7 +215,6 @@ export function LogosManager() {
       await api.admin.logos.setVisibility(logo._id, nextVisible);
       await run({ silent: true });
     } catch {
-      // Roll back on failure.
       setData((current) =>
         current
           ? {
@@ -216,6 +247,32 @@ export function LogosManager() {
     }
   };
 
+  const reprocess = async (logo: AdminLogo) => {
+    setBusyId(logo._id);
+    setUploadError(null);
+    try {
+      await api.admin.logos.reprocess(logo._id, { removeBackground, trim, tolerance });
+      await run({ silent: true });
+    } catch (cause) {
+      setUploadError(cause instanceof ApiError ? cause.message : "Could not reprocess this logo.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const revert = async (logo: AdminLogo) => {
+    setBusyId(logo._id);
+    setUploadError(null);
+    try {
+      await api.admin.logos.revert(logo._id);
+      await run({ silent: true });
+    } catch (cause) {
+      setUploadError(cause instanceof ApiError ? cause.message : "Could not revert this logo.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const pickReplacement = (logo: AdminLogo) => {
     replaceTargetRef.current = logo;
     replaceInputRef.current?.click();
@@ -237,7 +294,7 @@ export function LogosManager() {
     setUploadError(null);
     try {
       const dataUri = await readAsDataUri(selected);
-      await api.admin.logos.update(target._id, { image: dataUri });
+      await api.admin.logos.update(target._id, { image: dataUri, removeBackground, trim, tolerance });
       await run({ silent: true });
     } catch (cause) {
       setUploadError(cause instanceof ApiError ? cause.message : "Could not replace the image. Please retry.");
@@ -262,6 +319,22 @@ export function LogosManager() {
     }
   };
 
+  const runBulkFix = async () => {
+    setBulkConfirmOpen(false);
+    setBulkRunning(true);
+    setBulkResult(null);
+    setUploadError(null);
+    try {
+      const result = await api.admin.logos.bulkFix({ removeBackground, trim, tolerance });
+      setBulkResult(result);
+      await run({ silent: true });
+    } catch (cause) {
+      setUploadError(cause instanceof ApiError ? cause.message : "Bulk processing failed. Please retry.");
+    } finally {
+      setBulkRunning(false);
+    }
+  };
+
   /* --- Render ------------------------------------------------------------- */
 
   return (
@@ -277,9 +350,18 @@ export function LogosManager() {
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => void run()} iconLeft={<RefreshIcon size={14} />}>
             Refresh
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={bulkRunning || logos.length === 0}
+            onClick={() => setBulkConfirmOpen(true)}
+            iconLeft={<CheckIcon size={14} />}
+          >
+            {bulkRunning ? "Fixing logos…" : "Fix all existing logos"}
           </Button>
           <Button
             size="sm"
@@ -297,6 +379,38 @@ export function LogosManager() {
         </p>
       )}
 
+      {bulkRunning && (
+        <div
+          role="status"
+          className="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 text-sm text-muted"
+        >
+          <Spinner label="Processing" />
+          Processing every logo from its preserved original…
+        </div>
+      )}
+
+      {bulkResult && (
+        <div className="rounded-xl border border-line bg-surface px-4 py-3 text-sm">
+          <p className="font-semibold text-foreground">Bulk fix complete</p>
+          <p className="mt-1 text-muted">
+            {bulkResult.summary.processed} processed · {bulkResult.summary.alreadyGood} already good ·{" "}
+            {bulkResult.summary.needsTransparentPng} need a transparent PNG · {bulkResult.summary.failed} failed ·{" "}
+            {bulkResult.summary.total} total
+          </p>
+          {bulkResult.summary.failed > 0 && (
+            <ul className="mt-2 list-inside list-disc text-xs text-danger">
+              {bulkResult.items
+                .filter((item) => item.status === "failed")
+                .map((item) => (
+                  <li key={item.id}>
+                    {item.name}: {item.message ?? "failed"}
+                  </li>
+                ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {/* Uploader */}
       {panelOpen && (
         <section aria-label="Upload a logo" className="card space-y-5 p-5 sm:p-6">
@@ -312,10 +426,30 @@ export function LogosManager() {
             }`}
           >
             {previewUrl ? (
-              <div className="flex flex-col items-center gap-3">
-                <div className="relative flex h-24 items-center justify-center rounded-xl border border-line bg-surface-elevated p-3">
-                  {/* eslint-disable-next-line @next/next/no-img-element -- blob preview is temporary */}
-                  <img src={previewUrl} alt="Selected logo preview" className="max-h-20 max-w-56 object-contain" />
+              <div className="flex w-full flex-col items-center gap-3">
+                <div className="flex w-full flex-wrap items-center justify-center gap-4">
+                  <figure className="flex flex-col items-center gap-1.5">
+                    <figcaption className="text-[0.7rem] font-semibold uppercase tracking-wide text-muted">
+                      Before
+                    </figcaption>
+                    <CheckerSurface>
+                      {/* eslint-disable-next-line @next/next/no-img-element -- blob preview is temporary */}
+                      <img src={previewUrl} alt="Selected logo preview" className="max-h-24 max-w-56 object-contain" />
+                    </CheckerSurface>
+                  </figure>
+                  <span aria-hidden="true" className="text-muted-soft">
+                    →
+                  </span>
+                  <figure className="flex flex-col items-center gap-1.5">
+                    <figcaption className="text-[0.7rem] font-semibold uppercase tracking-wide text-muted">
+                      After (processed on upload)
+                    </figcaption>
+                    <CheckerSurface>
+                      <span className="px-3 py-6 text-xs text-muted">
+                        Processed preview appears here after upload
+                      </span>
+                    </CheckerSurface>
+                  </figure>
                 </div>
                 <p className="max-w-xs truncate text-xs text-muted">
                   {file?.name} · {file ? (file.size / 1024).toFixed(0) : 0} KB
@@ -365,6 +499,19 @@ export function LogosManager() {
               />
             </div>
             <div>
+              <label htmlFor="logo-display-name" className="label">
+                Display name <span className="font-normal">(optional)</span>
+              </label>
+              <input
+                id="logo-display-name"
+                className="field"
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                placeholder="Northwind"
+                disabled={uploading}
+              />
+            </div>
+            <div>
               <label htmlFor="logo-alt" className="label">
                 Alt text <span className="font-normal">(optional)</span>
               </label>
@@ -377,7 +524,67 @@ export function LogosManager() {
                 disabled={uploading}
               />
             </div>
+            <div>
+              <label htmlFor="logo-website" className="label">
+                Website URL <span className="font-normal">(optional)</span>
+              </label>
+              <input
+                id="logo-website"
+                type="url"
+                inputMode="url"
+                className="field"
+                value={websiteUrl}
+                onChange={(event) => setWebsiteUrl(event.target.value)}
+                placeholder="https://example.com"
+                disabled={uploading}
+              />
+            </div>
           </div>
+
+          <fieldset className="space-y-4 rounded-2xl border border-line bg-surface p-4">
+            <legend className="px-1 text-xs font-semibold uppercase tracking-wide text-muted">
+              Processing (server-side)
+            </legend>
+            <label className="flex items-center gap-3 text-sm">
+              <input
+                type="checkbox"
+                className="size-4 accent-[var(--accent)]"
+                checked={removeBackground}
+                onChange={(event) => setRemoveBackground(event.target.checked)}
+                disabled={uploading}
+              />
+              Remove background (border-connected flood fill)
+            </label>
+            <label className="flex items-center gap-3 text-sm">
+              <input
+                type="checkbox"
+                className="size-4 accent-[var(--accent)]"
+                checked={trim}
+                onChange={(event) => setTrim(event.target.checked)}
+                disabled={uploading}
+              />
+              Trim empty padding
+            </label>
+            <div>
+              <label htmlFor="logo-tolerance" className="flex items-center justify-between text-sm">
+                <span>Background tolerance</span>
+                <span className="text-muted">{tolerance}</span>
+              </label>
+              <input
+                id="logo-tolerance"
+                type="range"
+                min={0}
+                max={100}
+                value={tolerance}
+                onChange={(event) => setTolerance(Number(event.target.value))}
+                disabled={uploading || !removeBackground}
+                className="mt-2 w-full accent-[var(--accent)]"
+              />
+              <p className="mt-1 text-xs text-muted">
+                Higher removes more near-matching background; keep it low to protect enclosed artwork.
+              </p>
+            </div>
+          </fieldset>
 
           {uploading && (
             <div>
@@ -410,12 +617,7 @@ export function LogosManager() {
                 Stop upload
               </Button>
             ) : (
-              <Button
-                size="sm"
-                onClick={() => void upload()}
-                loading={uploading}
-                iconLeft={<UploadIcon size={14} />}
-              >
+              <Button size="sm" onClick={() => void upload()} loading={uploading} iconLeft={<UploadIcon size={14} />}>
                 {uploadError ? "Retry upload" : "Upload"}
               </Button>
             )}
@@ -444,7 +646,7 @@ export function LogosManager() {
       ) : logos.length === 0 ? (
         <EmptyState
           title="No logos uploaded yet"
-          description="Upload client, partner and product logos — they appear in the public marquee as soon as they're marked visible."
+          description="Upload client, partner and product logos — they appear in the public showcase as soon as they're marked visible."
           icon={<UploadIcon size={22} />}
           action={
             <Button size="sm" onClick={() => setPanelOpen(true)}>
@@ -457,16 +659,35 @@ export function LogosManager() {
           {logos.map((logo, index) => (
             <li key={logo._id} className="card flex flex-wrap items-center gap-4 p-4">
               <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-line bg-surface-elevated p-2">
-                <Image src={logo.secureUrl} alt={logo.alt || logo.name} width={64} height={64} sizes="64px" className="max-h-14 max-w-full object-contain" />
+                <Image
+                  src={logo.secureUrl}
+                  alt={logo.alt || logo.displayName || logo.name}
+                  width={64}
+                  height={64}
+                  sizes="64px"
+                  className="max-h-14 max-w-full object-contain"
+                />
               </div>
 
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold text-foreground">{logo.name}</p>
+                <p className="truncate text-sm font-semibold text-foreground">
+                  {logo.name}
+                  {logo.displayName && logo.displayName !== logo.name ? (
+                    <span className="ml-2 font-normal text-muted">· {logo.displayName}</span>
+                  ) : null}
+                </p>
                 <p className="mt-0.5 truncate text-xs text-muted">{logo.alt || "No alt text"}</p>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <StatusBadge logo={logo} />
                   <Badge tone={logo.isVisible ? "success" : "neutral"}>
                     {logo.isVisible ? "Visible on site" : "Hidden"}
                   </Badge>
+                  {logo.width && logo.height ? (
+                    <Badge tone="neutral">
+                      {logo.width}×{logo.height}
+                    </Badge>
+                  ) : null}
+                  {logo.tone ? <Badge tone="neutral">{logo.tone}</Badge> : null}
                   <Badge tone="neutral">Order {logo.sortOrder}</Badge>
                 </div>
               </div>
@@ -505,11 +726,29 @@ export function LogosManager() {
                 <button
                   type="button"
                   className="btn btn-ghost btn-icon"
+                  aria-label={`Reprocess ${logo.name}`}
+                  disabled={busyId === logo._id}
+                  onClick={() => void reprocess(logo)}
+                >
+                  <CheckIcon size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-icon"
+                  aria-label={`Revert ${logo.name} to its original upload`}
+                  disabled={busyId === logo._id || !logo.originalPublicId}
+                  onClick={() => void revert(logo)}
+                >
+                  <RefreshIcon size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-icon"
                   aria-label={`Replace image for ${logo.name}`}
                   disabled={busyId === logo._id}
                   onClick={() => pickReplacement(logo)}
                 >
-                  <RefreshIcon size={16} />
+                  <UploadIcon size={16} />
                 </button>
                 <button
                   type="button"
@@ -538,11 +777,21 @@ export function LogosManager() {
       <ConfirmDialog
         open={pendingDelete !== null}
         title="Delete this logo?"
-        message={`“${pendingDelete?.name ?? ""}” will be removed from storage and from the database. This cannot be undone.`}
+        message={`“${pendingDelete?.name ?? ""}” will be removed from storage (processed and original assets) and from the database. This cannot be undone.`}
         confirmLabel="Delete logo"
         busy={deleting}
         onConfirm={() => void confirmDelete()}
         onCancel={() => setPendingDelete(null)}
+      />
+
+      <ConfirmDialog
+        open={bulkConfirmOpen}
+        title="Fix all existing logos?"
+        message="Every logo will be reprocessed from its preserved original using the current settings. This is safe and idempotent — logos that already look right are left untouched."
+        confirmLabel="Fix all logos"
+        busy={bulkRunning}
+        onConfirm={() => void runBulkFix()}
+        onCancel={() => setBulkConfirmOpen(false)}
       />
     </div>
   );

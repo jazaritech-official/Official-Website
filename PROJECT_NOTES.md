@@ -129,9 +129,12 @@ All responses use one contract:
 | PATCH | `/api/admin/team/:id/role` · `/:id/status` | JWT + **super_admin** | Change role / activate-deactivate |
 | POST | `/api/admin/team/:id/password` | JWT + **super_admin** | Reset an administrator's password |
 | DELETE | `/api/admin/team/:id` | JWT + **super_admin** | Delete an administrator |
-| GET/POST | `/api/admin/logos` | JWT | List / upload (Cloudinary) |
-| PUT/DELETE | `/api/admin/logos/:id` | JWT | Update / delete (Cloudinary delete) |
+| GET/POST | `/api/admin/logos` | JWT | List / upload (preserve original → process → store) |
+| PUT/DELETE | `/api/admin/logos/:id` | JWT | Update / replace (re-process) / delete (processed + original) |
 | PATCH | `/api/admin/logos/reorder` · `/api/admin/logos/:id/visibility` | JWT | Ordering / visibility |
+| POST | `/api/admin/logos/:id/reprocess` | JWT | Re-run pipeline from the preserved original (idempotent) |
+| POST | `/api/admin/logos/:id/revert` | JWT | Restore the untouched original upload |
+| POST | `/api/admin/logos/bulk-fix` | JWT | Process all logos from their originals (per-item isolation) |
 | GET/POST | `/api/admin/products` | JWT | List / create |
 | GET/PUT/DELETE | `/api/admin/products/:id` | JWT | Read / update / delete |
 | PATCH | `/api/admin/products/reorder` | JWT | Ordering |
@@ -149,7 +152,7 @@ All responses use one contract:
 |-------|-----------|
 | `Admin` | email, **name**, passwordHash, **role** (`admin` \| `super_admin`), **isActive**, lastLoginAt |
 | `AuditLog` | actorId, actorEmail, action, targetId, targetEmail, metadata, ip, createdAt |
-| `Logo` | name, secureUrl, publicId, alt, sortOrder, isVisible |
+| `Logo` | name, displayName, secureUrl, publicId, alt, websiteUrl, **originalUrl, originalPublicId**, **width, height, aspectRatio, hasAlpha, dominantColors[], averageLuminance, tone, backgroundStatus**, sortOrder, isVisible |
 | `Product` | name, logo, productUrl, category, highlightPoints[], isPublished, sortOrder |
 | `ProductTypeTemplate` | type, highlightPoints[] |
 | `Submission` | name, domain, phone, email, service, referenceId, visitorIp, status (`New`/`Contacted`/`Closed`) |
@@ -185,10 +188,12 @@ All responses use one contract:
 ## 11. Cloudinary Architecture
 
 - Server-side uploads only; credentials never reach the browser.
-- Admin sends a validated base64 data URI → backend uploads with
-  `quality: auto:best`, `format: auto`, capped at 1280×720 (`limit` + `fill` crop).
-- Mongo stores `secureUrl` + `publicId`.
-- Delete order: Cloudinary asset first, then Mongo record (failure is reported, state kept consistent).
+- Admin sends a validated base64 data URI → backend stores the **untouched original**
+  (`jazari/logos/originals`, `quality: auto:best`), runs the image pipeline, and stores the
+  **processed PNG** (`jazari/logos/processed`, explicit `format: png` so transparency survives).
+- Mongo stores the processed `secureUrl`+`publicId` **and** the preserved `originalUrl`+`originalPublicId`.
+- Delete order: storage assets first (processed + original), then the Mongo record; a storage failure
+  aborts and keeps state consistent. Delete never touches shared/other assets.
 
 ## 12. Visitor Tracking
 
@@ -277,6 +282,11 @@ no-flash script before first paint.
 - Task B Phases 5–6 — hero layout rebalance + Three.js logo rebuilt as straight extruded ribbons.
 - Task B Phases 7–8 — motion tokens, first-load choreography, site-wide polish (glow, nav, buttons…).
 - Task B Phases 9–10 — performance/a11y/responsive audit + harness extensions and screenshots.
+- **Task C** — premium “Our Products” logo-only showcase + a professional, reversible logo image
+  pipeline (preserve original → border flood-fill background removal → metadata/tone → reprocess /
+  revert / bulk fix), admin Logos Manager upgrades (checkerboard before/after, toggles, badges, bulk
+  fix, display name, website URL), theme legibility, interaction/motion polish, a11y/perf, and a 15-check
+  logo harness. See §28.
 - 3D Phase 1 — repo audit, `three@0.186.1` + `@types/three@0.186.0` installed (only new deps).
 - 3D Phase 2 — foundation: renderer/RAF/quality/theme/fallback/lazy loading + route isolation.
 - 3D Phase 3 — materials, PMREM environment, studio lighting, procedural ribbon diamond.
@@ -306,6 +316,13 @@ no-flash script before first paint.
 - **Lighthouse not runnable here** — no score is claimed. Bundle facts are reported instead (see §26.17).
 - Synthetic sustained-FPS downgrade could not be forced under SwiftShader; FPS monitor verified by review.
 - Dev-only: `CLIENT_ORIGIN` includes `http://localhost:3001` for the production-preview harness.
+- **Task C:** logos with a baked opaque/complex background (e.g. Irhas'Inn: a black field inside a gold
+  frame) are **not** force-cleaned — they are preserved and flagged `needs-transparent-png` and should
+  be replaced with a genuinely transparent PNG by the owner.
+- **Task C:** `Backend/.env` sets `NODE_ENV=production`; running the backend smoke test therefore needs
+  `NODE_ENV=test` (the harness/smoke set it for the spawned server). No secret values are recorded here.
+- The `prefers-reduced-motion` theme-legibility harness check is vacuous when no light-tone logo exists
+  in the dataset (asserted but not exercised).
 
 ## 25. Dated Changelog
 
@@ -968,6 +985,120 @@ the existing static fallback. React only manages lifecycle; every Three.js conce
 - The harness runs against the **production preview** (`next start -p 3001`); the dev server on :3000 is
   unaffected.
 
+## 2026-10-02 — Task C Phases 5–9: Premium logo-only showcase + harness
+
+### Completed
+- **Phase 5 — showcase rebuilt** (`components/products/LogoMarquee.tsx`): a labelled region
+  (`aria-labelledby="products-showcase-heading"`) with eyebrow, real heading + `.heading-rule`,
+  supporting copy and an **API-derived** product count (`Counter`). Logos float directly on the page —
+  the item, frame and image all have `background: transparent; border: none; box-shadow: none` (never a
+  pill/card/plate). Optical normalization via a shared optical box (`--logo-w`/`--logo-h` +
+  `object-fit: contain`). Rows are counter-scrolling with slightly different speeds; each row repeats
+  its set to `MIN_ROW_ITEMS` (12) and is duplicated, so the `-50%` loop is seamless and fills ultrawide
+  viewports. All visual repeats are `aria-hidden` + `tabIndex -1`; only the logical set is in the a11y
+  tree. Empty / error / loading states are designed (logo-shaped skeleton, never pills).
+- **Phase 6 — theme legibility:** `tone`-driven, **non-rectangular** contrast aids via `filter:
+  drop-shadow(...)` on the image only — dark logos glow softly on dark surfaces, light logos get a
+  navy/blue edge glow on light surfaces, colourful marks keep their real colours. No plates, no
+  recolouring, no second theme system (reuses `useTheme`).
+- **Phase 7 — interaction + motion:** hover **and** keyboard focus pause the relevant row, lift/scale the
+  logo, add a Technology Blue glow and slide in the floating name label (with a Growth-Green micro-dot
+  when the logo links out). Idle float, section-level ambient glow and hairlines with a subtle shimmer.
+  Damped **scroll-velocity awareness** (one rAF, capped, returns to base, disabled under reduced
+  motion). Off-screen pause (IntersectionObserver) and hidden-tab pause. **Reduced motion → a static,
+  centred wrapped grid** (no marquee, float or shimmer). External links use
+  `target="_blank" rel="noopener noreferrer"`.
+- **Phase 8 — a11y + performance:** semantic region + heading, meaningful alt (falls back to display
+  name), non-card focus indication, colour never the only signal; transform/opacity only, no per-logo
+  timers, one rAF, `will-change` only on the tracks; measured bundle impact below.
+- **Phase 9 — harness + screenshots:** `scripts/verify-three.mjs` extended with a `[12]` block of **15
+  logo checks** (no pill/card, images load, fallback monogram, seamless loop, hover/focus pause, reduced
+  motion grid, theme legibility, CLS, responsive, API contract, 0/1/3/12 logos via response
+  interception). The old 1×1 fixture seeding was replaced with the real brand mark. **95/95** passed and
+  `NO_WEBGL` **9/9**.
+- Added `scripts/capture-products.mjs` for before/after showcase screenshots.
+
+### Files Changed
+- `frontend/components/products/LogoMarquee.tsx` (rebuilt), `frontend/app/globals.css` (showcase
+  styles + `.logo-checker`), `frontend/scripts/verify-three.mjs` (extended),
+  `frontend/scripts/capture-products.mjs` (new).
+
+### Verification
+- `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅ (14 routes).
+- `node scripts/verify-three.mjs` ✅ **95/95** · `NO_WEBGL=1 …` ✅ **9/9**.
+- Real data run: `Fix all existing logos` over the current dataset → `{processed:2, alreadyGood:1,
+  needsTransparentPng:1, failed:0}` (WS Toys + VPSA cleaned; UCF already transparent; Irhas'Inn flagged).
+- Screenshots: `test-output/screenshots/{before,after}-{light,dark}-{desktop-1366x768,mobile-390x844}.png`.
+
+### Bundle facts (measured)
+- Home referenced JS: 671,676 B raw / **207,194 B gz** (Task B: 668,171 / 206,228 → +3,505 raw / +966 gz).
+- `/admin/logos` referenced JS: 643,674 B raw / **199,542 B gz** (Task B admin initial 630,394 / 196,212).
+
+### Known issues
+- The `prefers-reduced-motion` theme-legibility check passes vacuously when the dataset has no
+  light-tone logos (asserted but not exercised) — recorded honestly.
+
+## 2026-10-02 — Task C Phases 3–4: Admin Logos Manager + frontend contract
+
+### Completed
+- **Phase 4 — contract sync:** `frontend/types/api.ts` + `frontend/lib/api.ts` now mirror the backend
+  exactly (`PublicLogo` with displayName/websiteUrl/tone/backgroundStatus/dimensions/dominantColors,
+  `AdminLogo` with original refs, `LogoProcessingOptions`, `ReprocessLogoResponse`, `BulkFixResponse`).
+  Same single API client — no second client. `api.admin.logos.{reprocess,revert,bulkFix}` added.
+- **Phase 3 — Logos Manager** (`components/admin/LogosManager.tsx`, extended not rewritten):
+  before/after preview on a **checkerboard transparency surface** (preview-only, never part of the
+  logo), Remove-background toggle, tolerance slider, Trim toggle, server-side processing, text status
+  badges (`Transparent` / `Background kept` / `Needs transparent PNG` — never colour-only),
+  Reprocess, Revert to original, and **“Fix all existing logos”** bulk action with confirmation,
+  progress, and a processed/already-good/needs-PNG/failed/total summary + failure list. Existing
+  upload/replace/reorder/show-hide/delete and progress UI preserved. Optional display name + website
+  URL fields added (client validation is UX only).
+- `globals.css`: added the admin-only `.logo-checker` transparency preview surface.
+
+### Files Changed
+- `frontend/types/api.ts`, `frontend/lib/api.ts`, `frontend/components/admin/LogosManager.tsx`,
+  `frontend/app/globals.css`, `PROJECT_NOTES.md`.
+
+### Verification
+- `frontend`: `npx tsc --noEmit` ✅, `npm run lint` ✅ (0 problems), `npm run build` ✅ (14 routes).
+
+## 2026-10-02 — Task C Phase 2: Backend logo image pipeline
+
+### Completed
+- **`sharp` installed** (single permitted image dependency; prebuilt Windows binaries — no compiler).
+- **`services/imageProcessor.js`** — deterministic pipeline: decode → auto-orient → bound to 1280×720
+  (no upscaling) → border ring analysis → **border-connected flood fill** (never a global colour
+  replace; tolerance 0–100 → RGB distance) → true alpha with a ~1.35× feather band → transparent-pad
+  trim → PNG with alpha → metadata (`width, height, aspectRatio, hasAlpha, dominantColors,
+  averageLuminance, tone`).
+- **Background confidence:** `removed` (safe solid/near-solid, bounded removal share) · `kept`
+  (nothing safely removed) · `needs-transparent-png` (complex/opaque outer field, undecodable input,
+  or removal outside safe bounds). Integrity always beats forced transparency.
+- **`storageService.js`** — added `storeOriginal`, `storeProcessed`, `fetchStoredBytes`; both Cloudinary
+  and local drivers supported, never bypassed.
+- **`models/Logo.js`** — optional metadata + `originalUrl/originalPublicId` + `displayName`/`websiteUrl`
+  (legacy documents remain valid).
+- **`controllers/logoController.js`** — process on create/replace; `reprocess` (idempotent, from the
+  preserved original, skips asset churn when unchanged); `revert`; `bulk-fix` (per-item isolation,
+  never deletes an original before new output exists, returns processed/already good/needs manual/
+  failed/total); public serializer exposes only safe fields; delete removes processed **and** original.
+- **Routes:** `POST /api/admin/logos/:id/reprocess`, `/logos/:id/revert`, `/logos/bulk-fix` +
+  validation for `displayName`, `websiteUrl` (http/https only), `removeBackground`, `trim`, `tolerance`.
+
+### Files Changed
+- `Backend/services/imageProcessor.js` (new), `Backend/services/storageService.js`,
+  `Backend/models/Logo.js`, `Backend/controllers/logoController.js`, `Backend/routes/admin.routes.js`,
+  `Backend/scripts/smoke.js`, `Backend/package.json` (+lockfile).
+
+### Verification
+- `Backend`: `npm run lint` ✅, `npm run build` ✅ (45 files), `npm run smoke` ✅ **117/117** (was 81).
+- Processor validated on synthetic fixtures: solid bg → corners transparent + centre preserved;
+  enclosed black-in-white ring protected; per-pixel noise → `needs-transparent-png` (not destroyed);
+  1×1 fixture → honest `needs-transparent-png`.
+
+### Known issues / follow-up
+- Irhas'Inn-class logos (opaque enclosed field) will report `needs-transparent-png` by design.
+
 ## 2026-10-02 — Task C Phase 1: Logo showcase + image-pipeline audit & root cause
 
 ### Completed
@@ -1024,5 +1155,85 @@ The live public dataset was inspected over real HTTP and decoded to raw RGBA:
 
 ### Known issues / follow-up
 - Harness fixtures ("Verify Logo A/B") pollute the real dataset — Phase 2/9 must stop seeding junk and
-  add a dimension sanity check + render fallback.
+  add a dimension sanity check + render fallback. **Resolved in Phase 9.**
 - Irhas'Inn will be flagged `needs-transparent-png` (complex enclosed background) rather than faked.
+  **Confirmed in Phase 9.**
+
+## 28. Logo Showcase and Image Pipeline Architecture
+
+### Processing flow (`Backend/services/imageProcessor.js`)
+`decode → auto-orient (sharp .rotate()) → bound to 1280×720 (no upscaling) → border-ring
+analysis → background decision → border-connected flood fill (when safe) → true alpha with a ~1.35×
+feather band → trim transparent padding → PNG with alpha → metadata`.
+
+- **Border analysis** samples the outer pixel ring and measures the *dominant* colour by colour distance
+  (not by a single quantized bucket, which would let JPEG noise look “complex”).
+- **Frame detection** compares the border colour with the image's global dominant colour: if the border
+  is a colour that only covers a thin sliver while a large share of the image is one enclosed colour, it
+  is treated as a decorative frame (black field inside a gold frame) and **preserved**.
+- **Flood fill** starts at the border and removes only *border-connected* regions within the tolerance —
+  never a global colour replace — so enclosed artwork (black inside a frame, white lettering inside a
+  white logo) survives.
+- **Integrity guards:** removals outside `3% ≤ share ≤ 90%` are refused (a tiny removal is an eaten
+  border; a huge removal is a flat image). Both are flagged rather than faked.
+
+### `backgroundStatus` confidence
+- `removed` — high-confidence solid/near-solid background, or already transparent.
+- `kept` — nothing safely removed (unprocessed upload / `removeBackground:false`).
+- `needs-transparent-png` — complex/framed/undecodable, or a refused removal. The original is preserved
+  and the admin should upload a genuinely transparent PNG.
+
+### `tone` classification
+Luminance is the primary axis: `< 0.45 → dark`, `> ~0.7 (low saturation) → light`, otherwise
+`colorful`. This drives the frontend contrast aid (dark logos on dark surfaces, light logos on light
+surfaces) instead of forcing every logo to monochrome.
+
+### Original / processed asset strategy (`Backend/services/storageService.js`)
+- Upload preserves the **untouched original** (`storeOriginal`) and produces a **processed PNG**
+  (`storeProcessed`), stored as two distinct assets (`originalUrl/originalPublicId` +
+  `secureUrl/publicId`). Both Cloudinary and the local driver go through the same abstraction — never
+  bypassed. `fetchStoredBytes` reads an original back for reprocess.
+
+### Operations (`Backend/controllers/logoController.js`)
+- **Reprocess** — always from the preserved original (never processed→original); idempotent: if the
+  pipeline would produce the same asset it is left untouched (no churn, no orphan).
+- **Revert** — points the delivered asset back at the untouched original and clears `hasAlpha`.
+- **Bulk fix** — processes every logo from its original, per-item try/catch (one failure never aborts
+  the batch), returns `processed / alreadyGood / needsTransparentPng / failed / total` + per-item detail.
+- **Cleanup order** — create + verify new asset → update DB → then delete obsolete. On DB failure the
+  old asset is retained; a failed post-DB cleanup is logged, never corrupts the active record. Delete
+  removes **both** processed and original (deduplicated) and never touches shared/other assets.
+
+### Frontend rendering (`components/products/LogoMarquee.tsx`)
+- **Logo-only rule:** item/frame/image carry no background, border or box-shadow; only section-level
+  atmosphere (ambient glow, hairlines) exists.
+- **Optical sizing:** one shared optical box (`--logo-w`/`--logo-h`) with `object-fit: contain` — wide,
+  square, round and narrow marks feel balanced without distortion or cropping.
+- **Marquee:** each row repeats its set to `MIN_ROW_ITEMS` (12) and duplicates the group; `-50%` loop is
+  seamless and fills ultrawide. Direction alternates per row; speeds differ slightly. Repeats are
+  `aria-hidden` + `tabIndex -1`.
+- **Contrast aids:** tone-based `filter: drop-shadow(...)` on the image — non-rectangular, colour- and
+  theme-aware.
+- **Motion:** damped scroll-velocity on one rAF (capped, returns to base, off under reduced motion),
+  hover/focus row pause, off-screen + hidden-tab pause, Reveal entrance, and a **static wrapped grid**
+  under reduced motion.
+
+### Verification
+- `Backend/scripts/smoke.js` — 117 assertions incl. solid-bg removal (corners transparent, artwork
+  preserved), complex-bg preservation, reprocess idempotency, revert, bulk fix, dual-asset delete, auth.
+- `frontend/scripts/verify-three.mjs` — 95 checks incl. the 15 logo-showcase checks; NO_WEBGL 9/9.
+
+### Tuning guide (actual files)
+- **Marquee speed:** `frontend/components/products/LogoMarquee.tsx` row `duration={(58 + index * 9) *
+  speedScale}`; base loop timing in `globals.css` `.logo-showcase__track` (`--logo-speed`).
+- **Row count / fill:** `MIN_ROW_ITEMS` (LogoMarquee) and the `rows` effect (2, or 3 ≥1280px with ≥7).
+- **Logo size:** `globals.css` `.logo-showcase { --logo-w / --logo-h / --logo-gap }`.
+- **Glow / micro-accent:** `globals.css` `.logo-showcase__glow` (Technology Blue + Green),
+  `.logo-item__dot` (Growth Green), hover glow on `.logo-item__frame`.
+- **Contrast aid / thresholds:** `globals.css` tone rules (`[data-tone="dark"]`, `[data-tone="light"]`)
+  and `imageProcessor.js` `computeMetadata` (luminance thresholds).
+- **Background tolerance:** `imageProcessor.js` `DEFAULT_TOLERANCE` (22) + `FEATHER_RATIO`; per-request
+  via `tolerance` (0–100). Higher removes more near-matching background; keep it low to protect
+  enclosed artwork. Safety bounds in the flood-fill branch.
+- **Bulk processing:** `logoController.js` `bulkFixLogos`; the admin trigger is `LogosManager.tsx`
+  (“Fix all existing logos”). Extend by adding a per-item step inside the loop.

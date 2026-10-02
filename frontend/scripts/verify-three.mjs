@@ -42,8 +42,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ---- Seed two logos so the marquee test runs against real data ---------- */
 const API = process.env.API_BASE ?? "http://localhost:5000/api";
-const PNG_1PX =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/**
+ * Fallback fixture (only used when the API has fewer than two logos). It is the
+ * real brand mark fetched from the running frontend, so the showcase never gets
+ * seeded with an unrenderable 1×1 pixel the way it used to be.
+ */
+async function logoFixture() {
+  try {
+    const response = await fetch(`${BASE}/brand/logo-main.png`);
+    if (!response.ok) return null;
+    const buf = Buffer.from(await response.arrayBuffer());
+    return `data:image/png;base64,${buf.toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Reads `../Backend/.env` so the harness can sign in without any credential
@@ -78,11 +92,13 @@ async function ensureLogos() {
     const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
     const list = await (await fetch(`${API}/logos`)).json();
     if ((list.data?.length ?? 0) >= 2) return true;
-    for (const name of ["Verify Logo A", "Verify Logo B"]) {
+    const fixture = await logoFixture();
+    if (!fixture) return false;
+    for (const name of ["Showcase Fixture A", "Showcase Fixture B"]) {
       const res = await fetch(`${API}/admin/logos`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Cookie: cookie },
-        body: JSON.stringify({ name, category: "verification", image: PNG_1PX }),
+        body: JSON.stringify({ name, image: fixture }),
       });
       if (!res.ok) return false;
     }
@@ -147,6 +163,14 @@ class Cdp {
   on(method, fn) {
     if (!this.listeners.has(method)) this.listeners.set(method, []);
     this.listeners.get(method).push(fn);
+  }
+  off(method, fn) {
+    const list = this.listeners.get(method);
+    if (!list) return;
+    this.listeners.set(
+      method,
+      list.filter((entry) => entry !== fn),
+    );
   }
   close() {
     this.ws.close();
@@ -575,8 +599,8 @@ async function main() {
         };
         return {
           home: Boolean(document.getElementById("home")),
-          marqueeRows: document.querySelectorAll(".marquee-track").length,
-          marqueeLogos: document.querySelectorAll(".marquee-track img, .marquee-track [data-logo]").length,
+          marqueeRows: document.querySelectorAll(".logo-showcase__track, .marquee-track").length,
+          marqueeLogos: document.querySelectorAll(".logo-item img, .marquee-track [data-logo]").length,
           productCards: cards("product-cards-heading"),
           serviceCards: document.querySelectorAll("#services article").length,
           form: Boolean(document.querySelector("#start form")),
@@ -822,6 +846,321 @@ async function main() {
     check("Main Logo used on the admin login screen", adminLogo === true);
     await capture("admin-login-light-1366x768.png");
 
+    /* -- TEST 12: Our Products logo showcase (Task C) -------------------- */
+    console.log("\n[12] Product logo showcase (logo-only wall)");
+    resetErrors();
+
+    const liveLogos = (await (await fetch(`${API}/logos`)).json()).data ?? [];
+    check("public API returns showcase logos", liveLogos.length > 0, `count=${liveLogos.length}`);
+
+    const gotoShowcase = async (theme = "light") => {
+      await setViewport(1440, 900, false);
+      await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      // TEST 12 must start from the public homepage (TEST 11 left us on admin).
+      await cdp.send("Page.navigate", { url: `${BASE}/` });
+      await sleep(900);
+      await setThemeThenReload(theme);
+      await waitFor(cdp, `document.querySelector("#products") !== null`, 12000, "showcase section");
+      await evaluate(
+        cdp,
+        `(() => { document.getElementById("products")?.scrollIntoView({ block: "center", behavior: "instant" }); return true; })()`,
+      );
+      await sleep(1200);
+    };
+
+    await gotoShowcase("light");
+
+    const structure = await evaluate(
+      cdp,
+      `(() => {
+        const s = document.getElementById("products");
+        return {
+          exists: Boolean(s),
+          labelledby: s?.getAttribute("aria-labelledby") ?? null,
+          heading: Boolean(document.getElementById("products-showcase-heading")),
+          items: document.querySelectorAll(".logo-item").length,
+          hasHairline: document.querySelectorAll(".logo-showcase__hairline").length >= 2,
+        };
+      })()`,
+    );
+    check("showcase is a labelled region", structure.exists && structure.labelledby === "products-showcase-heading" && structure.heading, JSON.stringify(structure));
+    check("section hairlines above + below", structure.hasHairline);
+
+    // CHECK 1 — no pill / card / plate / border behind any logo.
+    const pills = await evaluate(
+      cdp,
+      `(() => {
+        const items = [...document.querySelectorAll(".logo-item")];
+        const offenders = [];
+        for (const el of items) {
+          const cs = getComputedStyle(el);
+          const frame = getComputedStyle(el.querySelector(".logo-item__frame"));
+          const transparent = (v) => v === "rgba(0, 0, 0, 0)" || v === "transparent";
+          if (!transparent(cs.backgroundColor) || !transparent(frame.backgroundColor) || cs.boxShadow !== "none" || frame.boxShadow !== "none" || cs.borderTopWidth !== "0px" || frame.borderTopWidth !== "0px") {
+            offenders.push(cs.backgroundColor + "|" + frame.backgroundColor + "|" + cs.boxShadow + "|" + frame.boxShadow);
+          }
+        }
+        return { count: items.length, bad: offenders.length, offenders: offenders.slice(0, 2) };
+      })()`,
+    );
+    check("CHECK 1 — no pill/card/plate/border behind logos", pills.count > 0 && pills.bad === 0, JSON.stringify(pills));
+
+    // CHECK 2 — every visible logo image actually loads.
+    const imgs = await evaluate(
+      cdp,
+      `[...document.querySelectorAll(".logo-item img")].map((i) => ({ w: i.naturalWidth, h: i.naturalHeight, src: i.currentSrc || i.src }))`,
+    );
+    check("CHECK 2 — every logo image loads (non-zero intrinsic size)", imgs.length > 0 && imgs.every((i) => i.w > 0 && i.h > 0), `imgs=${imgs.length}`);
+    check("CHECK 10 — consumes the processed API contract", imgs.some((i) => /\/api\/logos|res\.cloudinary\.com|\/api\/uploads/.test(i.src)), String(imgs[0]?.src ?? ""));
+
+    // CHECK 4 — duplication / seamlessness / a11y.
+    const dup = await evaluate(
+      cdp,
+      `[...document.querySelectorAll(".logo-showcase__track")].map((t) => ({
+        groups: t.querySelectorAll(":scope > .logo-showcase__group").length,
+        hidden: t.querySelector(":scope > .logo-showcase__group[aria-hidden='true']") !== null,
+      }))`,
+    );
+    check("CHECK 4 — every row duplicates its group for a seamless loop", dup.length >= 2 && dup.every((d) => d.groups === 2), JSON.stringify(dup));
+    check("CHECK 4 — duplicate group is aria-hidden", dup.every((d) => d.hidden));
+    const focusableClones = await evaluate(
+      cdp,
+      `[...document.querySelectorAll('.logo-item[data-clone="true"]')].filter((a) => a.tagName === "A" && a.tabIndex >= 0).length`,
+    );
+    check("CHECK 4 — duplicated logos are not focusable", focusableClones === 0);
+    const seam = await evaluate(
+      cdp,
+      `(() => {
+        const t = document.querySelector(".logo-showcase__track");
+        const g = [...t.querySelectorAll(":scope > .logo-showcase__group")];
+        const v = t.parentElement;
+        return { equal: g.length === 2 ? Math.abs(g[0].getBoundingClientRect().width - g[1].getBoundingClientRect().width) : -1, track: t.scrollWidth, viewport: v.clientWidth };
+      })()`,
+    );
+    check("CHECK 4 — loop is mathematically seamless (identical groups)", seam.equal >= 0 && seam.equal < 1, JSON.stringify(seam));
+    check("CHECK 4 — row content fills the viewport (no gap on ultrawide)", seam.track >= seam.viewport, JSON.stringify(seam));
+
+    // CHECK 5 — hover pauses the row, lifts/scales the logo and reveals the label.
+    const box = await evaluate(
+      cdp,
+      `(() => { const el = document.querySelector(".logo-item"); const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`,
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
+    await sleep(500);
+    const hover = await evaluate(
+      cdp,
+      `(() => {
+        const track = document.querySelector(".logo-showcase__track");
+        const item = document.querySelector(".logo-item:hover") || document.querySelector(".logo-item");
+        const img = item.querySelector("img, .logo-item__img");
+        const label = item.querySelector(".logo-item__label");
+        return { play: getComputedStyle(track).animationPlayState, transform: getComputedStyle(img).transform, label: getComputedStyle(label).opacity };
+      })()`,
+    );
+    check("CHECK 5 — hover pauses the row", hover.play === "paused", hover.play);
+    check("CHECK 5 — hover lifts/scales the logo", hover.transform !== "none", hover.transform);
+    check("CHECK 5 — hover reveals the name label", Number(hover.label) > 0.5, hover.label);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+
+    // Focus-within also pauses the row.
+    const focusPause = await evaluate(
+      cdp,
+      `(() => {
+        const item = document.querySelector(".logo-item");
+        item.setAttribute("tabindex", "0");
+        item.focus();
+        const track = document.querySelector(".logo-showcase__track");
+        return getComputedStyle(track).animationPlayState;
+      })()`,
+    );
+    check("CHECK 5 — keyboard focus pauses the row", focusPause === "paused", focusPause);
+    await evaluate(cdp, `document.activeElement?.blur(); true`);
+
+    // CHECK 7 — theme legibility (light + dark).
+    const lightFilters = await evaluate(
+      cdp,
+      `[...document.querySelectorAll(".logo-item")].map((el) => ({ tone: el.dataset.tone, filter: getComputedStyle(el.querySelector("img, .logo-item__img")).filter }))`,
+    );
+    await setThemeThenReload("dark");
+    await evaluate(cdp, `document.getElementById("products")?.scrollIntoView({ block: "center", behavior: "instant" }); true`);
+    await sleep(800);
+    const darkFilters = await evaluate(
+      cdp,
+      `[...document.querySelectorAll(".logo-item")].map((el) => ({ tone: el.dataset.tone, filter: getComputedStyle(el.querySelector("img, .logo-item__img")).filter }))`,
+    );
+    check(
+      "CHECK 7 — dark theme applies a contrast aid to dark logos",
+      darkFilters.filter((d) => d.tone === "dark").every((d) => d.filter !== "none"),
+      JSON.stringify(darkFilters),
+    );
+    check(
+      "CHECK 7 — light theme applies a contrast aid to light logos",
+      lightFilters.filter((d) => d.tone === "light").every((d) => d.filter !== "none"),
+      JSON.stringify(lightFilters),
+    );
+
+    // CHECK 6 — reduced motion becomes a static wrapped grid.
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await setThemeThenReload("light");
+    await evaluate(cdp, `document.getElementById("products")?.scrollIntoView({ block: "center", behavior: "instant" }); true`);
+    await sleep(900);
+    const reducedProbe = await evaluate(
+      cdp,
+      `(() => ({
+        grid: document.querySelectorAll(".logo-showcase__grid").length,
+        anim: [...document.querySelectorAll(".logo-showcase__track")].map((t) => getComputedStyle(t).animationName),
+        float: [...document.querySelectorAll(".logo-item")].map((el) => getComputedStyle(el).animationName),
+      }))()`,
+    );
+    check("CHECK 6 — reduced motion renders a static grid", reducedProbe.grid === 1, JSON.stringify(reducedProbe));
+    check("CHECK 6 — no marquee animation under reduced motion", reducedProbe.anim.every((n) => n === "none" || n === ""), JSON.stringify(reducedProbe.anim));
+    check("CHECK 6 — no idle-float animation under reduced motion", reducedProbe.float.every((n) => n === "none" || n === ""), JSON.stringify(reducedProbe.float));
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+
+    // CHECK 9 — responsive (no horizontal overflow, logos present).
+    for (const [w, h] of [[390, 844], [1366, 768], [1440, 900], [1920, 1080]]) {
+      await setViewport(w, h, w < 640);
+      await setThemeThenReload("light");
+      await evaluate(cdp, `document.getElementById("products")?.scrollIntoView({ block: "center", behavior: "instant" }); true`);
+      await sleep(700);
+      const resp = await evaluate(
+        cdp,
+        `(() => ({
+          visible: document.getElementById("products")?.getBoundingClientRect().height > 0,
+          overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          items: document.querySelectorAll(".logo-item").length,
+        }))()`,
+      );
+      check(`CHECK 9 — responsive at ${w}×${h}`, resp.visible && resp.overflowX <= 2 && resp.items >= 1, JSON.stringify(resp));
+    }
+
+    // CHECK 8 — no layout shift from the showcase.
+    const clsProbe = await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+      source:
+        "window.__cls=0;new PerformanceObserver(l=>{for(const e of l.getEntries())if(!e.hadRecentInput)window.__cls+=e.value;}).observe({type:'layout-shift',buffered:true});",
+    });
+    await setViewport(1440, 900, false);
+    await setThemeThenReload("light");
+    await sleep(600);
+    // Measure only the shift caused by revealing the showcase, not the whole page.
+    await evaluate(cdp, `window.__cls = 0; true`);
+    await evaluate(cdp, `document.getElementById("products")?.scrollIntoView({ block: "center", behavior: "instant" }); true`);
+    await sleep(2000);
+    const cls = await evaluate(cdp, `window.__cls || 0`);
+    check("CHECK 8 — showcase adds no layout shift (CLS < 0.02)", cls < 0.02, `cls=${cls}`);
+    await cdp.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: clsProbe.identifier });
+
+    // CHECK 11 — image failure → meaningful monogram fallback (no empty gap).
+    await setThemeThenReload("light");
+    await evaluate(cdp, `document.getElementById("products")?.scrollIntoView({ block: "center", behavior: "instant" }); true`);
+    await sleep(700);
+    const fallback = await evaluate(
+      cdp,
+      `(() => {
+        const img = document.querySelector(".logo-item img");
+        if (!img) return { ok: false, reason: "no img" };
+        img.dispatchEvent(new Event("error"));
+        return { ok: true };
+      })()`,
+    );
+    await sleep(400);
+    const monogram = await evaluate(
+      cdp,
+      `(() => {
+        const item = document.querySelector(".logo-item");
+        const hasImg = item.querySelector("img") !== null;
+        const text = (item.querySelector(".logo-item__img")?.textContent || "").trim();
+        return { hasImg, text };
+      })()`,
+    );
+    check("CHECK 3/11 — failed image → monogram fallback (no empty slot)", fallback.ok && !monogram.hasImg && monogram.text.length > 0, JSON.stringify(monogram));
+
+    // CHECK 12/13/14/15 — 0, 1, 3 and 12 logos via response interception.
+    const serveLogos = async (list) => {
+      await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*api/logos*", requestStage: "Request" }] });
+      const handler = (params) => {
+        const body = Buffer.from(JSON.stringify({ success: true, data: list })).toString("base64");
+        cdp.send("Fetch.fulfillRequest", {
+          requestId: params.requestId,
+          responseCode: 200,
+          // CORS headers are required: the app fetches with credentials, so a
+          // header-less fulfilled response would be blocked by the browser.
+          responseHeaders: [
+            { name: "Content-Type", value: "application/json" },
+            { name: "Access-Control-Allow-Origin", value: BASE },
+            { name: "Access-Control-Allow-Credentials", value: "true" },
+          ],
+          body,
+        });
+      };
+      cdp.on("Fetch.requestPaused", handler);
+      return async () => {
+        cdp.off("Fetch.requestPaused", handler);
+        await cdp.send("Fetch.disable");
+      };
+    };
+
+    const withFixture = async (count, verify) => {
+      let fixture = [];
+      if (count === 1) fixture = [liveLogos[0]];
+      else if (count === 3) fixture = liveLogos.slice(0, 3);
+      else if (count === 12) {
+        fixture = Array.from({ length: 12 }, (_, i) => ({ ...liveLogos[i % liveLogos.length], _id: `fixture-${i}` }));
+      }
+      const stop = await serveLogos(fixture);
+      await cdp.send("Page.reload", { ignoreCache: true });
+      await sleep(1500);
+      await evaluate(cdp, `document.getElementById("products")?.scrollIntoView({ block: "center", behavior: "instant" }); true`);
+      await sleep(900);
+      const result = await verify();
+      await stop();
+      return result;
+    };
+
+    await withFixture(0, async () => {
+      const empty = await evaluate(
+        cdp,
+        `(() => ({
+          text: document.getElementById("products")?.innerText ?? "",
+          tracks: document.querySelectorAll(".logo-showcase__track").length,
+          pills: document.querySelectorAll(".logo-item").length,
+        }))()`,
+      );
+      check("CHECK 12 — 0 logos → professional empty state (no broken marquee)", /coming soon/i.test(empty.text) && empty.tracks === 0 && empty.pills === 0, JSON.stringify({ tracks: empty.tracks, pills: empty.pills }));
+    });
+
+    await withFixture(1, async () => {
+      const one = await evaluate(
+        cdp,
+        `(() => ({
+          items: document.querySelectorAll(".logo-item").length,
+          groups: document.querySelectorAll(".logo-showcase__track .logo-showcase__group").length,
+          equal: (() => { const g = [...document.querySelectorAll(".logo-showcase__track > .logo-showcase__group")]; return g.length === 2 ? Math.abs(g[0].getBoundingClientRect().width - g[1].getBoundingClientRect().width) : -1; })(),
+        }))()`,
+      );
+      check("CHECK 13 — 1 logo repeats seamlessly", one.items >= 2 && one.groups >= 2 && one.equal >= 0 && one.equal < 1, JSON.stringify(one));
+    });
+
+    await withFixture(3, async () => {
+      const three = await evaluate(cdp, `document.querySelectorAll(".logo-item").length`);
+      check("CHECK 14 — 3 logos are not sparse (duplicated to fill)", three >= 6, `items=${three}`);
+    });
+
+    await withFixture(12, async () => {
+      const twelve = await evaluate(
+        cdp,
+        `(() => ({
+          items: document.querySelectorAll(".logo-item").length,
+          loading: [...document.querySelectorAll(".logo-item img")].filter((i) => !i.complete || i.naturalWidth === 0).length,
+        }))()`,
+      );
+      check("CHECK 15 — 12 logos render a stable loop (all images loaded)", twelve.items >= 12 && twelve.loading === 0, JSON.stringify(twelve));
+    });
+
+    assertClean("logo-showcase");
+    resetErrors();
+    await setViewport(1366, 768, false);
+    await setThemeThenReload("light");
     await cdp.send("Emulation.clearDeviceMetricsOverride");
     await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
   } finally {
