@@ -18,6 +18,9 @@ import {
   deleteLogo,
   reorderLogos,
   setLogoVisibility,
+  reprocessLogo,
+  revertLogo,
+  bulkFixLogos,
 } from "../controllers/logoController.js";
 import {
   listTemplates,
@@ -77,14 +80,49 @@ adminRouter.post(
     body("name").trim().isLength({ min: 2, max: 120 }).withMessage("Logo name is required."),
     body("image").isString().matches(/^data:image\//).withMessage("A valid image is required."),
     body("alt").optional({ values: "falsy" }).trim().isLength({ max: 160 }),
+    body("displayName").optional({ values: "falsy" }).trim().isLength({ max: 120 }),
+    body("websiteUrl")
+      .optional({ values: "falsy" })
+      .trim()
+      .isURL({ protocols: ["http", "https"], require_tld: false })
+      .withMessage("Enter a valid website URL."),
     validate,
   ],
   createLogo,
 );
-adminRouter.put("/logos/:id", idRules, updateLogo);
+adminRouter.put(
+  "/logos/:id",
+  [
+    param("id").isMongoId().withMessage("Invalid identifier."),
+    body("name").optional({ values: "falsy" }).trim().isLength({ min: 2, max: 120 }),
+    body("alt").optional({ values: "falsy" }).trim().isLength({ max: 160 }),
+    body("displayName").optional({ values: "falsy" }).trim().isLength({ max: 120 }),
+    body("websiteUrl")
+      .optional({ values: "falsy" })
+      .trim()
+      .isURL({ protocols: ["http", "https"], require_tld: false })
+      .withMessage("Enter a valid website URL."),
+    body("removeBackground").optional().isBoolean().toBoolean(),
+    body("trim").optional().isBoolean().toBoolean(),
+    body("tolerance").optional().isFloat({ min: 0, max: 100 }).toFloat(),
+    validate,
+  ],
+  updateLogo,
+);
 adminRouter.delete("/logos/:id", idRules, deleteLogo);
 adminRouter.patch("/logos/reorder", reorderLogos);
 adminRouter.patch("/logos/:id/visibility", idRules, setLogoVisibility);
+
+// --- Logo processing (preserve original, process, reprocess, revert, bulk) ---
+const processingRules = [
+  body("removeBackground").optional().isBoolean().toBoolean(),
+  body("trim").optional().isBoolean().toBoolean(),
+  body("tolerance").optional().isFloat({ min: 0, max: 100 }).toFloat(),
+  validate,
+];
+adminRouter.post("/logos/:id/reprocess", idRules, processingRules, reprocessLogo);
+adminRouter.post("/logos/:id/revert", idRules, revertLogo);
+adminRouter.post("/logos/bulk-fix", processingRules, bulkFixLogos);
 
 // --- Products --------------------------------------------------------------
 adminRouter.get("/products", listAdminProducts);

@@ -1,5 +1,5 @@
 import { v2 as cloudinary } from "cloudinary";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -115,6 +115,91 @@ export async function uploadImage(dataUri, { folder = "jazari/logos" } = {}) {
     publicId,
     bytes,
   };
+}
+
+function localAssetUrl(publicId) {
+  const base = env.publicApiUrl || `http://localhost:${env.port}`;
+  return `${base}/api/uploads/${publicId}`;
+}
+
+/**
+ * Store the untouched original upload (preserved so any logo can be reverted or
+ * reprocessed). Cloudinary keeps a distinct original public_id; the local
+ * driver writes a distinct `original-*` file. Never bypassed by controllers.
+ */
+export async function storeOriginal(dataUri, { folder = "jazari/logos/originals" } = {}) {
+  const { mimeType, base64, bytes, extension } = parseImageDataUri(dataUri);
+
+  if (storageDriver === "cloudinary") {
+    const result = await cloudinary.uploader.upload(`data:${mimeType};base64,${base64}`, {
+      folder,
+      resource_type: "image",
+      overwrite: false,
+      unique_filename: true,
+      transformation: [{ quality: "auto:best" }],
+    });
+    return {
+      secureUrl: result.secure_url,
+      publicId: result.public_id,
+      bytes: result.bytes ?? bytes,
+      mimeType,
+      extension,
+      buffer: Buffer.from(base64, "base64"),
+    };
+  }
+
+  const publicId = `original-${Date.now()}-${crypto.randomBytes(5).toString("hex")}.${extension}`;
+  const buffer = Buffer.from(base64, "base64");
+  await mkdir(LOCAL_UPLOAD_DIR, { recursive: true });
+  await writeFile(path.join(LOCAL_UPLOAD_DIR, publicId), buffer, { mode: 0o644 });
+  return { secureUrl: localAssetUrl(publicId), publicId, bytes, mimeType, extension, buffer };
+}
+
+/**
+ * Store a processed PNG buffer (alpha preserved). Cloudinary is asked for PNG
+ * explicitly so transparency survives; the local driver writes `processed-*.png`.
+ */
+export async function storeProcessed(buffer, { folder = "jazari/logos/processed" } = {}) {
+  if (storageDriver === "cloudinary") {
+    const result = await cloudinary.uploader.upload(`data:image/png;base64,${buffer.toString("base64")}`, {
+      folder,
+      resource_type: "image",
+      overwrite: false,
+      unique_filename: true,
+      format: "png",
+      transformation: [{ quality: "auto:best" }],
+    });
+    return { secureUrl: result.secure_url, publicId: result.public_id, bytes: result.bytes ?? buffer.length };
+  }
+
+  const publicId = `processed-${Date.now()}-${crypto.randomBytes(5).toString("hex")}.png`;
+  await mkdir(LOCAL_UPLOAD_DIR, { recursive: true });
+  await writeFile(path.join(LOCAL_UPLOAD_DIR, publicId), buffer, { mode: 0o644 });
+  return { secureUrl: localAssetUrl(publicId), publicId, bytes: buffer.length };
+}
+
+/**
+ * Read the bytes of a stored original so it can be reprocessed. Uses the same
+ * storage driver the asset was written with — never a direct path assumption.
+ */
+export async function fetchStoredBytes(publicId) {
+  if (!publicId) throw ApiError.badRequest("No stored asset reference was provided.");
+
+  if (storageDriver === "cloudinary") {
+    const url = cloudinary.url(publicId, { resource_type: "image", secure: true });
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw ApiError.internal("The original asset could not be read from storage.");
+    }
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  const fileName = path.basename(publicId);
+  try {
+    return await readFile(path.join(LOCAL_UPLOAD_DIR, fileName));
+  } catch {
+    throw ApiError.internal("The original asset could not be read from storage.");
+  }
 }
 
 /**

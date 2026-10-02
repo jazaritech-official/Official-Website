@@ -967,3 +967,62 @@ the existing static fallback. React only manages lifecycle; every Three.js conce
   claimed; all runtime verification is Chromium (headless) only.
 - The harness runs against the **production preview** (`next start -p 3001`); the dev server on :3000 is
   unaffected.
+
+## 2026-10-02 — Task C Phase 1: Logo showcase + image-pipeline audit & root cause
+
+### Completed
+- Read `PROJECT_NOTES.md` + `README.md` and inspected the real repository: `LogoMarquee.tsx`,
+  `Marquee.tsx`, `LogosManager.tsx`, `models/Logo.js`, `controllers/logoController.js`,
+  `services/storageService.js`, `routes/admin.routes.js` + `public.routes.js`, `lib/api.ts`,
+  `types/api.ts`, `hooks/*`, `globals.css`, `next.config.ts`, `scripts/verify-three.mjs`,
+  `Backend/scripts/smoke.js`, `Backend/config/env.js`.
+- Captured baseline: frontend lint ✅, build ✅ (14 routes), backend lint ✅, build ✅ (45 files),
+  smoke ✅ **81/81**, harness ✅ **64/64** + NO_WEBGL ✅ **9/9**.
+- Captured BEFORE screenshots (`capture-products.mjs before`) → `test-output/screenshots/`.
+- Verified `sharp` installs cleanly on this Windows environment (prebuilt binaries, no compiler).
+
+### Root-cause investigation (evidence, not guesses)
+The live public dataset was inspected over real HTTP and decoded to raw RGBA:
+
+| # | Name | HTTP | Format | Dimensions | Alpha | Corners | Verdict |
+|---|------|------|--------|-----------|-------|---------|---------|
+| 1 | Irhas'Inn | 200 | JPEG | 908×367 | none | opaque gold/greys | complex: opaque **black field inside a gold frame** → keep |
+| 2 | WS Toys | 200 | JPEG | 720×720 | none | uniform `rgb(21,90,168)` | solid blue → removable |
+| 3 | Verify Logo A | 200 | PNG | **1×1** | partial 100% | `rgba(255,0,0,127)` | **1×1 red pixel** |
+| 4 | Verify Logo B | 200 | PNG | **1×1** | partial 100% | `rgba(255,0,0,127)` | **1×1 red pixel** |
+| 5 | UCF Foundation | 200 | PNG | 748×720 | genuine | transparent | already transparent |
+| 6 | VPSA | 200 | JPEG | 720×720 | none | uniform `rgb(253,253,253)` | solid white → removable |
+
+- **Empty-pill cause (primary):** "Verify Logo A" and "Verify Logo B" are **1×1 semi-transparent
+  red PNGs (95 bytes each)**. A 1×1 source cannot produce a visible logo at any render size, so their
+  pill renders empty. They are seeded by the verification harness itself
+  (`scripts/verify-three.mjs` → `ensureLogos()` posts a 1×1 `PNG_1PX` data URI). The real bug is
+  therefore **twofold**: (a) the harness seeds junk fixtures into the live dataset; (b) the upload
+  pipeline accepts images with **no dimension sanity check**, and the showcase has **no fallback** for
+  an asset that cannot render. HTTP status is 200 with correct content-type — so this is *not* a broken
+  URL, deleted-asset, optimizer, or CSS-invisibility problem.
+- **Baked-background cause:** the real logos are **JPEGs with no alpha channel**. The browser paints
+  the source's own opaque background (WS Toys blue square, VPSA white square, Irhas'Inn black+gold
+  rectangle). Irhas'Inn is *complex* (opaque black field enclosed by a gold frame) and is **unsafe**
+  for automatic removal; WS Toys and VPSA are uniform solids and are safely removable.
+- **Pill/card cause:** `LogoMarquee.tsx` `LogoTile` wraps every image in
+  `rounded-2xl border border-line bg-surface-elevated px-5 shadow-…` — a literal card/pill. The spec's
+  absolute logo-only rule requires this wrapper to be removed.
+- **Light/dark contrast:** VPSA is a white-background JPEG; on a white light-mode page it can vanish.
+  The `tone` metadata + a non-rectangular contrast aid is required (no plates).
+
+### Files Changed
+- `frontend/scripts/capture-products.mjs` (new) — CDP before/after showcase screenshots.
+- `Backend/package.json` + lockfile — added the single permitted image dependency `sharp`.
+- `PROJECT_NOTES.md` (this entry).
+
+### Verification
+- `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅ (14 routes).
+- `Backend`: `npm run lint` ✅, `npm run build` ✅ (45 files), `npm run smoke` ✅ **81/81**.
+- `node scripts/verify-three.mjs` ✅ **64/64** · `NO_WEBGL=1 …` ✅ **9/9**.
+- Screenshots: `frontend/test-output/screenshots/before-{light,dark}-{desktop-1366x768,mobile-390x844}.png`.
+
+### Known issues / follow-up
+- Harness fixtures ("Verify Logo A/B") pollute the real dataset — Phase 2/9 must stop seeding junk and
+  add a dimension sanity check + render fallback.
+- Irhas'Inn will be flagged `needs-transparent-png` (complex enclosed background) rather than faked.

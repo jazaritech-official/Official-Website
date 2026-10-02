@@ -10,6 +10,7 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import sharp from "sharp";
 import env from "../config/env.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -61,6 +62,36 @@ async function waitForHealth(timeoutMs = 30_000) {
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
   return false;
+}
+
+/* ---- Synthetic fixtures for the image-processing assertions ------------- */
+async function solidPngDataUri() {
+  // White background + navy circle (a solid, safely-removable background).
+  const svg = Buffer.from(
+    `<svg width="400" height="300"><rect width="400" height="300" fill="#ffffff"/><circle cx="200" cy="150" r="80" fill="#212c65"/></svg>`,
+  );
+  const buf = await sharp(svg).png().toBuffer();
+  return `data:image/png;base64,${buf.toString("base64")}`;
+}
+
+async function complexPngDataUri() {
+  // Per-pixel noise: no dominant border colour — must not be destroyed.
+  const w = 300;
+  const h = 300;
+  const raw = Buffer.alloc(w * h * 3);
+  for (let i = 0; i < raw.length; i += 1) raw[i] = (i * 2654435761) % 256;
+  const buf = await sharp(raw, { raw: { width: w, height: h, channels: 3 } }).png().toBuffer();
+  return `data:image/png;base64,${buf.toString("base64")}`;
+}
+
+async function cornerAlpha(url) {
+  const buf = Buffer.from(await (await fetch(url)).arrayBuffer());
+  const { data, info } = await sharp(buf).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const at = (x, y) => {
+    const i = (y * info.width + x) * info.channels;
+    return [data[i], data[i + 1], data[i + 2], data[i + 3]];
+  };
+  return { width: info.width, height: info.height, corner: at(0, 0), center: at(info.width >> 1, info.height >> 1) };
 }
 
 function cookieFrom(response) {
@@ -335,6 +366,105 @@ console.log("[smoke] 9. logo upload lifecycle");
 
   const unauthorizedUpload = await json("/admin/logos", { method: "POST", body: { name: "X", image: tinyPng } });
   check("unauthenticated upload → 401", unauthorizedUpload.status === 401);
+}
+
+console.log("[smoke] 9b. logo image processing pipeline");
+let processedLogoId = null;
+{
+  const solid = await solidPngDataUri();
+  const complex = await complexPngDataUri();
+
+  // --- Solid background → removed, artwork preserved ----------------------
+  const created = await json("/admin/logos", {
+    method: "POST",
+    cookie,
+    body: { name: "Smoke Solid", alt: "Solid background logo", image: solid },
+  });
+  processedLogoId = created.body?.data?._id;
+  check("solid-bg upload → 201", created.status === 201, JSON.stringify(created.body).slice(0, 200));
+  check("backgroundStatus=removed for solid bg", created.body?.data?.backgroundStatus === "removed", created.body?.data?.backgroundStatus);
+  check("hasAlpha true after removal", created.body?.data?.hasAlpha === true);
+  check("width/height captured", created.body?.data?.width > 0 && created.body?.data?.height > 0, `${created.body?.data?.width}x${created.body?.data?.height}`);
+  check("aspectRatio captured", typeof created.body?.data?.aspectRatio === "number");
+  check("dominantColors captured", Array.isArray(created.body?.data?.dominantColors) && created.body.data.dominantColors.length > 0);
+  check("averageLuminance captured", typeof created.body?.data?.averageLuminance === "number");
+  check("tone classified (dark navy)", created.body?.data?.tone === "dark", created.body?.data?.tone);
+  check("original asset preserved", Boolean(created.body?.data?.originalUrl && created.body?.data?.originalPublicId));
+
+  const solidPixels = await cornerAlpha(created.body.data.secureUrl);
+  check("solid bg: corners transparent", solidPixels.corner[3] === 0, `alpha=${solidPixels.corner[3]}`);
+  check("solid bg: centre artwork remains opaque", solidPixels.center[3] > 200, `alpha=${solidPixels.center[3]}`);
+
+  // --- Complex background → preserved, never destroyed --------------------
+  const complexCreated = await json("/admin/logos", {
+    method: "POST",
+    cookie,
+    body: { name: "Smoke Complex", image: complex },
+  });
+  const complexStatus = complexCreated.body?.data?.backgroundStatus;
+  check("complex bg upload → 201", complexCreated.status === 201);
+  check("complex bg not force-removed", complexStatus === "kept" || complexStatus === "needs-transparent-png", complexStatus);
+  check("complex bg original available", Boolean(complexCreated.body?.data?.originalPublicId));
+
+  // --- Reprocess is idempotent (always from the preserved original) --------
+  const rp1 = await json(`/admin/logos/${processedLogoId}/reprocess`, { method: "POST", cookie, body: { tolerance: 22 } });
+  check("reprocess → 200", rp1.status === 200, JSON.stringify(rp1.body).slice(0, 160));
+  const rp2 = await json(`/admin/logos/${processedLogoId}/reprocess`, { method: "POST", cookie, body: { tolerance: 22 } });
+  check(
+    "reprocess idempotent (same dimensions + tone)",
+    rp1.body?.data?.logo?.width === rp2.body?.data?.logo?.width &&
+      rp1.body?.data?.logo?.height === rp2.body?.data?.logo?.height &&
+      rp1.body?.data?.logo?.tone === rp2.body?.data?.logo?.tone,
+  );
+  check("reprocess keeps backgroundStatus=removed", rp2.body?.data?.logo?.backgroundStatus === "removed");
+
+  // --- Revert restores the untouched original -----------------------------
+  const reverted = await json(`/admin/logos/${processedLogoId}/revert`, { method: "POST", cookie });
+  check("revert → 200", reverted.status === 200);
+  check("revert points secureUrl at original", reverted.body?.data?.secureUrl === reverted.body?.data?.originalUrl);
+  check("revert sets backgroundStatus=kept", reverted.body?.data?.backgroundStatus === "kept");
+  const revertedPixels = await cornerAlpha(reverted.body.data.secureUrl);
+  check("reverted asset is the opaque original (corner alpha 255)", revertedPixels.corner[3] === 255, `alpha=${revertedPixels.corner[3]}`);
+
+  // --- Bulk fix: idempotent, per-item isolation ---------------------------
+  const bulk1 = await json("/admin/logos/bulk-fix", { method: "POST", cookie, body: { tolerance: 22 } });
+  check("bulk fix → 200", bulk1.status === 200);
+  check("bulk fix reports a summary", typeof bulk1.body?.data?.summary?.total === "number" && bulk1.body.data.summary.total >= 2);
+  check("bulk fix had no failures", bulk1.body?.data?.summary?.failed === 0, JSON.stringify(bulk1.body?.data?.summary));
+  const bulk2 = await json("/admin/logos/bulk-fix", { method: "POST", cookie, body: { tolerance: 22 } });
+  check("repeated bulk fix does not degrade (no failures)", bulk2.body?.data?.summary?.failed === 0);
+  check(
+    "repeated bulk fix is idempotent (processed drops to 0)",
+    bulk2.body?.data?.summary?.processed === 0,
+    JSON.stringify(bulk2.body?.data?.summary),
+  );
+
+  // --- Public API exposes only safe fields --------------------------------
+  const publicList = await json("/logos");
+  const publicEntry = publicList.body?.data?.find((l) => l._id === processedLogoId);
+  check("public logo present after reprocess", Boolean(publicEntry));
+  check("public logo exposes tone + backgroundStatus + dimensions",
+    Boolean(publicEntry) && typeof publicEntry.tone === "string" && typeof publicEntry.backgroundStatus === "string" && typeof publicEntry.width === "number");
+  check("public logo exposes displayName + alt", Boolean(publicEntry?.displayName) && Boolean(publicEntry?.alt));
+  check("public logo exposes NO publicId / original refs",
+    Boolean(publicEntry) && !("publicId" in publicEntry) && !("originalPublicId" in publicEntry) && !("originalUrl" in publicEntry));
+
+  // --- Delete cleans processed + original + DB, leaving others untouched --
+  const beforeDelete = await json("/admin/logos", { cookie });
+  const beforeCount = beforeDelete.body?.data?.logos?.length ?? 0;
+  const del = await json(`/admin/logos/${processedLogoId}`, { method: "DELETE", cookie });
+  check("delete processed logo → 200", del.status === 200);
+  const afterDelete = await json("/admin/logos", { cookie });
+  check("deleted logo gone from admin list", !afterDelete.body?.data?.logos?.some((l) => l._id === processedLogoId));
+  check("delete removed exactly one record (no unrelated deletion)", (afterDelete.body?.data?.logos?.length ?? 0) === beforeCount - 1, `${beforeCount} → ${afterDelete.body?.data?.logos?.length}`);
+  const publicAfterDelete = await json("/logos");
+  check("deleted logo gone from public list", !publicAfterDelete.body?.data?.some((l) => l._id === processedLogoId));
+
+  // --- Sensitive calls require authentication -----------------------------
+  const unauthReprocess = await json(`/admin/logos/${afterDelete.body?.data?.logos?.[0]?._id}/reprocess`, { method: "POST" });
+  check("unauthenticated reprocess → 401", unauthReprocess.status === 401);
+  const unauthBulk = await json("/admin/logos/bulk-fix", { method: "POST" });
+  check("unauthenticated bulk fix → 401", unauthBulk.status === 401);
 }
 
 console.log("[smoke] 10. super admin + team management");

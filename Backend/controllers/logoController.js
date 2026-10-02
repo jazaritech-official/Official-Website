@@ -1,26 +1,166 @@
 import Logo from "../models/Logo.js";
-import { uploadImage, deleteImage, storageDriver } from "../services/storageService.js";
+import {
+  storeOriginal,
+  storeProcessed,
+  fetchStoredBytes,
+  deleteImage,
+  storageDriver,
+} from "../services/storageService.js";
+import { processLogoImage, DEFAULT_TOLERANCE } from "../services/imageProcessor.js";
 import { sendData } from "../utils/apiResponse.js";
 import { ApiError } from "../utils/errors.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
+/* --- Helpers -------------------------------------------------------------- */
+
+/** Safe http/https-only URL validation (client validation is UX only). */
+function normalizeWebsiteUrl(value) {
+  if (value === undefined || value === null) return undefined;
+  const raw = String(value).trim();
+  if (!raw) return "";
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw ApiError.badRequest("Enter a valid website URL.", { websiteUrl: "Invalid URL." });
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw ApiError.badRequest("Only http and https website links are allowed.", {
+      websiteUrl: "Only http/https links are allowed.",
+    });
+  }
+  return parsed.toString();
+}
+
 function normalizeLogoInput(body = {}) {
   const updates = {};
   if (body.name !== undefined) updates.name = String(body.name).trim();
+  if (body.displayName !== undefined) updates.displayName = String(body.displayName).trim();
   if (body.alt !== undefined) updates.alt = String(body.alt).trim();
   if (body.isVisible !== undefined) updates.isVisible = Boolean(body.isVisible);
   if (body.sortOrder !== undefined) updates.sortOrder = Number(body.sortOrder) || 0;
+  const websiteUrl = normalizeWebsiteUrl(body.websiteUrl);
+  if (websiteUrl !== undefined) updates.websiteUrl = websiteUrl;
   return updates;
 }
 
-/** GET /api/logos — visible logos for the public marquee. */
+function readProcessingOptions(body = {}) {
+  const options = {
+    removeBackground: body.removeBackground === undefined ? true : Boolean(body.removeBackground),
+    trim: body.trim === undefined ? true : Boolean(body.trim),
+    tolerance: body.tolerance === undefined ? DEFAULT_TOLERANCE : Number(body.tolerance),
+  };
+  if (!Number.isFinite(options.tolerance)) options.tolerance = DEFAULT_TOLERANCE;
+  options.tolerance = Math.min(100, Math.max(0, options.tolerance));
+  return options;
+}
+
+/** Public-safe projection — never exposes publicIds or internal refs. */
+function toPublicLogo(doc) {
+  return {
+    _id: doc._id,
+    name: doc.name,
+    displayName: doc.displayName || doc.name,
+    secureUrl: doc.secureUrl,
+    alt: doc.alt || doc.displayName || doc.name,
+    websiteUrl: doc.websiteUrl || "",
+    sortOrder: doc.sortOrder ?? 0,
+    width: doc.width ?? null,
+    height: doc.height ?? null,
+    aspectRatio: doc.aspectRatio ?? null,
+    hasAlpha: doc.hasAlpha ?? null,
+    tone: doc.tone ?? "light",
+    backgroundStatus: doc.backgroundStatus ?? "kept",
+    dominantColors: Array.isArray(doc.dominantColors) ? doc.dominantColors : [],
+  };
+}
+
+/**
+ * Run the processing pipeline from an original buffer and persist the processed
+ * asset, returning the fields to merge into the Logo document. The original is
+ * never overwritten and never deleted here.
+ */
+async function buildProcessedFields(originalBuffer, options) {
+  const processed = await processLogoImage(originalBuffer, options);
+
+  if (!processed.buffer) {
+    // Undecodable (e.g. vector-only asset): keep the original bytes as the
+    // delivered asset and report honestly — never fake a transparent result.
+    const stored = await storeProcessed(originalBuffer);
+    return {
+      fields: {
+        secureUrl: stored.secureUrl,
+        publicId: stored.publicId,
+        width: null,
+        height: null,
+        aspectRatio: null,
+        hasAlpha: null,
+        dominantColors: [],
+        averageLuminance: null,
+        tone: "light",
+        backgroundStatus: "needs-transparent-png",
+      },
+      result: { status: "needs-transparent-png", reason: processed.reason, changed: false },
+    };
+  }
+
+  const stored = await storeProcessed(processed.buffer);
+  const m = processed.metadata;
+  return {
+    fields: {
+      secureUrl: stored.secureUrl,
+      publicId: stored.publicId,
+      width: m.width,
+      height: m.height,
+      aspectRatio: m.aspectRatio,
+      hasAlpha: m.hasAlpha,
+      dominantColors: m.dominantColors,
+      averageLuminance: m.averageLuminance,
+      tone: m.tone,
+      backgroundStatus: processed.backgroundStatus,
+    },
+    result: {
+      status: processed.backgroundStatus,
+      changed: processed.changed,
+    },
+  };
+}
+
+/** Ensure a legacy logo has a preserved original; capture the current asset once. */
+async function ensureOriginal(logo) {
+  if (logo.originalPublicId && logo.originalUrl) return;
+  const bytes = await fetchStoredBytes(logo.publicId);
+  const stored = await storeProcessed(bytes); // reuse as a stable stored copy
+  logo.originalUrl = stored.secureUrl;
+  logo.originalPublicId = stored.publicId;
+  await logo.save();
+}
+
+/** Delete both processed and original assets, never double-deleting shared ids. */
+async function deleteLogoAssets(logo) {
+  const ids = new Set([logo.publicId, logo.originalPublicId].filter(Boolean));
+  const failures = [];
+  for (const id of ids) {
+    try {
+      await deleteImage(id);
+    } catch (error) {
+      failures.push({ id, message: error.message });
+    }
+  }
+  return failures;
+}
+
+/* --- Public --------------------------------------------------------------- */
+
+/** GET /api/logos — visible logos for the public showcase. */
 export const listPublicLogos = asyncHandler(async (_req, res) => {
   const logos = await Logo.find({ isVisible: true })
     .sort({ sortOrder: 1, createdAt: 1 })
-    .select("name secureUrl alt sortOrder")
     .lean();
-  sendData(res, logos);
+  sendData(res, logos.map(toPublicLogo));
 });
+
+/* --- Admin ---------------------------------------------------------------- */
 
 /** GET /api/admin/logos */
 export const listAdminLogos = asyncHandler(async (_req, res) => {
@@ -28,72 +168,201 @@ export const listAdminLogos = asyncHandler(async (_req, res) => {
   sendData(res, { logos, driver: storageDriver });
 });
 
-/** POST /api/admin/logos — upload to storage, then persist metadata. */
+/** POST /api/admin/logos — preserve original, process, then persist metadata. */
 export const createLogo = asyncHandler(async (req, res) => {
-  const { name, alt, isVisible, sortOrder } = normalizeLogoInput(req.body);
+  const { name, displayName, alt, isVisible, sortOrder, websiteUrl } = normalizeLogoInput(req.body);
   const image = req.body?.image;
 
   if (!name) throw ApiError.badRequest("Logo name is required.", { name: "Logo name is required." });
   if (!image) throw ApiError.badRequest("Choose an image to upload.", { image: "Image is required." });
 
-  const stored = await uploadImage(image);
+  const options = readProcessingOptions(req.body);
+  const original = await storeOriginal(image);
+  let processedFields;
+  try {
+    ({ fields: processedFields } = await buildProcessedFields(original.buffer, options));
+  } catch (error) {
+    await deleteImage(original.publicId).catch(() => {});
+    throw error;
+  }
 
   try {
     const logo = await Logo.create({
       name,
-      alt: alt || name,
+      displayName: displayName || "",
+      alt: alt || displayName || name,
+      websiteUrl: websiteUrl || "",
       isVisible: isVisible ?? true,
       sortOrder: sortOrder ?? 0,
-      secureUrl: stored.secureUrl,
-      publicId: stored.publicId,
+      originalUrl: original.secureUrl,
+      originalPublicId: original.publicId,
+      ...processedFields,
     });
     return sendData(res, logo, 201);
   } catch (error) {
-    // Roll back the uploaded asset so no orphan file is left behind.
-    await deleteImage(stored.publicId).catch(() => {});
+    // Roll back both uploaded assets so no orphan is left behind.
+    await deleteImage(processedFields.publicId).catch(() => {});
+    await deleteImage(original.publicId).catch(() => {});
     throw error;
   }
 });
 
-/** PUT /api/admin/logos/:id — metadata and/or image replacement. */
+/** PUT /api/admin/logos/:id — metadata and/or image replacement (with processing). */
 export const updateLogo = asyncHandler(async (req, res) => {
   const logo = await Logo.findById(req.params.id);
   if (!logo) throw ApiError.notFound("Logo not found.");
 
   const updates = normalizeLogoInput(req.body);
-  const previousPublicId = logo.publicId;
   const replacing = Boolean(req.body?.image);
+  const options = readProcessingOptions(req.body);
+
+  const previousProcessedId = logo.publicId;
+  const previousOriginalId = logo.originalPublicId;
+  let newOriginalId = null;
+  let newProcessedId = null;
 
   if (replacing) {
-    const stored = await uploadImage(req.body.image);
-    updates.secureUrl = stored.secureUrl;
-    updates.publicId = stored.publicId;
+    const original = await storeOriginal(req.body.image);
+    newOriginalId = original.publicId;
+    try {
+      const { fields } = await buildProcessedFields(original.buffer, options);
+      newProcessedId = fields.publicId;
+      Object.assign(updates, fields, {
+        originalUrl: original.secureUrl,
+        originalPublicId: original.publicId,
+      });
+    } catch (error) {
+      await deleteImage(original.publicId).catch(() => {});
+      throw error;
+    }
   }
 
   Object.assign(logo, updates);
-  await logo.save();
+  try {
+    await logo.save();
+  } catch (error) {
+    // DB write failed → keep the previous (still-valid) assets, drop the new ones.
+    if (newProcessedId) await deleteImage(newProcessedId).catch(() => {});
+    if (newOriginalId) await deleteImage(newOriginalId).catch(() => {});
+    throw error;
+  }
 
   if (replacing) {
-    // Best effort: the new asset is already live, so a stale old copy is only
-    // a (logged) storage leak, never broken public content.
-    await deleteImage(previousPublicId).catch((error) => {
-      console.warn(`[logos] could not remove previous asset ${previousPublicId}: ${error.message}`);
-    });
+    // New asset is live; removing stale copies is best-effort and only a leak.
+    for (const id of [previousProcessedId, previousOriginalId]) {
+      if (!id || id === newProcessedId || id === newOriginalId) continue;
+      await deleteImage(id).catch((error) => {
+        console.warn(`[logos] could not remove previous asset ${id}: ${error.message}`);
+      });
+    }
   }
 
   return sendData(res, logo);
 });
 
-/** DELETE /api/admin/logos/:id — storage first, then the database record. */
+/** POST /api/admin/logos/:id/reprocess — always from the preserved original (idempotent). */
+export const reprocessLogo = asyncHandler(async (req, res) => {
+  const logo = await Logo.findById(req.params.id);
+  if (!logo) throw ApiError.notFound("Logo not found.");
+
+  await ensureOriginal(logo);
+
+  const options = readProcessingOptions(req.body);
+  const bytes = await fetchStoredBytes(logo.originalPublicId);
+  const previousProcessedId = logo.publicId;
+  const { fields, result } = await buildProcessedFields(bytes, options);
+
+  Object.assign(logo, fields);
+  await logo.save();
+
+  if (previousProcessedId && previousProcessedId !== fields.publicId) {
+    await deleteImage(previousProcessedId).catch((error) => {
+      console.warn(`[logos] reprocess could not remove previous asset ${previousProcessedId}: ${error.message}`);
+    });
+  }
+
+  sendData(res, { logo, result });
+});
+
+/** POST /api/admin/logos/:id/revert — restore the untouched original upload. */
+export const revertLogo = asyncHandler(async (req, res) => {
+  const logo = await Logo.findById(req.params.id);
+  if (!logo) throw ApiError.notFound("Logo not found.");
+  if (!logo.originalPublicId || !logo.originalUrl) {
+    throw ApiError.badRequest("This logo has no preserved original to revert to.");
+  }
+
+  const previousProcessedId = logo.publicId;
+  logo.secureUrl = logo.originalUrl;
+  logo.publicId = logo.originalPublicId;
+  logo.backgroundStatus = "kept";
+  await logo.save();
+
+  if (previousProcessedId && previousProcessedId !== logo.publicId) {
+    await deleteImage(previousProcessedId).catch((error) => {
+      console.warn(`[logos] revert could not remove previous processed asset ${previousProcessedId}: ${error.message}`);
+    });
+  }
+
+  sendData(res, logo);
+});
+
+/**
+ * POST /api/admin/logos/bulk-fix — process every logo from its preserved
+ * original. Idempotent, per-item isolation (one failure never aborts the batch),
+ * never deletes an original before the new processed output exists.
+ */
+export const bulkFixLogos = asyncHandler(async (req, res) => {
+  const options = readProcessingOptions(req.body);
+  const logos = await Logo.find().sort({ sortOrder: 1, createdAt: 1 });
+
+  const summary = { processed: 0, alreadyGood: 0, needsTransparentPng: 0, failed: 0, total: logos.length };
+  const items = [];
+
+  for (const logo of logos) {
+    try {
+      await ensureOriginal(logo);
+      const bytes = await fetchStoredBytes(logo.originalPublicId);
+      const previousProcessedId = logo.publicId;
+      const { fields, result } = await buildProcessedFields(bytes, options);
+
+      Object.assign(logo, fields);
+      await logo.save();
+      if (previousProcessedId && previousProcessedId !== fields.publicId) {
+        await deleteImage(previousProcessedId).catch(() => {});
+      }
+
+      if (result.status === "needs-transparent-png") {
+        summary.needsTransparentPng += 1;
+        items.push({ id: logo._id, name: logo.name, status: "needs-transparent-png" });
+      } else if (result.changed) {
+        summary.processed += 1;
+        items.push({ id: logo._id, name: logo.name, status: "processed" });
+      } else {
+        summary.alreadyGood += 1;
+        items.push({ id: logo._id, name: logo.name, status: "already-good" });
+      }
+    } catch (error) {
+      summary.failed += 1;
+      items.push({ id: logo._id, name: logo.name, status: "failed", message: error.message });
+    }
+  }
+
+  sendData(res, { summary, items });
+});
+
+/** DELETE /api/admin/logos/:id — remove processed + original assets, then the record. */
 export const deleteLogo = asyncHandler(async (req, res) => {
   const logo = await Logo.findById(req.params.id);
   if (!logo) throw ApiError.notFound("Logo not found.");
 
-  // 1. delete the hosted asset  2. delete the Mongo record.
-  // If step 1 fails we abort, keeping storage and database consistent.
-  await deleteImage(logo.publicId);
-  await Logo.deleteOne({ _id: logo._id });
+  // Storage first: if cleanup fails we abort, keeping storage and DB consistent.
+  const failures = await deleteLogoAssets(logo);
+  if (failures.length > 0) {
+    throw ApiError.internal("Some logo assets could not be removed from storage. Please retry.");
+  }
 
+  await Logo.deleteOne({ _id: logo._id });
   return sendData(res, { id: logo._id.toString() });
 });
 
