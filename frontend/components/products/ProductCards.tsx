@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { api } from "@/lib/api";
 import { useApiData } from "@/hooks/useApiData";
+import { useTilt } from "@/hooks/useTilt";
 import { Reveal } from "@/components/motion/Reveal";
 import { Skeleton } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -39,9 +40,10 @@ function ProductCard({ product }: { product: Product }) {
   const CategoryIcon = iconRegistry[iconKey] ?? LayersIcon;
   const points = product.highlightPoints.slice(0, 4);
   const hasLink = Boolean(product.productUrl);
+  const tiltRef = useTilt<HTMLElement>();
 
   return (
-    <article className="card card-hover group flex h-full flex-col p-6">
+    <article ref={tiltRef} className="card card-hover tilt-card group flex h-full flex-col p-6">
       <div className="flex items-start justify-between gap-4">
         <div className="flex size-14 items-center justify-center overflow-hidden rounded-2xl border border-line bg-surface">
           {product.logo ? (
@@ -58,7 +60,7 @@ function ProductCard({ product }: { product: Product }) {
           )}
         </div>
 
-        <span className="icon-interactive inline-flex rounded-xl bg-accent-soft p-2.5 text-accent">
+        <span className="icon-interactive tilt-depth inline-flex rounded-xl bg-accent-soft p-2.5 text-accent">
           <CategoryIcon size={18} animated="pulse" />
         </span>
       </div>

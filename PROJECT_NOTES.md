@@ -36,6 +36,7 @@ Admin browser ──> /admin (frontend) ──same API client + httpOnly JWT coo
 | Database  | MongoDB |
 | Assets    | Cloudinary (product/logo images) |
 | Animation | Hand-written only: CSS keyframes, Web Animations API, IntersectionObserver, rAF. **Zero animation/icon/UI dependencies.** |
+| 3D / WebGL | `three` + `@types/three` (public site only) — "Procedural WebGL/3D visual layer for the public website." Lazy-loaded chunk; never on `/admin`.
 
 ## 4. Folder Structure
 
@@ -237,18 +238,35 @@ no-flash script before first paint.
 - Phase 5 — public site (navbar, hero, marquees, product cards, services, brand statement, footer).
 - Phase 6 — 4-step Start Your Project form + success modal with reference ID.
 - Phase 7 — admin portal (login, shell, dashboard, logos, products/templates, submissions, visitors).
+- 3D Phase 1 — repo audit, `three@0.186.1` + `@types/three@0.186.0` installed (only new deps).
+- 3D Phase 2 — foundation: renderer/RAF/quality/theme/fallback/lazy loading + route isolation.
+- 3D Phase 3 — materials, PMREM environment, studio lighting, procedural ribbon diamond.
+- 3D Phase 4 — assembly/idle/parallax/scroll/hover + support objects + contact shadow.
+- 3D Phase 5 — hotspot projection + SVG connector + backend-data glass card.
+- 3D Phase 6 — composition + dimensional z-stagger polish.
+- 3D Phase 7 — CSS 3D card tilt (services/products) + CSS-only ambient Brand Statement field.
+- 3D Phase 8 — optional intro: deliberately skipped per spec guardrails (rationale logged).
+- 3D Phase 9 — CDP verification harness: 47/47 + NO_WEBGL 7/7 (perf/memory/mobile/low-end).
+- 3D Phase 10 — a11y + regression + form E2E; fixed Next 16 private-IP image-optimizer 400.
 
 ## 22. In Progress
 
-- None — all 10 phases completed and verified.
+- None.
 
 ## 23. Planned
 
 - Deployment handoff: real Cloudinary credentials + production MongoDB/env (owner-side).
+- Optional: revisit branded intro only with real Lighthouse data.
 
 ## 24. Known Issues
 
-- None yet.
+- **SwiftShader X4122 shader warning** appears only under headless *software* WebGL (double-precision
+  compiler noise from three's stock shaders); not produced by app code and absent on hardware GPUs.
+- **Firefox/Safari not empirically tested** (CLI has Chromium only). All APIs used are baseline; recorded
+  as code-reviewed compatibility, not measured.
+- **Lighthouse not runnable here** — no score is claimed. Bundle facts are reported instead (see §26.17).
+- Synthetic sustained-FPS downgrade could not be forced under SwiftShader; FPS monitor verified by review.
+- Dev-only: `CLIENT_ORIGIN` includes `http://localhost:3001` for the production-preview harness.
 
 ## 25. Dated Changelog
 
@@ -416,3 +434,229 @@ no-flash script before first paint.
 - Paste real Cloudinary credentials into `Backend/.env` before production (local driver is dev-only).
 - Set production `JWT_SECRET`, `MONGODB_URI`, `COOKIE_SECURE=true`, and point `CLIENT_ORIGIN`/`NEXT_PUBLIC_API_URL` at the deployed hosts.
 - Replace seed/sample content and upload the real brand logos via `/admin/logos`.
+
+## 2026-10-02 — 3D Phase 1: Repository audit + Three.js dependency
+
+### Completed
+- Full re-audit before starting the Three.js enhancement: hero (`components/sections/Hero.tsx` with decorative visual column, orbit rings, floating tiles, glass card), theme system (`useTheme` + `useSyncExternalStore`), motion primitives (`Reveal`/`Counter`/`Marquee`), icon registry, API client (`api.services()` is a cached GET → safe to reuse from the hero without duplicate network requests), page structure (server `app/page.tsx` composing client sections), strict ESLint (eslint-config-next core-web-vitals + typescript).
+- Installed the ONLY two permitted new frontend dependencies: `three@0.186.1` (dependency) and `@types/three@0.186.0` (devDependency). Nothing else added; backend untouched.
+- No `components/three/` existed before this task — the interrupted session left no partial work.
+
+### Verification
+- `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅ (12 routes) with three installed but not yet imported.
+
+### Plan (actual repository names)
+- `components/three/` module folder; `Hero` gains a `HeroScene` slot inside the existing visual column; `HeroScene` lazily loads `SceneCanvas` via `next/dynamic` + `ssr: false` so `three` lands in an async chunk used only by `/`.
+
+## 2026-10-02 — 3D Phase 2: Three.js foundation
+
+### Completed
+- `components/three/` created: `types.ts` (QualityTier/SceneTheme/SceneStatus/ScenePhase/EngineHandle — type-only, erased at build), `helpers/webgl.ts` (capability probe that releases its throwaway context), `helpers/math.ts` (lerp/damp/smoothstep/easeOutCubic/seededNoise), `helpers/disposeScene.ts` (traversal disposal of geometry/material/textures with documented ownership), `helpers/projection.ts` (allocation-free world→container pixel projection), `quality.ts` (HIGH/MEDIUM/LOW budgets + device-based `detectInitialTier` + bounded-window FPS monitor with hysteresis/cooldown, downgrade-only), `theme.ts` (brand constants + light/dark `ScenePalette` + live `--background` read for fog).
+- `engine.ts`: ONE WebGLRenderer (alpha, antialias, `powerPreference: high-performance`, DPR cap per tier, ACES tone mapping), one RAF loop with clamped delta, passive hero-range scroll listener, in-place `setTheme`/`setTier`/`setReducedMotion`, full `dispose()` (cancel RAF → `disposeObject(scene)` → `renderer.dispose()` → `forceContextLoss()` → remove canvas). Temporary probe mesh validates the pipeline (replaced by the ribbon diamond in Phase 3).
+- `SceneCanvas.tsx`: init effect (WebGL check → tier detect → try/catch engine create → silent fallback), IntersectionObserver pause (120 px rootMargin), `visibilitychange` pause, ResizeObserver, `webglcontextlost` (preventDefault + pause + fallback) / `webglcontextrestored` (resume same engine — no duplicates), Strict Mode-safe cleanup that reports fallback before flipping its guard. Theme/reduced-motion updates land via separate effects that mutate the live engine — the scene is never recreated.
+- `HeroScene.tsx`: eagerly imported by `Hero`; loads `SceneCanvas` through `next/dynamic` + `ssr:false` with an `.catch(() => () => null)` guard (chunk failure ⇒ static fallback stays), bridges the existing `useTheme` + new `useReducedMotion` hook, and writes scene status straight to the hero container's `data-scene` attribute (no React re-renders).
+- `Hero.tsx` integration: existing visual column kept intact but wrapped in `.hero-decor` (aria-hidden), `data-scene="fallback"` on the container, `<HeroScene hostRef={visualRef} />` appended. `globals.css` §7: `.hero-decor`/`.hero-scene` crossfade rules + `pointer-events:none` (canvas can never block navbar/CTAs/forms/scroll); reduced-motion section renumbered §8.
+- `hooks/useReducedMotion.ts`: useSyncExternalStore wrapper mirroring `useTheme`.
+
+### Verification
+- `npm run lint` ✅ (0 problems), `npm run build` ✅ (12 routes).
+- **Bundle isolation (build output, measured)**: three lives in one chunk (`36q0w8b05oakh.js`), referenced only by the async SceneCanvas chunk (`3ahsfd7k123_f.js`), which + the HeroScene page chunk (`045v5stj6duvf.js`) appear in **home HTML only — 0 of 6 admin HTML files reference any of them**.
+
+## 2026-10-02 — 3D Phase 3: Materials, environment, lighting, ribbon diamond
+
+### Completed
+- `materials.ts`: tier-aware factories — `createRibbonMaterial` (MeshPhysicalMaterial with clearcoat on HIGH/MEDIUM, MeshStandard on LOW; no transmission on logo pieces), `createLeafMaterial` (Growth Green + 0.08 emissive micro-glow), `createSupportMaterial`, `createSoftMaterial`.
+- `environment.ts`: procedural `RoomEnvironment` baked once through `PMREMGenerator` (no HDRI downloads), immediate disposal of room + pmrem, RT owned/disposed by the module; theme differences apply via `scene.environmentIntensity` (never re-bakes).
+- `lighting.ts`: 4-light studio rig (hemisphere fill, key, technology-blue rim, tiny green accent point), **zero shadow casters**, `apply()` restyles colors/intensities in place.
+- `createRibbonPieces.ts`: fully procedural Jazari ribbon diamond — four annular-sector ribbons (radius 1.16, width 0.42, 76° span → 14° cardinal gaps, extruded 0.3 with 0.045 bevel + rounded quadratic caps) with 4-fold rotational symmetry bulging on the diagonals (diamond silhouette), piece colors navy/blue/navyDeep/blueDeep, ±0.055° X tilts, plus a tiny extruded green leaf at top-right (hotspot anchor). Assembly start offsets (radial push + rotational skew) exported as specs for Phase 4.
+- `engine.ts`: probe replaced by environment + lighting + ribbon composition group; `setTheme` now updates fog/exposure/lighting/environment-intensity in place; `ScenePhase` state machine introduced (`assembling` → `idle`); scroll range drives composition drift; disposal order: ribbon → lighting → environment RT → scene → renderer → forceContextLoss.
+- `@types/three@0.186` renamed `ExtrudeGeometryParameters` → `ExtrudeGeometryOptions` (adapted).
+
+### Verification
+- `npm run lint` ✅ (0 problems), `npm run build` ✅ (12 routes).
+
+## 2026-10-02 — 3D Phase 4: Hero scene motion (assembly, idle, parallax, hover, objects)
+
+### Completed
+- `animation.ts` (`createAnimator`): assembly state machine (`assembling → idle`, `ASSEMBLY_DURATION` 1.4 s, per-piece 0.08 stagger, easeOutCubic, leaf settles last from a delayed offset) driven by elapsed time only — never restarts on re-render; reduced motion snaps progress to 1. Idle hierarchy: ribbon slow rotation + breath, per-piece float/wobble, gear spins in-plane, supports bob at individual rhythms, points drift ultra-slow. Pointer parallax with depth hierarchy (composition 0.09 → supports extra 0.07/0.14 → camera 0.16, all exponentially damped). Scroll: composition drift/shrink over the 600 px hero range. Every frame recomputes transforms from BASE + contributions — no incremental mutation, so reduced-motion/theme flips can't drift (spec §64).
+- `interaction.ts`: pointer listeners on the hero container (canvas stays `pointer-events:none`), fine-pointer detection, damped -1..1 state, throttled raycast (70 ms min interval, 160 ms idle refresh, only after movement) against ribbon + visible supports.
+- `createTechObjects.ts`: five procedural supports with art-directed positions — chip (rounded box + die + micro green status point), cloud (sphere lobes), shield (extruded curve), gear (torus + 8 teeth), data cluster (spheres + line segments) — plus a runtime-canvas radial-gradient **fake contact shadow** (tinted per palette, no shadow maps) and a 140-point atmospheric field. `setSupportCount`/`setParticleVisibility` drive tier budgets; `userData.baseScale` supports hover scaling.
+- `engine.ts`: single loop now = interaction damping → animator (sole spatial writer) → render → post-render anchor projection + hover poll (fresh matrices) → eased hover feedback (scale pop + emissive lift via `userData.baseEmissive`, leaf excluded from scale since the animator owns it). Responsive camera fit (`max(8.2, 9.05/aspect)`), tier budget application (support counts, particles, hover/parallax), dispose also tears down interaction.
+- `materials.ts`: emissive hooks added for hover (`baseEmissive` in `userData`); leaf keeps its permanent 0.08 micro-glow.
+
+### Verification
+- `npm run lint` ✅ (0 problems), `npm run build` ✅ (12 routes).
+- **Headless Chrome runtime check** (dev server, SwiftShader WebGL): `data-scene="webgl"` present in dumped DOM (engine reached first frame + crossfade fired), exactly **one `<canvas>`** after React Strict Mode double-mount, **no JS errors / no hydration errors / no React warnings**. Only log: a SwiftShader X4122 double-precision shader-compile warning (software rasterizer noise, not emitted by app code; absent on hardware GPUs — recorded under Known Issues).
+
+## 2026-10-02 — 3D Phase 5: Hotspot + connector + glass card (backend data)
+
+### Completed
+- `HeroScene.tsx` now owns the full HTML overlay: SVG connector (container-level, `pointer-events:none`), pulsing hotspot (Growth-Green core + navy/blue ring via `.hero-hotspot`), and the glass preview card. Fragment structure keeps the card **outside** the `aria-hidden` scene layer (accessible HTML) while canvas/connector/hotspot stay decorative.
+- **Backend-driven content**: card renders `GET /api/services` data through the existing `useApiData` + `cached()` client — the same in-flight promise the Services section consumes, so **no duplicate network request**. `pickFeatured()` deterministically prefers a software/AI discipline, falls back to the first service; skeleton while loading; renders nothing on error/empty (never fake data, never a new endpoint).
+- **Projection**: engine projects the leaf's world position every frame → `onAnchor(x, y, visible)` → DOM writes only (hotspot `translate3d`, connector quadratic `d` from hotspot to card `offsetLeft/offsetTop+20`). No React re-renders anywhere in the loop.
+- **Fallback placement**: without WebGL the overlay sits at a static position beside the card (recomputed on `resize`) — the design language is identical in both modes; `placeDefault()` also re-arms if the engine reports fallback (context loss).
+- **Responsive**: connector hidden ≤640 px (card and hotspot remain); hotspot reveals only after first placement (no top-left flash); card keeps `bottom-4 right-0` inside the visual column — never over headings/CTAs/nav.
+- `Hero.tsx`: old static "Delivery pulse" card/connector/hotspot block removed (decorative placeholder superseded by the backend-data overlay); orbit rings, tiles and brand-icon tile remain as the fallback.
+
+### Verification
+- `npm run lint` ✅ (0 problems), `npm run build` ✅ (12 routes).
+- **Headless Chrome**: `Featured service` card rendered with real API data; hotspot inline `translate3d(317.9px, 2.2px, 0)` — matches the analytically predicted projection of the leaf's assembly-start pose (predicted 317.7 px); connector `d="M 317.9 2.2 Q … 208.0 263.0"` terminates exactly at the card corner (offsetLeft 448−240=208, offsetTop 243+20=263); **zero console errors**.
+
+## 2026-10-02 — 3D Phase 6: Composition + material/motion polish
+
+### Completed
+- Composition pass on the five supports: data cluster relocated to top-centre and pushed deeper (z −2.0) — it previously crowded the cloud in the top-right and sat near the hotspot projection path. Final art direction: chip top-left, cloud top-right, shield left, gear bottom-left, data top-centre/deep; bottom-right intentionally empty (glass card lives there).
+- Ribbon pieces now carry an alternating ±0.055 z-stagger in their assembled targets — the diamond reads as woven/dimensional under rotation instead of a flat ring (targets are captured by the animator, so assembly still converges onto them).
+- Fixed the animator to lerp toward the *captured* target position rather than a hardcoded origin (the z-stagger would otherwise have been erased at assembly completion).
+- Reviewed (unchanged, values were sound): lighting ratios, fog range 9→24 (main composition unfogged, supports ~5% haze, atmosphere points 13–23% — natural depth ramp), motion hierarchy (ribbon 0.05 rad/s < supports < gear 0.23 rad/s < hotspot pulse < card static), material tiers, reflections budget per tier.
+
+### Verification
+- `npm run lint` ✅ (0 problems), `npm run build` ✅ (12 routes).
+
+## 2026-10-02 — 3D Phase 7: Services/Products CSS depth + ambient Brand Statement
+
+### Completed
+- `hooks/useTilt.ts`: pointer-follow 3D tilt — writes `--tilt-x`/`--tilt-y` custom properties directly to the DOM (zero React renders), rAF-throttled (one update/frame, pointer values copied before the frame), auto-disabled on coarse pointers and under reduced motion, full listener cleanup.
+- `globals.css` §7b: `.tilt-card` (perspective 950° + rotateX/rotateY from the custom properties, declared *after* `.card-hover:hover` so it wins the specificity tie and re-adds the −4 px lift), `.tilt-depth` (translateZ 18 px icon elevation). No new animation dependency — pure CSS transform.
+- Wired into `ServiceCard` (ServicesGrid) and `ProductCard` (ProductCards): `tilt-card` on the article + `tilt-depth` on the existing animated icon spans. Existing Reveal entrances, `group-hover` icon nudges and animated SVG icons untouched.
+- Brand Statement ambient field (§7c): **CSS-only** — five drifting dots (technology blue + exactly one Growth-Green micro point) and one 110 s dashed orbital ring, all reusing the existing `float-slow`/`float-medium`/`jt-spin` keyframes at `opacity ≤ 0.55`, `aria-hidden`, behind content (`-z-10`). Deliberately *not* WebGL: spec §36 gives performance priority, and a second full-screen renderer on a below-fold section was not justified — compositor-only CSS achieves the same read for zero JS cost (off-screen paint cost ≈ 0).
+
+### Verification
+- `npm run lint` ✅ (0 problems), `npm run build` ✅ (12 routes).
+
+## 2026-10-02 — 3D Phase 8: Branded intro — DELIBERATELY SKIPPED
+
+### Decision
+Per the spec's own guardrails ("only implement if performance remains excellent", "if the implementation
+harms performance: DO NOT IMPLEMENT IT", "never blocks LCP"), the optional session intro overlay was **not built**:
+
+1. An overlay shown on first paint risks becoming the LCP element or delaying paint of the hero H1 — the
+   spec forbids both, and Lighthouse cannot be run in this CLI environment to prove the 90+ budget holds.
+2. The core hero already delivers the same branded moment — ribbon pieces assemble into the Jazari diamond
+   on first render (behind, not over, the content), so the intro would be redundant.
+3. The hero takes priority over an optional flourish, exactly as the spec instructs.
+
+This is an intentional no-op, not an omission. Revisit only with real Lighthouse data.
+
+## 2026-10-02 — 3D Phase 9: Performance + memory + mobile + low-end verification
+
+### Completed
+- **`frontend/scripts/verify-three.mjs`** — dependency-free CDP harness (Node built-in WebSocket + headless Chrome) with two modes:
+  - **normal**: 27 checks — scene activation; one canvas; live tier marker; backend card data; RAF/visibility environment sanity; idle motion; context loss → fallback → restore → resume (one canvas, no duplicates); `prefers-reduced-motion` emulated → composition provably static (<1.5 px/700 ms) while running; 390×844 mobile+touch emulation → degraded tier + real canvas dimensions; **runtime admin isolation** (zero three-chunk resources, zero canvases); 3× SPA round-trips (footer Link → history.back) with post-GC heap bound.
+  - **`NO_WEBGL=1`**: 7 checks — `--disable-webgl --disable-webgl2` → `data-scene` stays `fallback`, zero canvases, fallback opacity 1, overlay card + backend content + heading all intact, clean console (spec TEST 14).
+- Canvas now exposes `data-quality` (live tier) for inspection/tuning; `setTier` keeps it current.
+- Engine pause/resume machinery proven in practice: the harness initially caught the engine *correctly* frozen while the hero was below the fold (IntersectionObserver pause, spec §45) — resuming on scroll; the test was fixed to bring the hero into view rather than the code being weakened.
+- FPS monitor (bounded 3 s windows, 2 consecutive poor windows < 42 FPS, 10 s cooldown, downgrade-only) verified by code review — sustained low FPS cannot be forced reliably under SwiftShader, so no synthetic claim is made.
+- LOW tier device path verified by code review (mobile emulation legitimately resolved to MEDIUM on this 8-core host: `cores≥8 && memory≥6`).
+
+### Verification
+- `npm run lint` ✅ (0 problems incl. the harness), `npm run build` ✅.
+- **`node scripts/verify-three.mjs` → 27/27 passed** (heap 16.1 MB → 15.8 MB after GC across 3 remount cycles).
+- **`NO_WEBGL=1 node scripts/verify-three.mjs` → 7/7 passed.**
+- Environment note: `Backend/.env` `CLIENT_ORIGIN` gained `http://localhost:3001` (dev-only, gitignored) so the production-preview port passes CORS; server restarted via `npm run dev:mem -- --seed`.
+
+## 2026-10-02 — 3D Phase 10: Accessibility, cross-browser, regression
+
+### Completed
+- Harness extended with three suites (now 47 checks in normal mode):
+  - **[8] Accessibility**: canvas + whole scene layer `aria-hidden="true"`; canvas has no `tabindex` (never steals focus); hotspot/connector decorative; glass card proven *outside* any `aria-hidden` subtree with real text; skip link present; exactly one `<h1>`; `main`/`nav`/`footer` landmarks.
+  - **[9] Homepage regression**: all eight sections present (home/products/services/start/brand/footer anchors), marquee (2 rows, 4 imgs from API), 4 product cards, **14 service cards**, form, hidden admin entry — with a clean console.
+  - **[10] Form E2E (spec TEST 28)**: drives the real 4-step intake through CDP (native setter + input events) → service chip → submit → **server reference `JT-20261002-6JNRVW`** in the success modal; no console errors (honeypot untouched).
+- **Real bug found & fixed by the harness**: logo images from the local storage driver returned Next's `"url" parameter is not allowed` 400 — Next 16's SSRF guard blocks upstream hosts resolving to *private IPs* (localhost → 127.0.0.1) and reuses the pattern-mismatch message. Fixed in `next.config.ts` with `images.dangerouslyAllowLocalIP: true` (only `remotePatterns`-approved hosts are ever fetchable; production points `NEXT_PUBLIC_API_URL` at the real API host). Optimizer now 200; local-driver logos actually render for the first time.
+- Keyboard/focus review: no interactive elements were added or reordered — canvas/connector/hotspot are `aria-hidden` + non-focusable; tilt/hover effects are pointer-only; reduced-motion disables all of them (verified in [4]).
+
+### Cross-browser statement (honest)
+- **Verified in Chromium** (headless Chrome 140-era, production build) — plus Edge is the same engine.
+- Firefox/Safari: not runnable in this CLI. APIs used (WebGL2, ResizeObserver, IntersectionObserver, `matchMedia().addEventListener`, CSS `color-mix`, custom properties) are all baseline-supported in current versions; no experimental/flagged APIs are used. Not empirically tested — recorded as code-reviewed compatibility only.
+
+### Verification
+- `npm run lint` ✅ (0 problems), `npm run build` ✅.
+- **`node scripts/verify-three.mjs` → 47/47** · **`NO_WEBGL=1` → 7/7**.
+
+## 26. 3D / Three.js Architecture
+
+The public homepage hero carries a procedural WebGL layer as **progressive enhancement** on top of
+the existing static fallback. React only manages lifecycle; every Three.js concern lives in
+`frontend/components/three/`.
+
+1. **three version**: `0.186.1` (dependency) · **@types/three**: `0.186.0` (devDependency).
+2. **Why Three.js**: premium, dimensional "product-shot" reading of the Jazari ribbon-diamond mark —
+   cinematic depth/material quality the CSS system cannot express. Allowed exception to the
+   zero-dependency rule; nothing else was added (no r3f/drei/gsap/framer/postprocessing).
+3. **Dynamic loading**: `Hero` (eager) → `HeroScene` (eager, small) → `next/dynamic` + `ssr:false` →
+   `SceneCanvas` + engine + `three` in one async chunk; import guarded with `.catch(() => () => null)`
+   so a chunk failure silently leaves the fallback up.
+4. **Route isolation**: only `/` mounts HeroScene. Build manifests: home HTML references the scene
+   chunks, **0 of 6 admin pages do**; runtime harness confirms admin loads zero three-chunk resources.
+   No `components/index.ts` barrel exists; nothing global imports three.
+5. **Scene structure**: `scene → {fog, environment, lighting.rig}` and `composition → {ribbon.group,
+   supports.group}`. Composition carries scroll + primary parallax; supports carry an extra parallax
+   layer; the animator is the single writer of all spatial state.
+6. **Renderer configuration**: `alpha:true` (page token background shows through), `antialias:true`,
+   `powerPreference:"high-performance"`, `stencil:false`, DPR `min(devicePixelRatio, tierCap)`,
+   ACESFilmic tone mapping with palette exposure. Exactly one renderer, one RAF loop, clamped delta.
+7. **Quality tiers**: `high | medium | low | static` — device detection (cores/deviceMemory/pointer/
+   viewport) picks the start tier; `quality.ts` `QUALITY` holds budgets; canvas exposes live tier as
+   `data-quality`.
+8. **Object counts**: ribbon = 4 arc pieces + 1 leaf (always); supports = 5/3/1 (chip, cloud, shield,
+   gear, data); atmosphere points = 140/70/0; lights = 4; contact shadow = 1.
+9. **Material strategy**: `MeshPhysicalMaterial` (clearcoat, no transmission) on HIGH/MEDIUM,
+   `MeshStandardMaterial` on LOW; `userData.baseEmissive` powers hover emissive lift; leaf keeps a
+   permanent 0.08 emissive micro-glow.
+10. **Environment strategy**: `RoomEnvironment` baked once through `PMREMGenerator` (no HDRI files),
+    RT owned by `environment.ts`; theme/tier differences via `scene.environmentIntensity` — never re-baked.
+11. **Theme mapping**: existing `useTheme` is the only source of truth → `theme.ts` `BRAND`/`PALETTES`
+    (exact globals.css tokens) + live read of `--background` for fog. `setTheme` mutates fog, exposure,
+    lights, shadow tint and environment intensity **in place** — no scene recreation.
+12. **WebGL fallback**: `supportsWebGL()` probe (releases its throwaway context) → `data-scene`
+    attribute crossfades `.hero-decor` (static) ↔ `.hero-scene` (WebGL). Fallback preserves dimensions
+    (zero CLS), keeps the hotspot/connector/card overlay in its static placement.
+13. **Context-loss handling**: `webglcontextlost` → `preventDefault`, pause RAF, report fallback;
+    `webglcontextrestored` → resume the *same* engine (no duplicates). If unsafe, fallback persists.
+14. **Cleanup/disposal**: unmount cancels RAF, disconnects IO/RO, removes listeners, `disposeObject`
+    traversal (geometry/material/textures), PMREM RT, `renderer.dispose()`, `forceContextLoss()`,
+    canvas removed — Strict Mode double-mount proven safe (exactly one canvas after 3 remount cycles).
+15. **Reduced motion**: assembly snaps to completed, idle/parallax/scroll amplitudes → 0 (still one
+    running loop so hover/fallback stay responsive), tilt hook disabled, CSS animations neutralized by
+    the global override. Proven static to <1.5 px/700 ms while the engine runs.
+16. **Mobile**: coarse/small viewport → LOW/MEDIUM tier, DPR ≤1.25–1.5, no pointer parallax/raycast,
+    fewer objects, connector hidden ≤640 px, camera pulls back (`max(8.2, 9.05/aspect)`) to fit.
+17. **Performance decisions**: no postprocessing, no external assets, no shadow maps (fake canvas
+    contact shadow), throttled raycast (70 ms), IO + visibilitychange pausing, hero-range scroll only,
+    bounded-window FPS monitor (downgrade-only, hysteresis). **Bundle facts**: home initial JS
+    667 KB raw / **206 KB gz** (10 scripts, no three); admin initial 630 KB raw / 196 KB gz (no three);
+    three async chunk **595 KB raw / 149 KB gz**, fetched only when the hero scene actually loads.
+18. **Add a new 3D object**: write a builder in `createTechObjects.ts` (procedural only), add an entry
+    to `SUPPORT_POSITIONS`/`SUPPORT_SCALES`, push it into `builders` — tier visibility and raycast
+    targeting pick it up automatically.
+19. **Tune object count**: `quality.ts` → `QUALITY[tier].supportCount` / `.particleCount`.
+20. **Tune quality**: `quality.ts` (`QUALITY`, `detectInitialTier`, `createFpsMonitor` thresholds).
+21. **Tune colors**: `theme.ts` (`BRAND`, `PALETTES`) — sourced from globals.css tokens; never inline.
+22. **Tune everything else**: ribbon geometry → `createRibbonPieces.ts` constants; piece targets →
+    `RIBBON_PIECES`/positions there; support placement → `SUPPORT_POSITIONS`; animation speeds →
+    `animation.ts` (`ASSEMBLY_DURATION`, amplitudes); pixel ratio → `quality.ts`; hotspot/card →
+    `HeroScene.tsx` + `.hero-hotspot`/`.hero-connector` in globals.css.
+
+## 2026-10-02 — 3D Phase 11: Final documentation + verification
+
+### Completed
+- §26 "3D / Three.js Architecture" added (all 22 required topics: versions, rationale, lazy loading,
+  route isolation, scene graph, renderer, tiers, counts, materials, environment, theme bridge,
+  fallback, context loss, disposal, reduced motion, mobile, performance + bundle facts, and the five
+  tuning guides). Tech Stack table already carries the `three`/`@types/three` rows with the required
+  reason string. README §9 covers public-only scope, quality tiers, WebGL troubleshooting and commands.
+- Bundle impact measured from the production build (no estimates): three = 595,110 B raw /
+  149,015 B gz in its own async chunk; home initial 667,111 B raw / 205,936 B gz; admin initial
+  629,847 B raw / 196,096 B gz — **neither route's HTML references the three chunk**.
+
+### Final verification
+- `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅ (12 routes).
+- `node scripts/verify-three.mjs` ✅ **47/47** · `NO_WEBGL=1 node scripts/verify-three.mjs` ✅ **7/7**.
+- `Backend`: `npm run lint` ✅, `npm run build` ✅ (39 files), `npm run smoke` ✅ **53/53** — no backend
+  file was modified for the 3D work (only the dev-only gitignored `CLIENT_ORIGIN` env value gained
+  `http://localhost:3001`).
+
+### Honest limitations
+- Lighthouse unavailable in this CLI → no Lighthouse score claimed.
+- Firefox/Safari unavailable → Chromium-verified; others code-reviewed only.
+- SwiftShader X4122 warning (headless software GL) documented under Known Issues; not app-originated.

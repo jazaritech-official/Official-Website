@@ -793,7 +793,135 @@
 }
 
 /* ============================================================
-   7. REDUCED MOTION
+   7. THREE.JS SCENE LAYERS (progressive enhancement)
+   ============================================================ */
+
+/* Static fallback — orbit rings, floating tiles, brand icon. Fades out only
+   after the WebGL scene has rendered its first frame. */
+.hero-decor {
+  transition: opacity 600ms var(--ease-out);
+}
+
+[data-scene="webgl"] .hero-decor {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Lazy scene layer — starts transparent (fallback visible, zero CLS),
+   crossfades in when `data-scene="webgl"`. Never intercepts pointers, so
+   navbar/links/forms/scroll keep working above or around the canvas. */
+.hero-scene {
+  opacity: 0;
+  transition: opacity 700ms var(--ease-out);
+  pointer-events: none;
+}
+
+[data-scene="webgl"] .hero-scene {
+  opacity: 1;
+}
+
+.hero-scene canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Hotspot: Growth-Green core + navy/blue ring, positioned via inline
+   transform (container pixels from the projected 3D anchor). */
+.hero-hotspot {
+  left: 0;
+  top: 0;
+  z-index: 2;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px; /* translate targets the hotspot centre */
+  border-radius: 999px;
+  background-color: var(--growth);
+  opacity: 0; /* revealed after first placement — no top-left flash */
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--primary) 38%, transparent),
+    0 0 14px color-mix(in srgb, var(--growth) 45%, transparent);
+  transition: opacity 300ms var(--ease-out);
+}
+
+/* Connector: thin dashed accent line, hotspot → glass card. */
+.hero-connector {
+  overflow: visible;
+  z-index: 1;
+}
+
+/* Mobile: composition too constrained for the line — card stays. */
+@media (max-width: 640px) {
+  .hero-connector {
+    display: none;
+  }
+}
+
+/* ============================================================
+   7b. CSS 3D CARD DEPTH (services + products)
+   ============================================================ */
+
+/* Pointer-follow tilt — driven by `useTilt` custom properties. Declared after
+   `.card-hover:hover` so it wins the specificity tie and can add the lift
+   back into its own transform. */
+.tilt-card {
+  --tilt-x: 0deg;
+  --tilt-y: 0deg;
+  transform: perspective(950px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y));
+  transform-style: preserve-3d;
+  transition:
+    transform 160ms var(--ease-out),
+    box-shadow var(--dur-normal) var(--ease-out),
+    border-color var(--dur-normal) var(--ease-out);
+}
+
+.tilt-card:hover {
+  transform: perspective(950px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y)) translateY(-4px);
+}
+
+/* Elevation for icon/badge children inside a tilted card. */
+.tilt-depth {
+  transform: translateZ(18px);
+}
+
+/* ============================================================
+   7c. AMBIENT BRAND-STATEMENT FIELD (CSS-only, zero JS)
+   ============================================================ */
+
+.ambient-field .ambient-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background-color: var(--accent);
+  opacity: 0.32;
+}
+
+.ambient-field .ambient-dot.is-growth {
+  width: 4px;
+  height: 4px;
+  background-color: var(--growth);
+  opacity: 0.5; /* the one rare green point — micro accent only */
+}
+
+.ambient-field .ambient-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(34rem, 90vw);
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  border: 1px dashed color-mix(in srgb, var(--border) 85%, transparent);
+  border-radius: 999px;
+  opacity: 0.55;
+  animation: jt-spin 110s linear infinite;
+}
+
+/* ============================================================
+   8. REDUCED MOTION
    ============================================================ */
 @media (prefers-reduced-motion: reduce) {
   *,

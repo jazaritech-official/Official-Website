@@ -4,7 +4,8 @@ Full-stack marketing site + admin portal for **Jazari Tech Official**.
 
 - **Frontend** — Next.js 16 (App Router, Turbopack), React 19, Tailwind v4. No runtime UI/animation
   dependencies: all motion is CSS keyframes, Web Animations API, IntersectionObserver and `requestAnimationFrame`,
-  all icons are hand-written inline SVG.
+  all icons are hand-written inline SVG. The public site adds `three` (vanilla, procedurally generated
+  scene, lazy-loaded chunk — `/admin` never loads it); see the *3D / WebGL layer* section below.
 - **Backend** — Node (ESM) + Express 5 + Mongoose 8 with Helmet, strict CORS, rate limiting,
   express-validator, JWT auth (httpOnly cookie), bcryptjs and Cloudinary storage.
 - **Docs** — living project documentation lives in [`PROJECT_NOTES.md`](./PROJECT_NOTES.md)
@@ -197,3 +198,36 @@ Full tables: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §8–§12.
    disabled outside development.
 3. Point `NEXT_PUBLIC_API_URL` at the deployed API and `CLIENT_ORIGIN` at the deployed site.
 4. Build: `frontend: npm run build && npm start` · `Backend: npm start` (use a process manager).
+
+## 9. 3D / WebGL layer (public site only)
+
+The homepage hero renders a **procedural Three.js scene** behind the existing static
+fallback. It is a progressive enhancement:
+
+- **Code lives in** `frontend/components/three/` (`engine.ts` = renderer/loop, `SceneCanvas.tsx` =
+  lifecycle, `HeroScene.tsx` = lazy load + theme bridge, `quality.ts` = tiers, `theme.ts` =
+  token→palette mapping, `helpers/` = webgl probe / math / disposal / projection).
+- **Lazy by design**: `HeroScene` pulls `SceneCanvas` through `next/dynamic` with `ssr: false`, so
+  `three` sits in its own async chunk that only `/` ever references — `/admin` never loads it
+  (verified against the build manifests: 0 admin HTML references to the three chunk).
+- **No WebGL / chunk failure / context loss** → the static fallback stays up (crossfade via
+  `data-scene` on the hero container). No errors, no layout shift, no blank canvas.
+- **Quality tiers** (`quality.ts`): HIGH/MEDIUM/LOW chosen from cores/RAM/pointer type, then
+  demoted at runtime by a bounded FPS monitor (6 s of sustained sub-42 FPS, 10 s cooldown,
+  downgrade-only). `STATIC` = no WebGL at all.
+- **Tuning**: colors (`theme.ts` `BRAND`/`PALETTES`), object counts (`quality.ts`), pixel ratio
+  (same file), scene composition (`engine.ts` + builders), animation speeds (animation constants).
+  Live tier is visible as `data-quality` on the canvas element.
+- **Verify** (headless Chrome harness, no extra dependencies):
+  ```bash
+  cd frontend && npm run build && npx next start -p 3001   # terminal A
+  node scripts/verify-three.mjs                            # 47 checks
+  NO_WEBGL=1 node scripts/verify-three.mjs                 # 7 fallback checks
+  ```
+  Requires the backend running (the harness seeds two test logos via the admin API).
+- **Troubleshooting WebGL fallback**: if the hero shows rings/tiles instead of the 3D diamond, the
+  scene is on its static fallback — check `data-scene` on the hero container (`fallback` = WebGL
+  unavailable/context lost/chunk failed, all silent by design), check `data-quality` on the canvas,
+  and confirm the browser supports WebGL2. No errors are thrown; content is never blocked.
+
+Development commands are unchanged (see §4): `npm run dev` in `Backend/` and `frontend/`.

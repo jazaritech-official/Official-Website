@@ -19,6 +19,30 @@ export function BrandStatement() {
         className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-64 bg-[radial-gradient(ellipse_60%_100%_at_50%_0%,color-mix(in_srgb,var(--accent)_12%,transparent),transparent)]"
       />
 
+      {/* Ambient field: CSS-only drifting points + a slow orbital ring.
+          Reuses existing float/spin keyframes (compositor-only, no JS, no
+          WebGL — chosen over a second renderer for performance, spec §36). */}
+      <div aria-hidden="true" className="ambient-field pointer-events-none absolute inset-0 -z-10">
+        <span className="ambient-dot float-slow" style={{ left: "10%", top: "28%" }} />
+        <span
+          className="ambient-dot float-medium"
+          style={{ left: "85%", top: "18%", animationDelay: "1.2s" }}
+        />
+        <span
+          className="ambient-dot float-slow"
+          style={{ left: "74%", top: "70%", animationDelay: "0.6s" }}
+        />
+        <span
+          className="ambient-dot float-medium"
+          style={{ left: "16%", top: "74%", animationDelay: "1.8s" }}
+        />
+        <span
+          className="ambient-dot is-growth float-slow"
+          style={{ left: "89%", top: "54%", animationDelay: "2.4s" }}
+        />
+        <span className="ambient-ring" />
+      </div>
+
       <div className="container-page text-center">
         <Reveal variant="fade-in">
           <p className="eyebrow">Engineered with intent</p>

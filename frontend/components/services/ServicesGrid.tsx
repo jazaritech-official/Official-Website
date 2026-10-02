@@ -2,6 +2,7 @@
 
 import { api } from "@/lib/api";
 import { useApiData } from "@/hooks/useApiData";
+import { useTilt } from "@/hooks/useTilt";
 import { Reveal } from "@/components/motion/Reveal";
 import { Skeleton } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -11,10 +12,11 @@ import type { Service } from "@/types/api";
 
 function ServiceCard({ service }: { service: Service }) {
   const Icon = iconRegistry[service.icon as IconName] ?? InfoIcon;
+  const tiltRef = useTilt<HTMLElement>();
 
   return (
-    <article className="card card-hover group relative flex h-full flex-col gap-4 p-6">
-      <span className="icon-interactive inline-flex size-11 items-center justify-center rounded-xl bg-accent-soft text-accent">
+    <article ref={tiltRef} className="card card-hover tilt-card group relative flex h-full flex-col gap-4 p-6">
+      <span className="icon-interactive tilt-depth inline-flex size-11 items-center justify-center rounded-xl bg-accent-soft text-accent">
         <Icon size={21} animated="pulse" />
       </span>
 

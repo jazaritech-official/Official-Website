@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Counter } from "@/components/motion/Counter";
 import { Reveal } from "@/components/motion/Reveal";
 import { Logo } from "@/components/brand/Logo";
+import { HeroScene } from "@/components/three/HeroScene";
 import {
   ArrowRightIcon,
   ChipIcon,
@@ -186,11 +187,14 @@ export function Hero() {
         </div>
 
         {/* ---------------- Visual composition ---------------- */}
+        {/* Static fallback (orbit rings, tiles, brand icon) crossfades out
+            when the lazy WebGL scene reports ready via `data-scene`. */}
         <div
           ref={visualRef}
+          data-scene="fallback"
           className="relative mx-auto flex min-h-[24rem] w-full max-w-md items-center justify-center lg:min-h-[30rem] lg:max-w-none"
-          aria-hidden="true"
         >
+          <div className="hero-decor" aria-hidden="true">
           {/* Orbit rings */}
           <div className="absolute left-1/2 top-1/2 h-64 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line sm:h-72 sm:w-72" data-parallax="0.03" />
           <div className="absolute left-1/2 top-1/2 h-96 w-96 -translate-x-1/2 -translate-y-1/2 rounded-full border border-dashed border-line/70 lg:h-[28rem] lg:w-[28rem]" data-parallax="0.05" />
@@ -223,55 +227,8 @@ export function Hero() {
             </div>
           ))}
 
-          {/* Floating glass preview card + connector + hotspot */}
-          <div data-parallax="0.07" className="absolute bottom-4 right-0 sm:right-2">
-            <div className="relative">
-              {/* connector line */}
-              <svg
-                className="absolute -left-24 top-6 hidden h-16 w-28 overflow-visible sm:block"
-                viewBox="0 0 112 64"
-                fill="none"
-              >
-                <path
-                  d="M0 8 C 40 8, 60 32, 104 56"
-                  stroke="var(--accent)"
-                  strokeWidth="1.5"
-                  strokeDasharray="4 6"
-                  opacity="0.75"
-                />
-                <circle cx="0" cy="8" r="3" fill="var(--accent)" />
-              </svg>
-
-              <div className="glass w-60 rounded-2xl p-4 shadow-[var(--shadow-card)]">
-                <div className="flex items-center justify-between">
-                  <span className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-muted">
-                    Delivery pulse
-                  </span>
-                  <span className="badge-dot" />
-                </div>
-                <p className="mt-2 flex items-baseline gap-2">
-                  <span className="text-3xl font-semibold text-foreground">38%</span>
-                  <span className="text-xs text-muted">faster release cycles</span>
-                </p>
-                <svg className="mt-3 h-12 w-full" viewBox="0 0 240 48" preserveAspectRatio="none" fill="none">
-                  <path
-                    d="M0 40 L40 34 L80 36 L120 24 L160 26 L200 12 L240 6"
-                    stroke="var(--accent)"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="M0 40 L40 34 L80 36 L120 24 L160 26 L200 12 L240 6 L240 48 L0 48 Z"
-                    fill="color-mix(in srgb, var(--accent) 14%, transparent)"
-                  />
-                </svg>
-              </div>
-
-              {/* hotspot dot */}
-              <span className="hotspot absolute -left-16 top-2 hidden size-3 rounded-full bg-accent sm:block" />
-            </div>
-          </div>
+          {/* Glass preview card + connector + hotspot now live in HeroScene
+              (backend-driven content, projected onto the 3D anchor) */}
 
           {/* Jazari ribbon/diamond motif — the supplied brand icon */}
           <div
@@ -280,6 +237,10 @@ export function Hero() {
           >
             <Logo variant="icon" sizes="48px" className="float-medium size-11 dark:bg-transparent dark:p-0" />
           </div>
+          </div>{/* /.hero-decor */}
+
+          {/* Procedural Three.js scene — loads lazily, never blocks content */}
+          <HeroScene hostRef={visualRef} />
         </div>
       </div>
     </section>
