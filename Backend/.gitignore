@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Environment (never commit real secrets)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Runtime uploads
+uploads/*
+!uploads/.gitkeep
+
+# Coverage / tooling
+coverage/
+.eslintcache
+
+# OS noise
+.DS_Store
+Thumbs.db

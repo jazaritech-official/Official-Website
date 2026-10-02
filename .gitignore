@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Next.js / frontend build output
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
+
+# Environment (never commit secrets)
+.env
+.env.local
+.env.*.local
+!*.env.example
+!/.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Backend runtime uploads
+Backend/uploads/*
+!Backend/uploads/.gitkeep
+
+# Misc
+.DS_Store
+*.tsbuildinfo
+coverage/
