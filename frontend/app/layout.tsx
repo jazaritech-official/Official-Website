@@ -59,6 +59,11 @@ export const metadata: Metadata = {
     index: true,
     follow: true,
   },
+  // Canonical URL is derived from NEXT_PUBLIC_SITE_URL (metadataBase) so the
+  // production domain is configurable per environment, never hardcoded.
+  alternates: {
+    canonical: "/",
+  },
   icons: {
     icon: [
       { url: "/brand/app-icon-main.png", type: "image/png", sizes: "512x512" },

@@ -168,6 +168,18 @@ console.log("[smoke] 2. public content");
   const services = await json("/services");
   check("GET /api/services → 14 services", services.status === 200 && services.body.data.length === 14, `got ${services.body?.data?.length}`);
   check("service exposes icon key", Boolean(services.body.data[0]?.icon));
+  const hubServices = services.body.data.filter((s) => Number.isInteger(s.hubSlot));
+  check(
+    "services expose backward-compatible hub fields (hubSlot/hubLabel)",
+    services.body.data.every((s) => "hubSlot" in s && "hubLabel" in s),
+  );
+  check("5 services are featured in the hub with unique slots 0..4",
+    hubServices.length === 5 &&
+      new Set(hubServices.map((s) => s.hubSlot)).size === 5 &&
+      hubServices.every((s) => s.hubSlot >= 0 && s.hubSlot <= 4),
+    `featured=${hubServices.length} slots=[${hubServices.map((s) => s.hubSlot).join(",")}]`);
+  check("hub services expose a hubLabel",
+    hubServices.every((s) => typeof s.hubLabel === "string" && s.hubLabel.length > 0));
   const logos = await json("/logos");
   check("GET /api/logos → empty list without errors", logos.status === 200 && Array.isArray(logos.body.data) && logos.body.data.length === 0);
 }

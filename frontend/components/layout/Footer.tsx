@@ -7,6 +7,7 @@ import { ArrowRightIcon } from "@/components/icons";
 const QUICK_LINKS = [
   { href: "#home", label: "Home" },
   { href: "#products", label: "Products" },
+  { href: "#hub", label: "Services hub" },
   { href: "#services", label: "Services" },
   { href: "#start", label: "Start your project" },
 ];
@@ -24,6 +25,8 @@ export function Footer() {
 
   return (
     <footer className="relative z-[1] border-t border-line bg-background">
+      <span aria-hidden="true" className="grid-crosshair hidden lg:block" style={{ left: "calc(50% - 5px)", top: -6 }} />
+      <hr aria-hidden="true" className="hairline" />
       <div className="container-page py-14">
         <Reveal className="grid gap-10 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_1fr_1.2fr]">
           {/* Brand */}

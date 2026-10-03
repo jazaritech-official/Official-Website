@@ -1293,3 +1293,266 @@ surfaces) instead of forcing every logo to monochrome.
 - Three.js harness: `node scripts/verify-three.mjs` ✅ **96/96** · `NO_WEBGL=1 …` ✅ **9/9** (WebGL +
   NO_WEBGL, light/dark/system, reduced motion, context loss/restore, route-navigation leak checks).
 - Backend: `npm run lint` ✅ · `npm run build` ✅ 45 files · `NODE_ENV=test npm run smoke` ✅ **121/121**.
+
+## 2026-10-03 — Task E Phase 1: Baseline audit
+
+### Completed
+- Re-read `PROJECT_NOTES.md` + `README.md`, inspected the repository structure and the actual
+  git state (read-only): branch `main`, remote `origin https://github.com/jazaritech-official/Official-Webiste.git`,
+  author `Sibghat Ullah <ullahsibghat786@gmail.com>` on all recent commits. No history rewritten,
+  nothing pushed.
+- Ran the full baseline: frontend lint (0 problems) + production build (12 routes); backend lint +
+  build (45 files) + `NODE_ENV=test npm run smoke` (**121/121**).
+- Preserved the pre-existing (Task D) screenshots as the Task E baseline in
+  `frontend/test-output/screenshots/baseline-task-e/`.
+
+### Verification
+- Frontend lint ✅ 0 problems · build ✅ 12 routes. Backend lint ✅ · build ✅ 45 files · smoke ✅ 121/121.
+
+## 2026-10-03 — Task E Phase 2: Vercel deployment readiness
+
+### Completed
+- **Serverless-safe MongoDB** (`Backend/config/db.js`): the connection is now lazy + cached — the
+  in-flight promise lives on `globalThis` so it is reused across requests, hot reloads and
+  serverless invocations; concurrent callers share one attempt; a failure clears the cache so a
+  later request can retry. No `process.exit` on a transient DB failure.
+- **`Backend/middleware/ensureDb.js`** (new): establishes and reuses the DB connection before any route
+  that needs it and returns `503 DATABASE_UNAVAILABLE` on failure instead of exiting. Mounted in
+  `Backend/routes/index.js` **after** `/health`, so the health route always answers (it only reports
+  DB state).
+- **`Backend/server.js`**: `start()` (DB connect + `app.listen`) now runs only when **not** on Vercel
+  (`if (!process.env.VERCEL)`); the exported app is unchanged and local behaviour is preserved.
+- **Client-side upload preprocessing** (`frontend/lib/imagePrep.ts`, new): the admin Logos Manager
+  now decodes the selected image, downscales it to the pipeline bound (1280×720, never upscaled) and
+  re-encodes to WebP/PNG with transparency preserved, targeting ≤ ~3.9 M chars (~2.9 MB binary) —
+  comfortably under Vercel's ~4.5 MB request-body cap. The prepared data URI is reused for the live
+  preview and the final upload; an over-limit file produces a friendly error instead of a corrupt
+  upload. Backend validation is unchanged.
+- **`frontend/app/layout.tsx`**: added an environment-driven `alternates.canonical`.
+- **`DEPLOYMENT.md`** (new, root): root cause, Options A–D, backend + frontend settings, env-var
+  table (names only), Atlas network notes, cookie notes, upload-size notes, post-deploy checklist and
+  the `official-webiste` typo note. `README.md` and this file link to it.
+
+### Audited (unchanged, documented)
+- `Backend/vercel.json` (`{ "framework": "express" }`) remains valid; `export default app` retained.
+- CORS (`CLIENT_ORIGIN`, explicit origins + credentials), trust proxy (`TRUST_PROXY`), cookies
+  (`COOKIE_SECURE`/`COOKIE_SAMESITE`), production storage (Cloudinary mandatory in prod; local driver
+  dev-only), Sharp compatibility, `NEXT_PUBLIC_API_URL`, `next.config.ts` remotePatterns +
+  `images.dangerouslyAllowLocalIP` (dev-only SSRF escape; pattern-restricted), robots/sitemap/canonical.
+
+### Files Changed
+- `Backend/config/db.js`, `Backend/middleware/ensureDb.js` (new), `Backend/routes/index.js`,
+  `Backend/server.js`, `frontend/lib/imagePrep.ts` (new), `frontend/components/admin/LogosManager.tsx`,
+  `frontend/app/layout.tsx`, `DEPLOYMENT.md` (new), `PROJECT_NOTES.md`, `README.md`.
+
+### Verification
+- Frontend lint ✅ 0 problems · build ✅ 12 routes.
+- Backend lint ✅ · build ✅ **46 files** (new middleware) · `NODE_ENV=test npm run smoke` ✅ **121/121**.
+- No secret value written anywhere; env-var names only.
+
+## 2026-10-03 — Task E Phase 3: Grid design tokens + global blueprint background
+
+### Completed
+- Added the blueprint tokens to `globals.css` `:root` (fine `24px` / strong `120px`
+  spacing, fine/major line colours, opacity multiplier, mask, trace colour/opacity/ticks) with
+  dark-mode overrides (low-opacity slate/blue on navy-black). Added documented z-index tokens
+  (`--z-atmosphere`/`--z-grid`/`--z-traces`) and Task E motion tokens (`--ease-technical`,
+  `--motion-grid-trace`/`hub-explode`/`section-reveal`/`route`).
+- `.bg-grid` — one fixed, pointer-transparent layer with static two-level gradient grids, faded via
+  a CSS mask. No canvas / Three.js / per-frame work. Mounted on the public homepage only
+  (`app/page.tsx`), so it can never overlay `/admin`.
+- Added section-language primitives: `.section-index`, `.hairline` (draws on reveal), `.grid-crosshair`,
+  `.card-ticks`, `.trace-line`/`.trace-pulse` (+ `jt-trace-travel` keyframes).
+- Reduced-motion: travelling pulses disabled, card ticks settled.
+
+## 2026-10-03 — Task E Phase 4: Section grid language
+
+### Completed
+- New reusable annotations: `components/layout/SectionIndex.tsx` (tiny mono "01 PRODUCTS" label,
+  `aria-hidden` — the real heading remains the accessible name) and `components/layout/CircuitTrace.tsx`
+  (decorative SVG trace + one Growth-Green pulse via `offset-path`, disabled under reduced motion).
+- Section indexes added: ProductCards “01 Products”, Services “03 Services”, Start “04 Start”,
+  Brand “05 Brand” (hub “02 Hub” arrives in Phase 6).
+- Blueprint markers: crosshairs on ProductCards/Services (desktop), a hairline + crosshair in the
+  Footer, and restrained circuit traces between Products→(Hub) and near the Brand statement. Cards in
+  ProductCards/ServicesGrid gained hover/focus corner ticks (`card-ticks`).
+- Nothing existing was removed; LogoMarquee (Task C) was left untouched.
+
+### Verification
+- Frontend lint ✅ 0 problems · build ✅ 12 routes.
+
+## 2026-10-03 — Task E Phase 5: Service hub backend fields
+
+### Completed
+- `Backend/models/Service.js`: added optional, backward-compatible `hubSlot` (integer 0–4 or `null`,
+  validated) and `hubLabel` (string, trimmed, ≤60 chars). Existing records are unaffected (defaults
+  `null` / `""`).
+- `Backend/controllers/serviceController.js`: the public `GET /api/services` response now includes
+  `hubSlot` and `hubLabel`.
+- `Backend/scripts/seed.js`: a `HUB_SLOTS` map features five services (web-development, ai-solutions,
+  e-commerce, business-growth, it-consulting) at slots 0–4; every other service is explicitly reset to
+  "not featured". Idempotent.
+- `Backend/scripts/smoke.js`: +3 assertions (hub fields present and backward-compatible; exactly five
+  unique slots 0–4; every featured service has a label).
+- `frontend/types/api.ts`: `Service` gains optional `hubSlot`/`hubLabel`.
+- No admin Services editor exists in this project, so no management UI was built (documented
+  limitation — the fields are managed via seed/API).
+
+### Verification
+- Backend lint ✅ · build ✅ 46 files · `NODE_ENV=test npm run smoke` ✅ **124/124** (was 121).
+- Frontend lint ✅ 0 problems · build ✅ 12 routes.
+
+## 2026-10-03 — Task E Phases 6–7: Exploded Logo Services Hub + interaction
+
+### Completed
+- **`frontend/components/services/ServicesHub.tsx`** (new) — “OUR SERVICES HUB”, mounted between
+  ProductCards and ServicesGrid in `app/page.tsx`.
+- **Real geometry as crisp inline SVG** (`viewBox 0 0 240 240`, no bitmap/blur masks): four straight
+  ribbon bands (`R=78`, band width 26, vertex gap 16) forming the rotated-square diamond, a lighter
+  fold on the top band, a darker overlapping fold on the right band, and a Growth-Green leaf at the
+  top-right. Each is a `data-piece` group (`top`/`right`/`bottom`/`left`/`leaf`) inside `<g id="hub">`.
+- **States**: assembled at rest with a subtle Technology-Blue glow and a very slow breathing scale;
+  exploded on desktop hover, keyboard focus and touch tap (tap toggles). Pieces travel along their
+  natural outward diagonals with a small rotation, a 42 ms stagger and the existing spring-soft ease
+  (tiny overshoot, never bouncy). Connector leader lines + one tiny green dot appear when exploded.
+- **API-sourced labels**: up to five services chosen by `hubSlot` (fallback: first five). Each label is
+  a real `<a href="#service-{slug}">` (icon + hubLabel/title + one-line backend description). Service
+  cards gained `id="service-{slug}"`; `#services article:target` flashes the target card (CSS-only).
+- **Accessibility**: labels are always in the DOM (no-JS safe); the logo is a real `<button>` with
+  `aria-expanded` + `aria-controls="hub-service-list"`; focus explodes; Escape reassembles; the SVG is
+  a labelled `role="img"`. **Reduced motion**: no breathing, no explode, no connectors — the static
+  arrangement plus all titles stays fully functional. **Mobile**: logo centred, labels stacked below,
+  connectors hidden, “Tap the logo” hint, no horizontal scroll; the section reserves height (no CLS).
+- 0 services → assembled logo + an accessible fallback message; the service **list** below always
+  carries the full catalogue.
+- Navigation: “Hub” added to the navbar links and footer quick links (navbar logo animation untouched).
+
+### Files Changed
+- `frontend/components/services/ServicesHub.tsx` (new), `frontend/app/page.tsx`,
+  `frontend/components/services/ServicesGrid.tsx`, `frontend/components/navigation/Navbar.tsx`,
+  `frontend/components/layout/Footer.tsx`, `frontend/app/globals.css` (§7e hub styles).
+
+### Verification
+- Frontend lint ✅ 0 problems · build ✅ 12 routes. Deep 0/1/3/5-service + interaction verification is
+  executed in Phase 10 (harness) and reported there.
+
+## 2026-10-03 — Task E Phase 8: Site-wide transitions + scroll polish
+
+### Completed
+- **Route transitions** (globals.css §7f): CSS View Transitions (`@view-transition { navigation: auto }`)
+  give a small fade + `translateY` between pages, as **progressive enhancement only** — unsupported
+  browsers ignore it and no animation is required, so content is never invisible. Explicit
+  reduced-motion override neutralises the view-transition pseudo-elements.
+- **Scroll polish**: section indexes, heading rules and hairlines draw on reveal (existing `Reveal`
+  system reused — no duplicated primitives); crosshair/ticks markers added in Phase 4. Admin keeps its
+  existing `.admin-enter` page fade + table-row stagger (no new animation system, no Three.js chunk).
+- **Micro-interactions** preserved: card lift, button highlight sweep, nav gliding underline, theme
+  morph, form step transitions, marquee. New: card corner ticks (hover/focus).
+- Deliberately **not** implemented (documented, not omitted): global grid parallax and a section
+  progress-dot rail — both would add per-frame work / clutter for marginal benefit, and the spec makes
+  them optional. Card light-sweep was skipped to avoid clobbering the corner-tick pseudo-elements.
+
+### Verification
+- Frontend lint ✅ 0 problems · build ✅ 12 routes.
+
+## 2026-10-03 — Task E Phase 9: Performance / accessibility / responsiveness
+
+### Completed
+- Verified in the extended harness: no horizontal scroll at 390 / 1366 / 1920; the global grid is a
+  single **fixed, pointer-transparent, static-gradient** layer (no canvas/Three/rAF work) with all
+  line alphas ≤ 0.2; reduced motion keeps the hub static and disables travelling pulses/breathing;
+  `/admin/*` loads **zero** grid layers, zero hub markup and zero Three.js resources.
+- Accessibility re-checked: hub trigger is a real `<button>` with `aria-expanded`/`aria-controls`;
+  labels are real anchors that are always in the DOM (no-JS safe); focus explodes and Escape
+  reassembles; the decorative grid/crosshairs/traces are `aria-hidden` and non-interactive.
+- Console remains clean in every verified state (home, hub, admin, reduced motion, no-WebGL).
+
+### Verification
+- Harness `node scripts/verify-three.mjs` ✅ **121/121** · `NO_WEBGL=1 …` ✅ **9/9**.
+
+## 2026-10-03 — Task E Phase 10: Harness + screenshots + regression
+
+### Completed
+- Extended `frontend/scripts/verify-three.mjs` with a new `[13]` suite (existing checks preserved):
+  grid exists + subtle; no horizontal scroll at 1920/1366/390; hub exists; accessible controls;
+  keyboard-focus explode; Escape reassemble; hover explode + real piece transform + visible
+  connectors; API-sourced labels; labels link to real `#service-{slug}` cards; 0/1/3/5 services via
+  response interception; reduced-motion static; light/dark screenshots; content never permanently
+  invisible; clean console; admin has no grid/hub/three. Real failures found and fixed: an 8px
+  horizontal overflow from a decorative trace's negative offset, and headless focus events
+  (`Emulation.setFocusEmulationEnabled`) so keyboard-focus explode is genuinely observable.
+- Screenshots (gitignored) in `frontend/test-output/screenshots/`: `hub-{desktop,mobile}-{light,dark}-
+  {1440x900,390x844}-{closed,open}.png` plus refreshed `home-{light,dark}-{desktop,mobile}` and
+  `home-reduced-motion`. Task D baseline preserved under `…/screenshots/baseline-task-e/`.
+
+### Verification (actual)
+- Frontend lint ✅ 0 problems · build ✅ 12 routes.
+- `node scripts/verify-three.mjs` ✅ **121/121** · `NO_WEBGL=1 node scripts/verify-three.mjs` ✅ **9/9**.
+- Backend lint ✅ · build ✅ 46 files · `NODE_ENV=test npm run smoke` ✅ **124/124**.
+- **Bundle facts (measured):** home initial JS **679,631 B raw / 209,290 B gz**; admin initial
+  630,660 B / 196,214 B gz; three async chunk 595,869 B / 149,237 B gz (still home-only).
+
+## 29. Grid Design System (Task E)
+
+1. **Tokens** (`globals.css` `:root`, dark overrides in `.dark`): `--grid-fine` (24px),
+   `--grid-major` (120px), `--grid-line-fine`/`--grid-line-major` (light: Technology-Blue 5% / Slate
+   16%; dark: Slate 5.5% / accent 13%), `--grid-opacity`, `--grid-mask`, `--grid-trace`,
+   `--grid-trace-opacity`, `--grid-tick`.
+2. **Layer** `.bg-grid` — one `position: fixed; inset: 0; pointer-events: none` element with four
+   static linear-gradient backgrounds (fine + strong grid) and a CSS mask. No canvas, no Three.js,
+   no per-frame work. Mounted only in `app/page.tsx` (public site), never in `/admin`.
+3. **Z-index** — documented tokens `--z-atmosphere` / `--z-grid` / `--z-traces` (0), `--z-content` (10),
+   `--z-sticky` (100), `--z-navigation` (200), `--z-modal` (500), `--z-toast` (700). The grid sits at
+   the bottom; section content/nav/dialogs are always above it.
+4. **Mask/fade** — `--grid-mask` is a vertical `linear-gradient` (transparent → opaque → transparent)
+   so the grid never competes with content; it cannot cause horizontal scrolling.
+5. **Section grammar** — `.section-index` (mono “01 PRODUCTS” labels), `.hairline` (draws on reveal),
+   `.grid-crosshair`, `.card-ticks` (hover/focus corner marks), `.trace-line`/`.trace-pulse`.
+6. **Reduced motion** — travelling pulses and card-tick dwell disabled; the grid is static anyway.
+7. **Tune** — spacing/colours/opacity/mask: the tokens above. Trace pulse speed: `--motion-grid-trace`.
+
+## 30. Exploded Logo Hub Architecture (Task E)
+
+1. **File** `frontend/components/services/ServicesHub.tsx`, mounted between ProductCards and
+   ServicesGrid in `app/page.tsx` (section id `hub`, heading id `hub-heading`).
+2. **SVG** — inline `<svg viewBox="0 0 240 240">` with `<g id="hub">` and groups
+   `data-piece="top|right|bottom|left|leaf"`. Geometry derives from the 3D mark's constants
+   (`components/three/createRibbonPieces.ts`): half-diagonal `R=78`, band width 26, vertex gap 16.
+   Four straight bands form the rotated-square diamond; a lighter fold sits on the top band, a darker
+   overlapping fold on the right band, and a Growth-Green leaf at the top-right. Crisp at any DPI — no
+   bitmaps or blur masks.
+3. **Service selection** — `GET /api/services`; up to five services ordered by `hubSlot`, falling back
+   to the first five when none are flagged. Labels show `hubLabel || title` + the backend description.
+4. **hubSlot / hubLabel** — optional Service fields (0–4 / string), validated, backward compatible,
+   seeded for five services, exposed by the public API. No admin editor exists, so they are managed via
+   seed/API (documented limitation).
+5. **Interaction** — assembled at rest (subtle glow + very slow breathing); explodes on desktop hover,
+   keyboard focus and touch tap (tap toggles). Pieces travel outward on their diagonals with a small
+   rotation, 42 ms stagger and the spring-soft ease; connector leader lines + one green dot appear.
+   Escape reassembles.
+6. **Accessibility** — trigger is a labelled `<button>` with `aria-expanded` + `aria-controls`;
+   labels are always-in-DOM anchors to `#service-{slug}`; the target card flashes via CSS
+   `#services article:target`. No-JS degrades to the assembled mark + the full label list.
+7. **Mobile** — logo centred, labels stacked below, connectors hidden, “Tap the logo” hint, section
+   height reserved (no CLS), no horizontal scroll at 390px.
+8. **Reduced motion** — no breathe/explode/connectors; static assembly with all titles readable.
+9. **Tune** — explode distance/rotation: `PIECES[].tx/ty/rot` in `ServicesHub.tsx` (mobile inherits the
+   same values; adjust there for a per-breakpoint tweak); timing: `--motion-hub-explode` + the
+   `--ease-spring-soft` token; stagger: the `42ms` multiplier in `.hub [data-piece]` (globals.css §7e);
+   glow: `.hub__logo` / `.hub.is-exploded .hub__logo`; connector style: `.hub-connector`; label
+   positions: the `.hub-label--*` rules in §7e.
+
+## 31. Deployment (Vercel) Guide (Task E)
+
+The full guide lives in **[`DEPLOYMENT.md`](./DEPLOYMENT.md)** — root cause of the current Vercel
+“Blocked” state (private repo + commit author identity mismatch on the Hobby plan), Options A–D,
+backend/frontend project settings, the environment-variable table (names only), MongoDB Atlas network
+notes, cookie (`COOKIE_SECURE`/`COOKIE_SAMESITE`) notes, the serverless upload-limit workflow, the
+post-deploy checklist and the `official-webiste` typo note.
+
+Code-side readiness: `Backend/config/db.js` (lazy, `globalThis`-cached Mongo connection),
+`Backend/middleware/ensureDb.js` (per-request connect returning `503` instead of exiting),
+`Backend/routes/index.js` (health stays dependency-free), `Backend/server.js` (`start()` only off
+Vercel), `frontend/lib/imagePrep.ts` (client-side downscale/encode under the ~4.5 MB body cap).
+
+**Future optimisation (planned, not implemented):** direct-to-Cloudinary signed uploads.

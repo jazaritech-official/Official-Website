@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { Reveal } from "@/components/motion/Reveal";
+import { SectionIndex } from "@/components/layout/SectionIndex";
+import { CircuitTrace } from "@/components/layout/CircuitTrace";
 import { Button } from "@/components/ui/Button";
 import { ArrowRightIcon } from "@/components/icons";
 
@@ -43,8 +45,11 @@ export function BrandStatement() {
         <span className="ambient-ring" />
       </div>
 
+      <CircuitTrace className="absolute left-0 top-10 hidden w-40 opacity-70 lg:block" />
+
       <div className="container-page text-center">
         <Reveal variant="fade-in">
+          <SectionIndex index="05" label="Brand" className="mb-5" />
           <p className="eyebrow">Engineered with intent</p>
         </Reveal>
 

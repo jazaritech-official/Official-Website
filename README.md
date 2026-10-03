@@ -9,7 +9,8 @@ Full-stack marketing site + admin portal for **Jazari Tech Official**.
 - **Backend** — Node (ESM) + Express 5 + Mongoose 8 with Helmet, strict CORS, rate limiting,
   express-validator, JWT auth (httpOnly cookie), bcryptjs and Cloudinary storage.
 - **Docs** — living project documentation lives in [`PROJECT_NOTES.md`](./PROJECT_NOTES.md)
-  (architecture, API table, data model, design tokens, dated changelog).
+  (architecture, API table, data model, design tokens, dated changelog), and the Vercel
+  deployment guide lives in [`DEPLOYMENT.md`](./DEPLOYMENT.md).
 
 ```
 Website/
@@ -132,7 +133,7 @@ Then open **http://localhost:3000** — public site at `/`, admin portal at `/ad
 | `npm run dev:mem` | API + in-memory MongoDB (no local Mongo needed) |
 | `npm start` | Production entry (`node server.js`) |
 | `npm run seed` / `npm run seed:mem` / `npm run seed:mem:once` | Seed admin, templates, services, sample products |
-| `npm run smoke` | Full end-to-end API test (real HTTP + in-memory Mongo, **81 assertions**) |
+| `npm run smoke` | Full end-to-end API test (real HTTP + in-memory Mongo, **124 assertions**) |
 | `npm run lint` | ESLint 10 flat config |
 | `npm run build` | Syntax check across all backend files |
 
@@ -198,9 +199,9 @@ Full tables: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §8–§12.
 
 ### Verification
 - [ ] `frontend`: `npm run lint` ✅ (0 problems) `npm run build` ✅ (14 routes)
-- [ ] `Backend`: `npm run lint` ✅ `npm run build` ✅ (44 files) `npm run smoke` ✅ (81/81 assertions)
+- [ ] `Backend`: `npm run lint` ✅ `npm run build` ✅ (46 files) `npm run smoke` ✅ (124/124 assertions)
 - [ ] Full-stack smoke: public content, intake + reference ID, visitor dedupe, admin login/stats/CSV/logout, logo upload lifecycle, all routes 200
-- [ ] Three.js harness: `node scripts/verify-three.mjs` ✅ 96/96 · `NO_WEBGL=1 …` ✅ 9/9 (incl. brand/layout/first-load checks + screenshots in `frontend/test-output/screenshots/`)
+- [ ] Three.js harness: `node scripts/verify-three.mjs` ✅ 121/121 · `NO_WEBGL=1 …` ✅ 9/9 (incl. brand/layout/first-load + grid/exploded-hub checks + screenshots in `frontend/test-output/screenshots/`)
 
 ## 8. Production notes
 
@@ -212,8 +213,12 @@ Full tables: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §8–§12.
 5. **Backend on Vercel** — `Backend/vercel.json` sets the Express framework preset, so Vercel bundles
    the existing `Backend/server.js` app as one function and routes every request to it (all `/api/*`
    routes and `/api/health` included). `server.js` exposes `export default app` for detection; local
-   `start()` (DB connect + port listen) is unchanged. Set the Vercel project Root Directory to
-   `Backend`, add the environment variables there, and no `package.json` changes are required.
+   `start()` (DB connect + port listen) is unchanged and runs only off-Vercel. The MongoDB connection
+   is lazy + cached (`Backend/middleware/ensureDb.js`) so serverless invocations reuse it and a
+   transient DB outage returns `503` instead of exiting.
+
+   **Full deployment guide (root cause of the current Vercel “Blocked” state, Options A–D, env-var
+   names, cookie/upload/Mongo notes): [`DEPLOYMENT.md`](./DEPLOYMENT.md).**
 
 ## 9. 3D / WebGL layer (public site only)
 
@@ -237,7 +242,7 @@ fallback. It is a progressive enhancement:
 - **Verify** (headless Chrome harness, no extra dependencies):
   ```bash
   cd frontend && npm run build && npx next start -p 3001   # terminal A
-  node scripts/verify-three.mjs                            # 96 checks
+  node scripts/verify-three.mjs                            # 121 checks
   NO_WEBGL=1 node scripts/verify-three.mjs                 # 9 fallback checks
   ```
   Requires the backend running (the harness seeds two test logos via the admin API).
@@ -284,8 +289,25 @@ Full architecture + tuning guides: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §27
   Optical normalization, counter-scrolling seamless rows, tone-aware contrast aids, hover/focus pause +
   floating label, damped scroll-velocity, off-screen/hidden-tab pause, and a **static wrapped grid**
   under reduced motion.
-- **Verification** — backend smoke **121/121**; frontend harness **96/96** (+ NO_WEBGL 9/9).
+- **Verification** — backend smoke **124/124**; frontend harness **121/121** (+ NO_WEBGL 9/9).
 
 Full architecture + tuning guide: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §28.
+
+## 12. Blueprint grid + Exploded Logo Services Hub (Task E)
+
+- **Blueprint grid** — a single, static, pointer-transparent `.bg-grid` layer (fine 24px + strong
+  120px gradients, faded by a CSS mask) sits behind the public site only. Tokens (`--grid-*`) and
+  section annotations (`.section-index`, `.hairline`, `.grid-crosshair`, `.card-ticks`, traces) live in
+  `globals.css`; `/admin` never renders any of it. Documented z-index tokens keep it below content.
+- **OUR SERVICES HUB** — `components/services/ServicesHub.tsx`, placed between the product cards and
+  the services grid. It rebuilds the real Jazari ribbon-diamond mark as inline SVG (four bands + green
+  leaf) from the same geometry as the 3D hero, and explodes on hover / keyboard focus / tap, revealing
+  up to five services that come from `GET /api/services` (`hubSlot` 0–4). Labels are real anchors to
+  the matching `#service-{slug}` card; the list is always in the DOM (no-JS + screen-reader safe) and
+  the whole interaction is disabled under `prefers-reduced-motion`.
+- **Deployment** — see [`DEPLOYMENT.md`](./DEPLOYMENT.md). The backend connects to MongoDB lazily and
+  the admin upload preprocesses images client-side to stay under Vercel's request-body limit.
+
+Architecture + tuning: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §29–§31.
 
 Development commands are unchanged (see §4): `npm run dev` in `Backend/` and `frontend/`.

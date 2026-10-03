@@ -93,6 +93,16 @@ const TEMPLATES = [
   },
 ];
 
+// Exploded Logo Services Hub placements: at most one service per ribbon piece
+// (slot 0..4). Absent slugs are simply not featured in the hub.
+const HUB_SLOTS = {
+  "web-development": { hubSlot: 0, hubLabel: "Web Development" },
+  "ai-solutions": { hubSlot: 1, hubLabel: "AI Solutions" },
+  "e-commerce": { hubSlot: 2, hubLabel: "E-commerce" },
+  "business-growth": { hubSlot: 3, hubLabel: "Business Growth" },
+  "it-consulting": { hubSlot: 4, hubLabel: "IT Consulting" },
+};
+
 const SERVICES = [
   {
     title: "Software Solutions",
@@ -337,10 +347,13 @@ async function run() {
   let servicesUpserted = 0;
   for (const [index, service] of SERVICES.entries()) {
     const { slug, ...fields } = service;
+    // Optional Exploded Logo Services Hub placement (backward compatible):
+    // services outside the map are reset to "not featured" (null slot).
+    const hub = HUB_SLOTS[slug] ?? { hubSlot: null, hubLabel: "" };
     await Service.updateOne(
       { slug },
       {
-        $set: { ...fields, sortOrder: (index + 1) * 10, isVisible: true },
+        $set: { ...fields, sortOrder: (index + 1) * 10, isVisible: true, ...hub },
         $setOnInsert: { slug },
       },
       { upsert: true },

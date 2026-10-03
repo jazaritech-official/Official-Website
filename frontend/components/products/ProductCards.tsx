@@ -5,6 +5,8 @@ import { api } from "@/lib/api";
 import { useApiData } from "@/hooks/useApiData";
 import { useTilt } from "@/hooks/useTilt";
 import { Reveal } from "@/components/motion/Reveal";
+import { SectionIndex } from "@/components/layout/SectionIndex";
+import { CircuitTrace } from "@/components/layout/CircuitTrace";
 import { Skeleton } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
@@ -43,7 +45,7 @@ function ProductCard({ product }: { product: Product }) {
   const tiltRef = useTilt<HTMLElement>();
 
   return (
-    <article ref={tiltRef} className="card card-hover tilt-card group flex h-full flex-col p-6">
+    <article ref={tiltRef} className="card card-hover card-ticks tilt-card group relative flex h-full flex-col p-6">
       <div className="flex items-start justify-between gap-4">
         <div className="flex size-14 items-center justify-center overflow-hidden rounded-2xl border border-line bg-surface">
           {product.logo ? (
@@ -135,10 +137,14 @@ export function ProductCards() {
   const products = data ?? [];
 
   return (
-    <section aria-labelledby="product-cards-heading" className="pb-16 pt-6 sm:pb-24">
+    <section aria-labelledby="product-cards-heading" className="relative pb-16 pt-6 sm:pb-24">
+      {/* Decorative blueprint markers (never interactive, never over text). */}
+      <span aria-hidden="true" className="grid-crosshair hidden lg:block" style={{ right: 28, top: 44 }} />
+      <CircuitTrace className="absolute right-0 bottom-0 hidden w-40 opacity-80 lg:block" />
       <div className="container-page">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <Reveal variant="fade-in" className="max-w-xl">
+            <SectionIndex index="01" label="Products" className="mb-4" />
             <h2 id="product-cards-heading" className="text-h3 font-semibold">
               Built to production standards
             </h2>

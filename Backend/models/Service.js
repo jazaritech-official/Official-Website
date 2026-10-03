@@ -33,6 +33,24 @@ const serviceSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    // Optional "Exploded Logo Services Hub" placement (backward compatible).
+    // `hubSlot` is 0..4 (which ribbon piece carries the label) or null when the
+    // service is not featured in the hub. `hubLabel` overrides the displayed
+    // label; it falls back to the title when empty.
+    hubSlot: {
+      type: Number,
+      default: null,
+      validate: {
+        validator: (value) => value === null || (Number.isInteger(value) && value >= 0 && value <= 4),
+        message: "hubSlot must be an integer between 0 and 4, or null.",
+      },
+    },
+    hubLabel: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: [60, "hubLabel is too long."],
+    },
     isVisible: {
       type: Boolean,
       default: true,

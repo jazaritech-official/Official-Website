@@ -2,6 +2,7 @@ import { Navbar } from "@/components/navigation/Navbar";
 import { Hero } from "@/components/sections/Hero";
 import { LogoMarquee } from "@/components/products/LogoMarquee";
 import { ProductCards } from "@/components/products/ProductCards";
+import { ServicesHub } from "@/components/services/ServicesHub";
 import { ServicesGrid } from "@/components/services/ServicesGrid";
 import { StartProjectForm } from "@/components/forms/StartProjectForm";
 import { BrandStatement } from "@/components/sections/BrandStatement";
@@ -12,6 +13,8 @@ import { PointerGlow } from "@/components/motion/PointerGlow";
 export default function Home() {
   return (
     <>
+      {/* Global blueprint grid — fixed, decorative, behind all content (z-grid). */}
+      <div className="bg-grid" aria-hidden="true" />
       {/* Desktop-only subtle spotlight (z-0); main/footer sit above it (z-1). */}
       <PointerGlow />
       <Navbar />
@@ -19,6 +22,7 @@ export default function Home() {
         <Hero />
         <LogoMarquee />
         <ProductCards />
+        <ServicesHub />
         <ServicesGrid />
         <StartProjectForm />
         <BrandStatement />

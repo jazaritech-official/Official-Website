@@ -4,6 +4,7 @@ import { api } from "@/lib/api";
 import { useApiData } from "@/hooks/useApiData";
 import { useTilt } from "@/hooks/useTilt";
 import { Reveal } from "@/components/motion/Reveal";
+import { SectionIndex } from "@/components/layout/SectionIndex";
 import { Skeleton } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
@@ -15,7 +16,11 @@ function ServiceCard({ service }: { service: Service }) {
   const tiltRef = useTilt<HTMLElement>();
 
   return (
-    <article ref={tiltRef} className="card card-hover tilt-card group relative flex h-full flex-col gap-4 p-6">
+    <article
+      id={`service-${service.slug}`}
+      ref={tiltRef}
+      className="card card-hover card-ticks tilt-card group relative flex h-full flex-col gap-4 p-6"
+    >
       <span className="icon-interactive tilt-depth inline-flex size-11 items-center justify-center rounded-xl bg-accent-soft text-accent">
         <Icon size={21} animated="pulse" />
       </span>
@@ -56,10 +61,12 @@ export function ServicesGrid() {
   const services = data ?? [];
 
   return (
-    <section id="services" aria-labelledby="services-heading" className="border-y border-line bg-surface py-16 sm:py-20">
+    <section id="services" aria-labelledby="services-heading" className="relative border-y border-line bg-surface py-16 sm:py-20">
+      <span aria-hidden="true" className="grid-crosshair hidden lg:block" style={{ right: 28, top: 40 }} />
       <div className="container-page">
         <div className="max-w-2xl">
           <Reveal variant="fade-in">
+            <SectionIndex index="03" label="Services" className="mb-4" />
             <p className="eyebrow">Our Services</p>
           </Reveal>
           <Reveal delay={80}>

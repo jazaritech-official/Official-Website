@@ -100,4 +100,11 @@ async function start() {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-start();
+// Local / traditional hosting keeps the previous behaviour: connect the DB and
+// listen on a port. On Vercel the platform owns the listening socket and
+// imports the exported app instead, so `start()` must NOT run at module load
+// (it would connect eagerly on cold start and `process.exit` on a transient DB
+// outage). Serverless requests connect lazily via `middleware/ensureDb.js`.
+if (!process.env.VERCEL) {
+  start();
+}

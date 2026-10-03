@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import Image from "next/image";
 import { api, ApiError } from "@/lib/api";
+import { ImagePrepError, MAX_SOURCE_BYTES, prepareLogoDataUri } from "@/lib/imagePrep";
 import { useAsync } from "@/hooks/useAsync";
 import { Button } from "@/components/ui/Button";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
@@ -21,22 +22,12 @@ import {
 } from "@/components/icons";
 import type { AdminLogo, BulkFixResponse, LogoBackgroundStatus } from "@/types/api";
 
-const MAX_BYTES = 8 * 1024 * 1024;
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"];
 
 function validateFile(file: File): string | null {
   if (!ACCEPTED_TYPES.includes(file.type)) return "Supported formats: JPEG, PNG, WebP, GIF or SVG.";
-  if (file.size > MAX_BYTES) return "Images must be smaller than 8 MB.";
+  if (file.size > MAX_SOURCE_BYTES) return "Images must be smaller than 8 MB.";
   return null;
-}
-
-function readAsDataUri(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new ApiError("The file could not be read. Please retry.", { code: "READ_FAILED" }));
-    reader.readAsDataURL(file);
-  });
 }
 
 /** Text badge for the processing outcome — never colour-only. */
@@ -83,6 +74,7 @@ export function LogosManager() {
   const [tolerance, setTolerance] = useState(22);
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
+  const [preparing, setPreparing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -134,9 +126,21 @@ export function LogosManager() {
     if (!name.trim()) setName(selected.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " "));
     setAfterPreview(null);
     setPreviewStatus(null);
-    void readAsDataUri(selected)
-      .then(setFileDataUri)
-      .catch(() => setFileDataUri(null));
+    setFileDataUri(null);
+    // Preprocess client-side so the request stays under Vercel's ~4.5 MB body
+    // cap regardless of the source image size (browser-only; never blocks).
+    setPreparing(true);
+    void prepareLogoDataUri(selected)
+      .then((prepared) => setFileDataUri(prepared))
+      .catch((cause) => {
+        setFileDataUri(null);
+        setFieldError(
+          cause instanceof ImagePrepError
+            ? cause.message
+            : "This image could not be prepared for upload. Please try a different file.",
+        );
+      })
+      .finally(() => setPreparing(false));
   };
 
   /* Live server-side preview: the "after" panel shows the pipeline's real output. */
@@ -184,6 +188,7 @@ export function LogosManager() {
     setUploadError(null);
     setProgress(0);
     setFileDataUri(null);
+    setPreparing(false);
     setAfterPreview(null);
     setPreviewStatus(null);
     setPreviewError(null);
@@ -198,7 +203,7 @@ export function LogosManager() {
       setFieldError("Give this logo a name (2+ characters).");
       return;
     }
-    if (uploading) return;
+    if (uploading || preparing) return;
 
     setUploading(true);
     setUploadError(null);
@@ -207,7 +212,7 @@ export function LogosManager() {
     abortRef.current = controller;
 
     try {
-      const dataUri = await readAsDataUri(file);
+      const dataUri = fileDataUri ?? (await prepareLogoDataUri(file));
       await api.admin.logos.create(
         {
           name: name.trim(),
@@ -332,7 +337,7 @@ export function LogosManager() {
     setBusyId(target._id);
     setUploadError(null);
     try {
-      const dataUri = await readAsDataUri(selected);
+      const dataUri = await prepareLogoDataUri(selected);
       await api.admin.logos.update(target._id, { image: dataUri, removeBackground, trim, tolerance });
       await run({ silent: true });
     } catch (cause) {
@@ -666,8 +671,14 @@ export function LogosManager() {
                 Stop upload
               </Button>
             ) : (
-              <Button size="sm" onClick={() => void upload()} loading={uploading} iconLeft={<UploadIcon size={14} />}>
-                {uploadError ? "Retry upload" : "Upload"}
+              <Button
+                size="sm"
+                onClick={() => void upload()}
+                loading={preparing}
+                disabled={preparing}
+                iconLeft={<UploadIcon size={14} />}
+              >
+                {preparing ? "Preparing…" : uploadError ? "Retry upload" : "Upload"}
               </Button>
             )}
           </div>

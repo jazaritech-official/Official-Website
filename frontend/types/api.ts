@@ -167,6 +167,10 @@ export interface Service {
   icon: string;
   description: string;
   sortOrder: number;
+  /** 0..4 when this service is featured in the Exploded Logo Services Hub, else null. */
+  hubSlot?: number | null;
+  /** Optional hub label override (falls back to the title when empty). */
+  hubLabel?: string | null;
 }
 
 /* --- Intake --------------------------------------------------------------- */

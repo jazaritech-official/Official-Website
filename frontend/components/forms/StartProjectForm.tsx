@@ -6,6 +6,7 @@ import { useApiData } from "@/hooks/useApiData";
 import { Button } from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Spinner";
 import { Reveal } from "@/components/motion/Reveal";
+import { SectionIndex } from "@/components/layout/SectionIndex";
 import { SuccessModal } from "./SuccessModal";
 import {
   ArrowRightIcon,
@@ -237,6 +238,7 @@ export function StartProjectForm() {
         {/* -------- Copy -------- */}
         <div className="lg:sticky lg:top-28">
           <Reveal variant="fade-in">
+            <SectionIndex index="04" label="Start" className="mb-4" />
             <p className="eyebrow">Start Your Project</p>
           </Reveal>
           <Reveal delay={80}>

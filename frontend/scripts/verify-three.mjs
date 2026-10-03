@@ -306,6 +306,10 @@ async function main() {
       cdp.send("Runtime.enable"),
       cdp.send("Log.enable"),
     ]);
+    // Headless Chrome does not consider its window focused, so programmatic
+    // focus() may not emit focus events. Forcing focus emulation makes real
+    // keyboard-focus behaviour (and React onFocus) observable.
+    await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
 
     const resetErrors = () => {
       consoleErrors.length = 0;
@@ -1201,6 +1205,257 @@ async function main() {
     resetErrors();
     await setViewport(1366, 768, false);
     await setThemeThenReload("light");
+
+    /* -- TEST 13: Global grid + Exploded Logo Hub (Task E) --------------- */
+    console.log("\n[13] Global blueprint grid + Exploded Logo Hub");
+    resetErrors();
+
+    const gotoHub = async (theme = "light", width = 1440, height = 900) => {
+      await setViewport(width, height, width < 640);
+      await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: width < 640 });
+      await setThemeThenReload(theme);
+      await evaluate(
+        cdp,
+        `(() => { const el = document.getElementById("hub"); if (el) el.scrollIntoView({ block: "center", behavior: "instant" }); return true; })()`,
+      );
+      await sleep(700);
+    };
+
+    // CHECK 1 + 2 — the global grid exists and is subtle.
+    await gotoHub("light");
+    const grid = await evaluate(
+      cdp,
+      `(() => {
+        const g = document.querySelector(".bg-grid");
+        if (!g) return { exists: false };
+        const cs = getComputedStyle(g);
+        return { exists: true, position: cs.position, pointerEvents: cs.pointerEvents, bg: cs.backgroundImage, opacity: cs.opacity };
+      })()`,
+    );
+    check(
+      "CHECK 1 — global blueprint grid exists (fixed, non-interactive)",
+      grid.exists && grid.position === "fixed" && grid.pointerEvents === "none",
+      JSON.stringify(grid),
+    );
+    const alphas = [...String(grid.bg).matchAll(/rgba?\(([^)]+)\)/g)].map((m) => {
+      const parts = m[1].split(",").map((v) => Number.parseFloat(v));
+      return parts.length === 4 ? parts[3] : 1;
+    });
+    check("CHECK 2 — grid lines are subtle (every alpha ≤ 0.2)", alphas.length > 0 && alphas.every((a) => a <= 0.2), JSON.stringify(alphas));
+
+    // CHECK 3 — no horizontal scroll at key widths.
+    for (const [w, h] of [[1920, 1080], [1366, 768], [390, 844]]) {
+      await setViewport(w, h, w < 640);
+      await setThemeThenReload("light");
+      await sleep(450);
+      const overflow = await evaluate(cdp, `document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+      check(`CHECK 3 — no horizontal scroll at ${w}px`, overflow <= 2, `overflow=${overflow}`);
+    }
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+
+    await gotoHub("light");
+
+    // CHECK 4 — hub exists with a heading.
+    check(
+      "CHECK 4 — hub section + heading exist",
+      await evaluate(cdp, `Boolean(document.getElementById("hub") && document.getElementById("hub-heading"))`),
+    );
+
+    // CHECK 5 — accessible controls.
+    const ctrl = await evaluate(
+      cdp,
+      `(() => {
+        const b = document.querySelector("#hub button[aria-controls]");
+        if (!b) return { ok: false };
+        const id = b.getAttribute("aria-controls");
+        const region = document.getElementById(id);
+        return { ok: true, controls: id, region: Boolean(region), labels: region ? region.querySelectorAll("a").length : 0, svg: Boolean(b.querySelector("svg")) };
+      })()`,
+    );
+    check(
+      "CHECK 5 — accessible trigger (aria-controls → service list with links)",
+      ctrl.ok && ctrl.controls === "hub-service-list" && ctrl.region && ctrl.labels > 0 && ctrl.svg,
+      JSON.stringify(ctrl),
+    );
+
+    // CHECK 6 — keyboard focus explodes.
+    await evaluate(cdp, `document.querySelector("#hub button[aria-controls]").focus(); true`);
+    await sleep(450);
+    const focusState = await evaluate(
+      cdp,
+      `(() => ({ exploded: document.querySelector(".hub").classList.contains("is-exploded"), aria: document.querySelector("#hub button[aria-controls]").getAttribute("aria-expanded") }))()`,
+    );
+    check("CHECK 6 — keyboard focus explodes the hub (aria-expanded=true)", focusState.exploded && focusState.aria === "true", JSON.stringify(focusState));
+
+    // CHECK 8 — Escape reassembles.
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+    await sleep(450);
+    check("CHECK 8 — Escape reassembles the hub", (await evaluate(cdp, `document.querySelector(".hub").classList.contains("is-exploded")`)) === false);
+
+    // CHECK 7 — hover explodes (fine pointer) + pieces actually transform.
+    await evaluate(cdp, `document.activeElement?.blur(); true`);
+    const hubBox = await evaluate(
+      cdp,
+      `(() => { const r = document.querySelector("#hub .hub__trigger").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`,
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: hubBox.x, y: hubBox.y });
+    await sleep(500);
+    const hoverExploded = await evaluate(cdp, `document.querySelector(".hub").classList.contains("is-exploded")`);
+    const pieceMoved = await evaluate(cdp, `getComputedStyle(document.querySelector('.hub [data-piece="top"]')).transform`);
+    const connectorsShown = await evaluate(cdp, `Number(getComputedStyle(document.querySelector(".hub.is-exploded .hub-connector") || document.querySelector(".hub-connector")).opacity)`);
+    check("CHECK 7 — hover explodes the hub", hoverExploded === true, String(hoverExploded));
+    check("CHECK 7 — exploded pieces carry a transform", pieceMoved && pieceMoved !== "none", pieceMoved);
+    check("CHECK 7 — connector lines become visible when exploded", connectorsShown > 0.1, String(connectorsShown));
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+    await sleep(450);
+    check("CHECK 7 — mouse leave reassembles the hub", (await evaluate(cdp, `document.querySelector(".hub").classList.contains("is-exploded")`)) === false);
+
+    // CHECK 9 — labels come from the API.
+    const apiServices = (await (await fetch(`${API}/services`)).json()).data ?? [];
+    const labelTexts = await evaluate(cdp, `[...document.querySelectorAll("#hub-service-list a .hub-label__title")].map((e) => e.textContent.trim())`);
+    const expected = apiServices
+      .filter((s) => Number.isInteger(s.hubSlot))
+      .sort((a, b) => a.hubSlot - b.hubSlot)
+      .map((s) => s.hubLabel || s.title);
+    check(
+      "CHECK 9 — hub labels originate from API service data",
+      labelTexts.length > 0 && labelTexts.every((t) => expected.includes(t)),
+      JSON.stringify({ labelTexts, expected }),
+    );
+
+    // CHECK 10 — labels link to real service cards.
+    const links = await evaluate(cdp, `[...document.querySelectorAll("#hub-service-list a")].map((a) => a.getAttribute("href"))`);
+    const targets = await evaluate(cdp, `[...document.querySelectorAll("#services article")].map((a) => "#" + a.id)`);
+    check(
+      "CHECK 10 — hub labels link to existing service cards",
+      links.length > 0 && links.every((h) => targets.includes(h)),
+      JSON.stringify({ links, sample: targets.slice(0, 3) }),
+    );
+
+    // CHECK 16/17 — hub closed/open screenshots in both themes (desktop + mobile).
+    const captureHub = async (label, theme, width, height, open) => {
+      await gotoHub(theme, width, height);
+      if (open) {
+        const box = await evaluate(
+          cdp,
+          `(() => { const r = document.querySelector("#hub .hub__trigger").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`,
+        );
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
+      } else {
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+      }
+      await sleep(900);
+      await capture(`hub-${label}-${theme}-${width}x${height}-${open ? "open" : "closed"}.png`);
+    };
+    await captureHub("desktop", "light", 1440, 900, false);
+    await captureHub("desktop", "light", 1440, 900, true);
+    await captureHub("desktop", "dark", 1440, 900, false);
+    await captureHub("desktop", "dark", 1440, 900, true);
+    await captureHub("mobile", "light", 390, 844, false);
+    await captureHub("mobile", "light", 390, 844, true);
+    await captureHub("mobile", "dark", 390, 844, false);
+    await captureHub("mobile", "dark", 390, 844, true);
+
+    // CHECK 15 — reduced motion: static arrangement, no explode.
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await gotoHub("light");
+    await evaluate(cdp, `document.querySelector("#hub button[aria-controls]").focus(); true`);
+    await sleep(500);
+    const rmHub = await evaluate(
+      cdp,
+      `(() => ({
+        pieceTransform: getComputedStyle(document.querySelector('.hub [data-piece="top"]')).transform,
+        logoAnim: getComputedStyle(document.querySelector(".hub__logo")).animationName,
+        labels: document.querySelectorAll("#hub-service-list a").length,
+      }))()`,
+    );
+    check("CHECK 15 — reduced motion: pieces stay put + no breathing",
+      (rmHub.pieceTransform === "none" || rmHub.pieceTransform === "matrix(1, 0, 0, 1, 0, 0)") && (rmHub.logoAnim === "none" || rmHub.logoAnim === ""),
+      JSON.stringify(rmHub));
+    check("CHECK 15 — reduced motion: all service labels remain available", rmHub.labels > 0, String(rmHub.labels));
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+
+    // CHECK 13/14/11/12 — svc hub with 0, 1, 3 and 5 services (response interception).
+    const serveServices = async (list) => {
+      await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*api/services*", requestStage: "Request" }] });
+      const handler = (params) => {
+        const body = Buffer.from(JSON.stringify({ success: true, data: list })).toString("base64");
+        cdp.send("Fetch.fulfillRequest", {
+          requestId: params.requestId,
+          responseCode: 200,
+          responseHeaders: [
+            { name: "Content-Type", value: "application/json" },
+            { name: "Access-Control-Allow-Origin", value: BASE },
+            { name: "Access-Control-Allow-Credentials", value: "true" },
+          ],
+          body,
+        });
+      };
+      cdp.on("Fetch.requestPaused", handler);
+      return async () => {
+        cdp.off("Fetch.requestPaused", handler);
+        await cdp.send("Fetch.disable");
+      };
+    };
+    const flagged = apiServices.filter((s) => Number.isInteger(s.hubSlot)).sort((a, b) => a.hubSlot - b.hubSlot);
+    const withServices = async (list, verify) => {
+      const stop = await serveServices(list);
+      await cdp.send("Page.reload", { ignoreCache: true });
+      await sleep(1600);
+      await evaluate(cdp, `document.getElementById("hub")?.scrollIntoView({ block: "center", behavior: "instant" }); true`);
+      await sleep(700);
+      const result = await verify();
+      await stop();
+      return result;
+    };
+
+    await withServices([], async () => {
+      const s = await evaluate(
+        cdp,
+        `(() => ({ labels: document.querySelectorAll("#hub-service-list a").length, svg: Boolean(document.querySelector("#hub svg")), empty: Boolean(document.querySelector(".hub__empty")) }))()`,
+      );
+      check("CHECK 11 — 0 services: assembled logo + accessible fallback, no labels", s.labels === 0 && s.svg && s.empty, JSON.stringify(s));
+    });
+    await withServices(flagged.slice(0, 1), async () => {
+      const n = await evaluate(cdp, `document.querySelectorAll("#hub-service-list a").length`);
+      check("CHECK 12 — 1 service: exactly one label", n === 1, `labels=${n}`);
+    });
+    await withServices(flagged.slice(0, 3), async () => {
+      const n = await evaluate(cdp, `document.querySelectorAll("#hub-service-list a").length`);
+      check("CHECK 13 — 3 services: three labels", n === 3, `labels=${n}`);
+    });
+    await withServices(flagged.slice(0, 5), async () => {
+      const n = await evaluate(cdp, `document.querySelectorAll("#hub-service-list a").length`);
+      check("CHECK 14 — 5 services: five labels", n === 5, `labels=${n}`);
+    });
+
+    // CHECK 18 — transitions never leave content permanently invisible.
+    await gotoHub("light");
+    const visible = await evaluate(
+      cdp,
+      `(() => ({ main: getComputedStyle(document.querySelector("main")).opacity, h1: Boolean(document.querySelector("h1")), hubOpacity: getComputedStyle(document.getElementById("hub")).opacity }))()`,
+    );
+    check("CHECK 18 — content visible after transitions (no permanent blank)", visible.main === "1" && visible.h1 && visible.hubOpacity === "1", JSON.stringify(visible));
+
+    // CHECK 19 — console clean across the hub work.
+    assertClean("grid-hub");
+
+    // CHECK 20 — admin loads no grid layer and no Three.js resources.
+    resetErrors();
+    await cdp.send("Page.navigate", { url: `${BASE}/admin/dashboard` });
+    await waitFor(cdp, `location.pathname.startsWith("/admin") && document.readyState === "complete"`, 12000, "admin reload");
+    await sleep(900);
+    const adminGrid = await evaluate(
+      cdp,
+      `(() => ({
+        grid: document.querySelectorAll(".bg-grid").length,
+        hub: document.querySelectorAll("#hub").length,
+        three: performance.getEntriesByType("resource").some((r) => r.name.includes(${JSON.stringify(threeChunk)})),
+      }))()`,
+    );
+    check("CHECK 20 — admin has no grid layer, no hub, no three chunk", adminGrid.grid === 0 && adminGrid.hub === 0 && adminGrid.three === false, JSON.stringify(adminGrid));
+    assertClean("admin-grid");
+
     await cdp.send("Emulation.clearDeviceMetricsOverride");
     await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
   } finally {
