@@ -126,11 +126,18 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
   };
   applyTierBudget();
 
-  /* --- Sizing (responsive fit, no layout dependence) --------------------- */
+  /* --- Sizing (responsive fit, no layout dependence) ---------------------
+   * Container dimensions are cached here and reused by the loop, so the RAF
+   * frame never reads layout (clientWidth/Height) — no per-frame reflow. */
+  let viewWidth = 0;
+  let viewHeight = 0;
+
   const resize = (): void => {
     const width = container.clientWidth;
     const height = container.clientHeight;
     if (!width || !height || disposed) return;
+    viewWidth = width;
+    viewHeight = height;
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     // Narrow containers pull the camera back so the composition always fits.
@@ -164,15 +171,33 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, config.pixelRatioCap));
     applyEnvironmentIntensity();
     applyTierBudget(); // object counts + hover/parallax budgets
+    hoverAmounts.clear(); // stale keys would target now-hidden roots
+    rebuildPickTargets(); // visible-object set changed
     resize();
   }
 
-  /* --- Hover: pick-root resolution + eased feedback ---------------------- */
+  /* --- Hover: pick-root resolution + eased feedback ----------------------
+   * Everything hover-related is resolved ONCE per scene/tier — never per
+   * frame:
+   *   `pickTargets`  — flat list of raycastable objects; the raycast runs with
+   *                    `recursive:false`, so three never re-walks the graph.
+   *   `rootByMesh`   — hit object → the root hover state is keyed on.
+   *   `hoverTargets` — per root, the materials whose emissive lifts on hover,
+   *                    with their base values captured up front (no traversal).
+   */
+  interface HoverTarget {
+    material: MeshStandardMaterial;
+    baseEmissive: number;
+  }
+
   const hoverAmounts = new Map<Object3D, number>();
-  const pickRoots: Object3D[] = [];
+  const pickTargets: Object3D[] = [];
+  const rootByMesh = new Map<Object3D, Object3D>();
+  const hoverTargets = new Map<Object3D, HoverTarget[]>();
   const screen: ScreenPoint = { x: 0, y: 0, visible: false };
   const anchorWorld = new Vector3();
 
+  /** Walk up to the child of ribbon.group / supports.group that owns hover. */
   function resolvePickRoot(object: Object3D): Object3D | null {
     let current: Object3D | null = object;
     while (
@@ -187,10 +212,37 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
     return current;
   }
 
-  function refreshPickRoots(): void {
-    pickRoots.length = 0;
-    pickRoots.push(ribbon.group);
-    for (const root of supports.roots) if (root.visible) pickRoots.push(root);
+  /** Rebuild the flattened pick/hover tables. Called once and on tier change. */
+  function rebuildPickTargets(): void {
+    pickTargets.length = 0;
+    rootByMesh.clear();
+    hoverTargets.clear();
+
+    const sources: Object3D[] = [ribbon.group];
+    for (const root of supports.roots) if (root.visible) sources.push(root);
+
+    for (const source of sources) {
+      source.traverse((child) => {
+        // Meshes and line segments are raycastable; points/groups are not picks.
+        const target = child as Object3D & { isMesh?: boolean; isLine?: boolean };
+        if (!target.isMesh && !target.isLine) return;
+        const resolved = resolvePickRoot(child);
+        if (!resolved || !resolved.visible) return;
+
+        pickTargets.push(child);
+        rootByMesh.set(child, resolved);
+
+        const material = (child as Mesh).material;
+        if (!material || Array.isArray(material)) return;
+        if (!("emissiveIntensity" in material)) return;
+        const list = hoverTargets.get(resolved) ?? [];
+        list.push({
+          material: material as MeshStandardMaterial,
+          baseEmissive: (material.userData.baseEmissive as number | undefined) ?? 0,
+        });
+        hoverTargets.set(resolved, list);
+      });
+    }
   }
 
   function applyHover(dt: number, hoveredRoot: Object3D | null): void {
@@ -212,17 +264,16 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
         const baseScale = (object.userData.baseScale as number | undefined) ?? 1;
         object.scale.setScalar(baseScale * (1 + 0.05 * amount));
       }
-      object.traverse((child) => {
-        const mesh = child as Mesh;
-        if (!mesh.isMesh) return;
-        const material = mesh.material;
-        if (Array.isArray(material)) return;
-        if (!("emissiveIntensity" in material)) return;
-        const base = (material.userData.baseEmissive as number | undefined) ?? 0;
-        (material as MeshStandardMaterial).emissiveIntensity = base + amount * 0.3;
-      });
+      // Emissive lift straight from the precomputed table (no per-frame traversal).
+      const targets = hoverTargets.get(object);
+      if (!targets) continue;
+      for (const target of targets) {
+        target.material.emissiveIntensity = target.baseEmissive + amount * 0.3;
+      }
     }
   }
+
+  rebuildPickTargets();
 
   /* --- The single RAF loop ---------------------------------------------- */
   const frame = (now: number): void => {
@@ -250,18 +301,11 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
 
     // 3) Post-render with fresh matrices: hotspot projection + hover poll.
     ribbon.anchor.getWorldPosition(anchorWorld);
-    projectToContainerPx(
-      anchorWorld,
-      camera,
-      container.clientWidth,
-      container.clientHeight,
-      screen,
-    );
+    projectToContainerPx(anchorWorld, camera, viewWidth, viewHeight, screen);
     onAnchor?.(screen.x, screen.y, screen.visible);
 
-    refreshPickRoots();
-    const hit = interaction.poll(camera, pickRoots);
-    const hoveredRoot = hit ? resolvePickRoot(hit) : null;
+    const hit = interaction.poll(camera, pickTargets);
+    const hoveredRoot = hit ? (rootByMesh.get(hit) ?? null) : null;
     applyHover(dt, hoveredRoot);
 
     if (!firstFrameDone) {

@@ -200,7 +200,7 @@ Full tables: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §8–§12.
 - [ ] `frontend`: `npm run lint` ✅ (0 problems) `npm run build` ✅ (14 routes)
 - [ ] `Backend`: `npm run lint` ✅ `npm run build` ✅ (44 files) `npm run smoke` ✅ (81/81 assertions)
 - [ ] Full-stack smoke: public content, intake + reference ID, visitor dedupe, admin login/stats/CSV/logout, logo upload lifecycle, all routes 200
-- [ ] Three.js harness: `node scripts/verify-three.mjs` ✅ 64/64 · `NO_WEBGL=1 …` ✅ 9/9 (incl. brand/layout/first-load checks + screenshots in `frontend/test-output/screenshots/`)
+- [ ] Three.js harness: `node scripts/verify-three.mjs` ✅ 96/96 · `NO_WEBGL=1 …` ✅ 9/9 (incl. brand/layout/first-load checks + screenshots in `frontend/test-output/screenshots/`)
 
 ## 8. Production notes
 
@@ -209,6 +209,11 @@ Full tables: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §8–§12.
    disabled outside development.
 3. Point `NEXT_PUBLIC_API_URL` at the deployed API and `CLIENT_ORIGIN` at the deployed site.
 4. Build: `frontend: npm run build && npm start` · `Backend: npm start` (use a process manager).
+5. **Backend on Vercel** — `Backend/vercel.json` sets the Express framework preset, so Vercel bundles
+   the existing `Backend/server.js` app as one function and routes every request to it (all `/api/*`
+   routes and `/api/health` included). `server.js` exposes `export default app` for detection; local
+   `start()` (DB connect + port listen) is unchanged. Set the Vercel project Root Directory to
+   `Backend`, add the environment variables there, and no `package.json` changes are required.
 
 ## 9. 3D / WebGL layer (public site only)
 
@@ -232,7 +237,7 @@ fallback. It is a progressive enhancement:
 - **Verify** (headless Chrome harness, no extra dependencies):
   ```bash
   cd frontend && npm run build && npx next start -p 3001   # terminal A
-  node scripts/verify-three.mjs                            # 64 checks
+  node scripts/verify-three.mjs                            # 96 checks
   NO_WEBGL=1 node scripts/verify-three.mjs                 # 9 fallback checks
   ```
   Requires the backend running (the harness seeds two test logos via the admin API).

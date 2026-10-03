@@ -66,6 +66,12 @@ if (storageDriver === "local") {
 app.use(notFoundHandler);
 app.use(errorHandler);
 
+// --- Vercel -------------------------------------------------------------------
+// Export the fully-configured app so Vercel's Express preset detects it as the
+// single serverless handler (see Backend/vercel.json). No behavior change: the
+// local `start()` below still connects the DB and listens on a port.
+export default app;
+
 // --- Startup ------------------------------------------------------------------
 async function start() {
   try {

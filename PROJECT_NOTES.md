@@ -1251,3 +1251,45 @@ surfaces) instead of forcing every logo to monochrome.
   enclosed artwork. Safety bounds in the flood-fill branch.
 - **Bulk processing:** `logoController.js` `bulkFixLogos`; the admin trigger is `LogosManager.tsx`
   (“Fix all existing logos”). Extend by adding a per-item step inside the loop.
+
+## 2026-10-03 — Task D: Three.js performance pass + Vercel backend config
+
+### Completed
+- **Three.js (public hero only)** — no visual, layout, geometry, theme, animation or API changes. Only
+  per-frame overhead inside the existing single RAF loop was removed:
+  - **No layout reads in the loop** — the hero container's `clientWidth`/`clientHeight` are now cached
+    in `resize()` (`viewWidth`/`viewHeight`) and reused for hotspot projection instead of being read
+    every frame (a read that could force a reflow).
+  - **Hover no longer traverses the graph per frame** — `engine.ts` precomputes, once per tier, a flat
+    raycast-target list, a hit-object → hover-root map, and a per-root table of the materials whose
+    `emissiveIntensity` the hover lift drives. `applyHover` reads that table instead of calling
+    `object.traverse()` + material checks on every hovered object every frame.
+  - **Raycast is flattened + non-recursive** — `interaction.ts` casts against the pre-flattened target
+    list with `recursive:false`, so three never re-walks the graph on each (already 70 ms-throttled)
+    poll. Pick tables rebuild only on init and quality-tier changes, never per frame.
+  - Everything already spec-compliant is preserved as-is: exactly one RAF loop; off-screen
+    (IntersectionObserver) + hidden-tab (visibilitychange) pause; `prefers-reduced-motion` handling;
+    adaptive high/medium/low tiers; per-tier DPR cap; delta-time animation; no per-frame allocation;
+    in-place theme updates; context-loss pause/restore; full disposal; Strict-Mode-safe lifecycle; and
+    lazy loading that keeps `three` off `/admin`.
+- **`Backend/vercel.json`** (new) — declares Vercel's Express backend preset
+  (`{ "$schema": "https://openapi.vercel.sh/vercel.json", "framework": "express" }`) so Vercel bundles
+  the existing `Backend/server.js` Express app as a single function and routes all incoming requests to
+  it. All existing `/api/*` routes and `/api/health` are preserved by Express's own router. No routes,
+  controllers, models, middleware, environment variables or `package.json` were changed; nothing is
+  hardcoded and no secret is exposed. One added line in `Backend/server.js` — `export default app;` —
+  lets Vercel detect the handler under both of its supported patterns (a default export *or* a port
+  listener); local `start()` still connects the DB and listens exactly as before.
+
+### Files Changed
+- `frontend/components/three/engine.ts` — cached viewport size; precomputed pick/hover tables.
+- `frontend/components/three/interaction.ts` — non-recursive raycast against flattened targets.
+- `Backend/vercel.json` — new, Express framework preset.
+- `Backend/server.js` — one line: `export default app;` (Vercel detection; no behavior change).
+- `PROJECT_NOTES.md`, `README.md` — documentation only.
+
+### Verification
+- Frontend: `npm run lint` ✅ 0 problems · `npm run build` ✅ TypeScript clean.
+- Three.js harness: `node scripts/verify-three.mjs` ✅ **96/96** · `NO_WEBGL=1 …` ✅ **9/9** (WebGL +
+  NO_WEBGL, light/dark/system, reduced motion, context loss/restore, route-navigation leak checks).
+- Backend: `npm run lint` ✅ · `npm run build` ✅ 45 files · `NODE_ENV=test npm run smoke` ✅ **121/121**.

@@ -25,8 +25,12 @@ export interface InteractionHandle {
   readonly pointer: { x: number; y: number };
   /** Advance damping toward the latest pointer target. */
   update(dt: number): void;
-  /** Throttled raycast (≈14 Hz, only after pointer movement). */
-  poll(camera: Camera, pickRoots: Object3D[]): Object3D | null;
+  /**
+   * Throttled raycast (≈14 Hz, only after pointer movement). `targets` is a
+   * pre-flattened list (the engine builds it once per tier), so the cast runs
+   * with `recursive:false` and never re-walks the scene graph.
+   */
+  poll(camera: Camera, targets: Object3D[]): Object3D | null;
   dispose(): void;
 }
 
@@ -80,7 +84,7 @@ export function createInteraction(container: HTMLElement): InteractionHandle {
       pointer.x = damp(pointer.x, settings.parallax ? targetX : 0, lambda, dt);
       pointer.y = damp(pointer.y, settings.parallax ? targetY : 0, lambda, dt);
     },
-    poll(camera, pickRoots): Object3D | null {
+    poll(camera, targets): Object3D | null {
       if (!settings.hover) return null;
       const now = performance.now();
       if (now - lastPoll < POLL_INTERVAL_MS) return hovered;
@@ -89,7 +93,8 @@ export function createInteraction(container: HTMLElement): InteractionHandle {
       lastPoll = now;
       moved = false;
       raycaster.setFromCamera(ndc, camera);
-      const hits = raycaster.intersectObjects(pickRoots, true);
+      // Pre-flattened targets → recursive:false avoids re-traversing per cast.
+      const hits = raycaster.intersectObjects(targets, false);
       hovered = hits.length > 0 ? hits[0].object : null;
       return hovered;
     },
