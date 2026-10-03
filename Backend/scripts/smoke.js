@@ -465,6 +465,18 @@ let processedLogoId = null;
   check("unauthenticated reprocess → 401", unauthReprocess.status === 401);
   const unauthBulk = await json("/admin/logos/bulk-fix", { method: "POST" });
   check("unauthenticated bulk fix → 401", unauthBulk.status === 401);
+
+  // --- Server-side preview (no asset stored) ------------------------------
+  const preview = await json("/admin/logos/preview", {
+    method: "POST",
+    cookie,
+    body: { image: solid, removeBackground: true, trim: true, tolerance: 22 },
+  });
+  check("preview → 200 with a PNG data URI", preview.status === 200 && /^data:image\/png;base64,/.test(preview.body?.data?.preview || ""));
+  check("preview reports backgroundStatus=removed", preview.body?.data?.backgroundStatus === "removed", preview.body?.data?.backgroundStatus);
+  check("preview returns metadata", typeof preview.body?.data?.metadata?.width === "number");
+  const unauthPreview = await json("/admin/logos/preview", { method: "POST", body: { image: solid } });
+  check("unauthenticated preview → 401", unauthPreview.status === 401);
 }
 
 console.log("[smoke] 10. super admin + team management");

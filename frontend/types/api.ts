@@ -101,6 +101,22 @@ export interface ReprocessLogoResponse {
   result: LogoProcessingResult;
 }
 
+/** Result of the server-side preview endpoint (no asset is stored). */
+export interface LogoPreview {
+  preview: string | null;
+  backgroundStatus: LogoBackgroundStatus;
+  metadata: {
+    width: number;
+    height: number;
+    aspectRatio: number;
+    hasAlpha: boolean;
+    dominantColors: string[];
+    averageLuminance: number;
+    tone: LogoTone;
+  } | null;
+  reason?: string;
+}
+
 export interface BulkFixItem {
   id: string;
   name: string;

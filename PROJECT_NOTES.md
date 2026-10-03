@@ -1025,9 +1025,20 @@ the existing static fallback. React only manages lifecycle; every Three.js conce
 
 ### Verification
 - `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅ (14 routes).
-- `node scripts/verify-three.mjs` ✅ **95/95** · `NO_WEBGL=1 …` ✅ **9/9**.
+- `node scripts/verify-three.mjs` ✅ **96/96** · `NO_WEBGL=1 …` ✅ **9/9**.
 - Real data run: `Fix all existing logos` over the current dataset → `{processed:2, alreadyGood:1,
   needsTransparentPng:1, failed:0}` (WS Toys + VPSA cleaned; UCF already transparent; Irhas'Inn flagged).
+
+### Follow-up additions (same day)
+- **Off-screen + hidden-tab pause implemented for the rows:** the section sets `--showcase-play` from
+  `active && !hidden`, so rows truly stop when below the fold or the tab is hidden (previously only the
+  idle float was gated). Harness `CHECK 17.5` now asserts the off-screen pause.
+- **Server-side preview endpoint** `POST /api/admin/logos/preview` — runs the pipeline on an uploaded
+  data URI and returns a small PNG data-URI preview + metadata + `backgroundStatus`, storing nothing.
+  The Logos Manager “After” panel now shows the pipeline's real output (debounced on toggle/tolerance
+  change). Backend smoke extended → **121/121**.
+- Harness hover check made robust (targets an on-screen logo with retries); 429s caused by the test's
+  own rapid reloads are filtered as expected backend rate-limiting, not app errors.
 - Screenshots: `test-output/screenshots/{before,after}-{light,dark}-{desktop-1366x768,mobile-390x844}.png`.
 
 ### Bundle facts (measured)
@@ -1200,6 +1211,9 @@ surfaces) instead of forcing every logo to monochrome.
 - **Revert** — points the delivered asset back at the untouched original and clears `hasAlpha`.
 - **Bulk fix** — processes every logo from its original, per-item try/catch (one failure never aborts
   the batch), returns `processed / alreadyGood / needsTransparentPng / failed / total` + per-item detail.
+- **Preview** — `POST /api/admin/logos/preview` runs the pipeline on an uploaded data URI and returns
+  a small PNG data-URI preview + metadata + `backgroundStatus`; it stores nothing, so the admin
+  before/after panel always reflects the server's real output.
 - **Cleanup order** — create + verify new asset → update DB → then delete obsolete. On DB failure the
   old asset is retained; a failed post-DB cleanup is logged, never corrupts the active record. Delete
   removes **both** processed and original (deduplicated) and never touches shared/other assets.

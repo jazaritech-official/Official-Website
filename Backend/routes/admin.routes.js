@@ -21,6 +21,7 @@ import {
   reprocessLogo,
   revertLogo,
   bulkFixLogos,
+  previewLogo,
 } from "../controllers/logoController.js";
 import {
   listTemplates,
@@ -120,6 +121,17 @@ const processingRules = [
   body("tolerance").optional().isFloat({ min: 0, max: 100 }).toFloat(),
   validate,
 ];
+adminRouter.post(
+  "/logos/preview",
+  [
+    body("image").isString().matches(/^data:image\//).withMessage("A valid image is required."),
+    body("removeBackground").optional().isBoolean().toBoolean(),
+    body("trim").optional().isBoolean().toBoolean(),
+    body("tolerance").optional().isFloat({ min: 0, max: 100 }).toFloat(),
+    validate,
+  ],
+  previewLogo,
+);
 adminRouter.post("/logos/:id/reprocess", idRules, processingRules, reprocessLogo);
 adminRouter.post("/logos/:id/revert", idRules, revertLogo);
 adminRouter.post("/logos/bulk-fix", processingRules, bulkFixLogos);

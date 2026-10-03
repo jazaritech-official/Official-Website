@@ -269,15 +269,17 @@ Full architecture + tuning guides: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §27
   (`width`, `height`, `aspectRatio`, `hasAlpha`, `dominantColors`, `averageLuminance`, `tone`).
   `backgroundStatus` is `removed` / `kept` / `needs-transparent-png`; integrity beats forced
   transparency, so complex or framed backgrounds are preserved and flagged.
-- **Admin** — `/admin/logos` adds a checkerboard before/after preview, remove-background/trim toggles, a
-  tolerance slider, text status badges, **Reprocess**, **Revert to original** and **Fix all existing
-  logos** (idempotent, per-item isolation, summary). Display name and safe http/https website URL are
-  supported. Existing upload/replace/reorder/visibility/delete are preserved.
+- **Admin** — `/admin/logos` adds a **server-side** checkerboard before/after preview
+  (`POST /api/admin/logos/preview` runs the pipeline live and returns a data-URI preview, storing
+  nothing), remove-background/trim toggles, a tolerance slider, text status badges, **Reprocess**,
+  **Revert to original** and **Fix all existing logos** (idempotent, per-item isolation, summary).
+  Display name and safe http/https website URL are supported. Existing
+  upload/replace/reorder/visibility/delete are preserved.
 - **Public showcase** — `LogoMarquee` is a logo-only wall: **no pill, card or plate** behind any logo.
   Optical normalization, counter-scrolling seamless rows, tone-aware contrast aids, hover/focus pause +
   floating label, damped scroll-velocity, off-screen/hidden-tab pause, and a **static wrapped grid**
   under reduced motion.
-- **Verification** — backend smoke **117/117**; frontend harness **95/95** (+ NO_WEBGL 9/9).
+- **Verification** — backend smoke **121/121**; frontend harness **96/96** (+ NO_WEBGL 9/9).
 
 Full architecture + tuning guide: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §28.
 

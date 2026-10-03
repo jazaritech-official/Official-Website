@@ -418,4 +418,17 @@ export async function processLogoImage(input, options = {}) {
   return { buffer: output, metadata, backgroundStatus, changed };
 }
 
+/**
+ * Render a small PNG data-URI preview of a processed buffer (admin before/after
+ * preview only). Nothing is written to storage.
+ */
+export async function makePreviewDataUri(pngBuffer, max = 420) {
+  if (!pngBuffer) return null;
+  const out = await sharp(pngBuffer)
+    .resize({ width: max, height: max, fit: "inside", withoutEnlargement: true })
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+  return `data:image/png;base64,${out.toString("base64")}`;
+}
+
 export default processLogoImage;

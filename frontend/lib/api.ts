@@ -19,6 +19,7 @@ import type {
   DashboardStats,
   HealthData,
   LogoInput,
+  LogoPreview,
   LogoProcessingOptions,
   PaginationMeta,
   ReprocessLogoResponse,
@@ -308,6 +309,8 @@ export const api = {
       reorder: (ids: string[]) => request<{ reordered: number }>("/admin/logos/reorder", { method: "PATCH", body: { ids } }),
       setVisibility: (id: string, isVisible: boolean) =>
         request<AdminLogo>(`/admin/logos/${id}/visibility`, { method: "PATCH", body: { isVisible } }),
+      preview: (input: { image: string } & LogoProcessingOptions) =>
+        request<LogoPreview>("/admin/logos/preview", { method: "POST", body: input }),
       reprocess: (id: string, options?: LogoProcessingOptions) =>
         request<ReprocessLogoResponse>(`/admin/logos/${id}/reprocess`, { method: "POST", body: options ?? {} }),
       revert: (id: string) => request<AdminLogo>(`/admin/logos/${id}/revert`, { method: "POST", body: {} }),

@@ -6,7 +6,8 @@ import {
   deleteImage,
   storageDriver,
 } from "../services/storageService.js";
-import { processLogoImage, DEFAULT_TOLERANCE } from "../services/imageProcessor.js";
+import { processLogoImage, makePreviewDataUri, DEFAULT_TOLERANCE } from "../services/imageProcessor.js";
+import { parseImageDataUri } from "../services/storageService.js";
 import { sendData } from "../utils/apiResponse.js";
 import { ApiError } from "../utils/errors.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -177,6 +178,35 @@ export const listPublicLogos = asyncHandler(async (_req, res) => {
 });
 
 /* --- Admin ---------------------------------------------------------------- */
+
+/**
+ * POST /api/admin/logos/preview — run the pipeline on an uploaded image and
+ * return a small PNG data-URI preview without storing anything. This is what
+ * makes the admin before/after panel represent the server's real output.
+ */
+export const previewLogo = asyncHandler(async (req, res) => {
+  const image = req.body?.image;
+  if (!image) throw ApiError.badRequest("Choose an image to preview.", { image: "Image is required." });
+
+  const options = readProcessingOptions(req.body);
+  const { base64 } = parseImageDataUri(image);
+  const processed = await processLogoImage(Buffer.from(base64, "base64"), options);
+
+  if (!processed.buffer) {
+    return sendData(res, {
+      preview: null,
+      backgroundStatus: "needs-transparent-png",
+      metadata: null,
+      reason: processed.reason,
+    });
+  }
+
+  return sendData(res, {
+    preview: await makePreviewDataUri(processed.buffer),
+    backgroundStatus: processed.backgroundStatus,
+    metadata: processed.metadata,
+  });
+});
 
 /** GET /api/admin/logos */
 export const listAdminLogos = asyncHandler(async (_req, res) => {

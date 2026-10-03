@@ -295,6 +295,9 @@ async function main() {
       if (/X4122|CONTEXT_LOST|context lost|SwiftShader|software WebGL/i.test(entry.text)) return;
       // Expected: the admin auth guard probes /auth/me while signed out (401).
       if (/status of 401 \(Unauthorized\)/.test(entry.text)) return;
+      // Expected: the harness reloads rapidly and trips the API's own rate
+      // limiter (429). It is the backend working as designed, not an app error.
+      if (/429 \(Too Many Requests\)/.test(entry.text)) return;
       consoleErrors.push(entry.text);
     });
 
@@ -941,22 +944,47 @@ async function main() {
     check("CHECK 4 — row content fills the viewport (no gap on ultrawide)", seam.track >= seam.viewport, JSON.stringify(seam));
 
     // CHECK 5 — hover pauses the row, lifts/scales the logo and reveals the label.
-    const box = await evaluate(
-      cdp,
-      `(() => { const el = document.querySelector(".logo-item"); const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`,
-    );
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
-    await sleep(500);
-    const hover = await evaluate(
-      cdp,
-      `(() => {
-        const track = document.querySelector(".logo-showcase__track");
-        const item = document.querySelector(".logo-item:hover") || document.querySelector(".logo-item");
-        const img = item.querySelector("img, .logo-item__img");
-        const label = item.querySelector(".logo-item__label");
-        return { play: getComputedStyle(track).animationPlayState, transform: getComputedStyle(img).transform, label: getComputedStyle(label).opacity };
-      })()`,
-    );
+    // The track keeps moving, so target a logo that is currently well inside the
+    // viewport and retry a few times until the pointer lands on one.
+    let hover = { play: null, transform: "none", label: "0" };
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const box = await evaluate(
+        cdp,
+        `(() => {
+          const w = window.innerWidth;
+          const items = [...document.querySelectorAll(".logo-item")];
+          const candidate = items.find((el) => {
+            const r = el.getBoundingClientRect();
+            const cx = r.x + r.width / 2;
+            return cx > w * 0.3 && cx < w * 0.7;
+          });
+          if (!candidate) return null;
+          const r = candidate.getBoundingClientRect();
+          return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+        })()`,
+      );
+      if (!box) {
+        await sleep(250);
+        continue;
+      }
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
+      await sleep(250);
+      const probe = await evaluate(
+        cdp,
+        `(() => {
+          const hovered = document.querySelector(".logo-item:hover");
+          if (!hovered) return null;
+          const track = document.querySelector(".logo-showcase__track");
+          const img = hovered.querySelector("img, .logo-item__img");
+          const label = hovered.querySelector(".logo-item__label");
+          return { play: getComputedStyle(track).animationPlayState, transform: getComputedStyle(img).transform, label: getComputedStyle(label).opacity };
+        })()`,
+      );
+      if (probe) {
+        hover = probe;
+        break;
+      }
+    }
     check("CHECK 5 — hover pauses the row", hover.play === "paused", hover.play);
     check("CHECK 5 — hover lifts/scales the logo", hover.transform !== "none", hover.transform);
     check("CHECK 5 — hover reveals the name label", Number(hover.label) > 0.5, hover.label);
@@ -975,6 +1003,18 @@ async function main() {
     );
     check("CHECK 5 — keyboard focus pauses the row", focusPause === "paused", focusPause);
     await evaluate(cdp, `document.activeElement?.blur(); true`);
+
+    // Off-screen pause (IntersectionObserver): rows must stop while out of view.
+    // Scroll to the very bottom so the showcase is fully above the viewport.
+    await evaluate(cdp, `window.scrollTo({ top: document.body.scrollHeight, behavior: "instant" }); true`);
+    await sleep(900);
+    const offscreen = await evaluate(
+      cdp,
+      `(() => { const t = document.querySelector(".logo-showcase__track"); return t ? getComputedStyle(t).animationPlayState : null; })()`,
+    );
+    check("CHECK 17.5 — rows pause when off-screen", offscreen === "paused", String(offscreen));
+    await evaluate(cdp, `document.getElementById("products")?.scrollIntoView({ block: "center", behavior: "instant" }); true`);
+    await sleep(600);
 
     // CHECK 7 — theme legibility (light + dark).
     const lightFilters = await evaluate(

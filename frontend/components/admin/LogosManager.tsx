@@ -87,6 +87,12 @@ export function LogosManager() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
 
+  const [fileDataUri, setFileDataUri] = useState<string | null>(null);
+  const [afterPreview, setAfterPreview] = useState<string | null>(null);
+  const [previewStatus, setPreviewStatus] = useState<LogoBackgroundStatus | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
   const [busyId, setBusyId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<AdminLogo | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -126,7 +132,36 @@ export function LogosManager() {
       return URL.createObjectURL(selected);
     });
     if (!name.trim()) setName(selected.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " "));
+    setAfterPreview(null);
+    setPreviewStatus(null);
+    void readAsDataUri(selected)
+      .then(setFileDataUri)
+      .catch(() => setFileDataUri(null));
   };
+
+  /* Live server-side preview: the "after" panel shows the pipeline's real output. */
+  useEffect(() => {
+    if (!fileDataUri) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setPreviewLoading(true);
+      setPreviewError(null);
+      try {
+        const result = await api.admin.logos.preview({ image: fileDataUri, removeBackground, trim, tolerance });
+        if (cancelled) return;
+        setAfterPreview(result.preview);
+        setPreviewStatus(result.backgroundStatus);
+      } catch (cause) {
+        if (!cancelled) setPreviewError(cause instanceof ApiError ? cause.message : "Preview failed.");
+      } finally {
+        if (!cancelled) setPreviewLoading(false);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [fileDataUri, removeBackground, trim, tolerance]);
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -148,6 +183,10 @@ export function LogosManager() {
     setFieldError(null);
     setUploadError(null);
     setProgress(0);
+    setFileDataUri(null);
+    setAfterPreview(null);
+    setPreviewStatus(null);
+    setPreviewError(null);
   };
 
   const upload = async () => {
@@ -442,13 +481,23 @@ export function LogosManager() {
                   </span>
                   <figure className="flex flex-col items-center gap-1.5">
                     <figcaption className="text-[0.7rem] font-semibold uppercase tracking-wide text-muted">
-                      After (processed on upload)
+                      After (server-processed)
                     </figcaption>
                     <CheckerSurface>
-                      <span className="px-3 py-6 text-xs text-muted">
-                        Processed preview appears here after upload
-                      </span>
+                      {previewLoading ? (
+                        <span className="px-3 py-6 text-xs text-muted">Processing…</span>
+                      ) : previewError ? (
+                        <span className="px-3 py-6 text-xs text-danger">{previewError}</span>
+                      ) : afterPreview ? (
+                        // eslint-disable-next-line @next/next/no-img-element -- transient preview data URI
+                        <img src={afterPreview} alt="Processed logo preview" className="max-h-24 max-w-56 object-contain" />
+                      ) : (
+                        <span className="px-3 py-6 text-xs text-muted">Preview unavailable</span>
+                      )}
                     </CheckerSurface>
+                    {previewStatus ? (
+                      <Badge tone={STATUS_META[previewStatus].tone}>{STATUS_META[previewStatus].label}</Badge>
+                    ) : null}
                   </figure>
                 </div>
                 <p className="max-w-xs truncate text-xs text-muted">

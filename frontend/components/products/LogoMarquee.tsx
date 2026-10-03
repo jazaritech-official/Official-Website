@@ -163,6 +163,7 @@ export function LogoMarquee() {
 
   const sectionRef = useRef<HTMLElement | null>(null);
   const [active, setActive] = useState(false);
+  const [tabVisible, setTabVisible] = useState(true);
   const [rows, setRows] = useState(2);
   // Damped speed scale (1 = base). Scroll velocity nudges it toward ~0.82.
   const [speedScale, setSpeedScale] = useState(1);
@@ -178,7 +179,7 @@ export function LogoMarquee() {
     return () => window.removeEventListener("resize", compute);
   }, [logos.length]);
 
-  /* Off-screen + hidden-tab pause. */
+  /* Off-screen pause (IntersectionObserver). */
   useEffect(() => {
     const element = sectionRef.current;
     if (!element || typeof IntersectionObserver === "undefined") return;
@@ -188,6 +189,14 @@ export function LogoMarquee() {
     );
     observer.observe(element);
     return () => observer.disconnect();
+  }, []);
+
+  /* Hidden-tab pause (visibilitychange) — resumes safely when visible again. */
+  useEffect(() => {
+    const sync = () => setTabVisible(document.visibilityState !== "hidden");
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => document.removeEventListener("visibilitychange", sync);
   }, []);
 
   /* Subtle, damped scroll-velocity awareness — one rAF, never layout-thrashing. */
@@ -245,12 +254,18 @@ export function LogoMarquee() {
       });
   }, [logos, rows]);
 
+  // Rows run only while the section is on-screen AND the tab is visible; hover
+  // and keyboard focus inside a row pause it independently (CSS).
+  const rowPlaystate = active && tabVisible ? "running" : "paused";
+
   return (
     <section
       id="products"
       ref={sectionRef}
       aria-labelledby="products-showcase-heading"
       className={`logo-showcase border-t border-line py-14 sm:py-16 ${active ? "is-active" : ""}`}
+      style={{ "--showcase-play": rowPlaystate } as CSSProperties}
+      data-play={rowPlaystate}
     >
       <div className="logo-showcase__glow" aria-hidden="true" />
 
