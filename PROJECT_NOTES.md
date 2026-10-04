@@ -297,6 +297,10 @@ no-flash script before first paint.
 - 3D Phase 8 — optional intro: deliberately skipped per spec guardrails (rationale logged).
 - 3D Phase 9 — CDP verification harness: 47/47 + NO_WEBGL 7/7 (perf/memory/mobile/low-end).
 - 3D Phase 10 — a11y + regression + form E2E; fixed Next 16 private-IP image-optimizer 400.
+- **Task F** — real-logo Exploded Services Hub: the owner's `public/Main Logo.png` traced to inline
+  SVG (5 pieces, IoU 0.9984), equal-size 24px grid-snapped service cards with orthogonal SVG
+  connectors and two-way highlighting, mobile vertical spine, plus the navbar glass/overlap fix and
+  a one-key `Backend/vercel.json` update. See §32.
 
 ## 22. In Progress
 
@@ -323,6 +327,14 @@ no-flash script before first paint.
   `NODE_ENV=test` (the harness/smoke set it for the spawned server). No secret values are recorded here.
 - The `prefers-reduced-motion` theme-legibility harness check is vacuous when no light-tone logo exists
   in the dataset (asserted but not exercised).
+- **Task F:** the hub's *fold* slot (hubSlot 3) anchors its connector to the mark's **assembly node**
+  instead of the fold's own edge — the only channel to the fold's crease is 16 source px wide
+  (≈1.3 px at hub size) and a trace through it would visually touch the artwork. Documented measured
+  trade-off in `hubLayout.ts`; the card still drives the fold's highlight and animation.
+- **Task F:** the backend general rate limiter (300 req / 15 min) can trip while the harness runs a
+  full pass → API 429 → check failures. Operational only: restart the dev backend before a run.
+- **Task F:** `Backend/vercel.json` cannot bypass the Vercel Hobby "Blocked" (Git-author) state —
+  that is account-level; see `DEPLOYMENT.md` §1 Options A–D.
 
 ## 25. Dated Changelog
 
@@ -1492,6 +1504,100 @@ surfaces) instead of forcing every logo to monochrome.
 - **Bundle facts (measured):** home initial JS **679,631 B raw / 209,290 B gz**; admin initial
   630,660 B / 196,214 B gz; three async chunk 595,869 B / 149,237 B gz (still home-only).
 
+## 2026-10-04 — Task F: Real Logo Exploded Services Hub + Navbar overlap fix + Backend/vercel.json
+
+### Why (root causes)
+1. **The old hub was not the owner's logo.** Task E drew a *hand-drawn approximation* (`viewBox "0 0
+   240 240"`, ribbon constants borrowed from the 3D hero: R=78, band 26, gap 16). It read as “a
+   diamond,” but it was not the real mark — wrong silhouette, wrong colours, no true fold, and the
+   leaf shape was invented. Task F's objective was fidelity to `public/Main Logo.png`.
+2. **Horizontal overflow (real bug).** `HUB_ANCHORS.assembly` held the raw **source** coordinate
+   `{x:2176, y:3922}` while every other anchor was in **design** units. `pctX(2176)` produced
+   `202.6%` → the fold card was positioned at left ≈ 2269 px, far off-screen: **1085+ px of
+   horizontal overflow** at desktop widths.
+3. **Navbar transparency/overlap.** The header did not carry an opaque-enough glass surface and its
+   stacking/scroll-offset relationship with the hub section let content show through / sit under it.
+
+### Completed
+- **Real-logo trace → inline SVG** (`frontend/scripts/trace-logo.mjs`, `npm run trace:logo`) reads
+  `frontend/public/Main Logo.png` (4096×4096 RGBA, ~62.4% transparent) and **generates**
+  `frontend/components/services/logoGeometry.ts` (do not hand-edit): connected-component segmentation
+  of the source alpha mask → crack-following contours → Douglas-Peucker simplification (2 px in the
+  4096 source space = 0.05% of the mark) → five pieces `top | right | bottom | fold | leaf` (`fold`
+  carved from the right band along the detected crease) + least-squares-fitted gradients sampled to
+  16 `userSpaceOnUse` stops. `viewBox "0 0 4096 4096"` (source pixels, no rescaling).
+- **Measured fidelity: silhouette IoU = 0.9983910699185224** (rasterised SVG vs source alpha mask at
+  threshold 128; intersection 6,245,645 / union 6,255,710) — requirement ≥ 0.95. Bezier corner fitting
+  was tried first and rejected (IoU 0.872–0.959); the simplified polyline measured higher.
+- **Deterministic blueprint layout** — new `frontend/components/services/hubLayout.ts`: design space
+  `1000×700`, logo box `{340,130,320}`, equal cards `300×180`, columns `{left:0, right:700}`,
+  rows `{1:110, 2:310}`, grid unit 20 design units = **24 px at the 1200 px reference width** (the
+  site's `--grid-fine`). Card origins and sizes are exact multiples of the unit; cards and SVG
+  connectors share one coordinate space, so no runtime measurement / layout thrash.
+- **Connectors**: axis-aligned orthogonal traces from each card socket to its piece anchor, drawn as
+  SVG paths + node dots; 1.4 px stroke, opacity 0.8 at rest → 1 when exploded. All five anchors are
+  in **design units** (`sourceToDesign`); the assembly-anchor unit bug above is fixed and documented.
+- **Two-way highlighting**: hovering/focusing/tapping a card lights its piece (`is-lit`), and
+  hovering/focusing a piece lights its card. `onPointerLeave` lives on the SVG **root** (a per-piece
+  leave fired as soon as the piece translated away and cleared the highlight immediately).
+- **Explode motion**: per-piece translate + small rotation (**max travel fraction 0.0398 ≤ 8%, max
+  rotation 2.55° ≤ 3°**), stagger `[0, 48, 96, 144, 192]` ms, spring-soft ease, `scale(1.015)`
+  breathing only while `.is-inview` (IntersectionObserver pauses off-screen work).
+- **Text**: every card renders full title + description — **no truncation, no ellipsis, no clamp**
+  (descriptions are 92–106 chars → 2 lines inside the 300×180 card).
+- **Mobile (<1024 px)**: vertical spine — logo, then the five cards stacked, connectors hidden, tap
+  toggles; `cardSlotStyle` emits custom properties consumed only inside `@media (min-width:1024px)`,
+  so mobile keeps normal flow. **Horizontal overflow = 0 at 1920 / 1440 / 1366 / 1024 / 768 / 390**
+  (was 1085+ before the anchor-unit fix).
+- **Accessibility / no-JS**: real `<button>` trigger with `aria-expanded`/`aria-controls`, labels are
+  always-in-DOM anchors to `#service-{slug}`, Escape reassembles, focus explodes, `prefers-reduced-motion`
+  keeps the static assembled mark with all titles; without JS everything is visible.
+- **Navbar fix (Task B tokens, made effective):** light `rgba(255,255,255,0.88)` / dark
+  `rgba(10,15,36,0.9)` glass with `backdrop-filter: blur(16px)`, border + shadow, `header z-index 200`
+  over `main z-index 1`, and `scroll-padding-top: 6rem` so `#hub` anchor scrolls land below the nav.
+  Contrast worst-case **4.61:1 light / 6.78:1 dark** (both ≥ 4.5).
+- **`Backend/vercel.json` (only backend file touched)** — now
+  `{"$schema":"https://openapi.vercel.sh/vercel.json","framework":"express","fluid":true}`.
+  Only `fluid` was added (officially documented); `memory` is **not** settable via vercel.json and
+  Hobby's `maxDuration` default is already the platform max (300 s), so nothing else was invented.
+- **Harness** `frontend/scripts/verify-three.mjs` extended with suite `[14]` (CHECKs 21–55 + 23a):
+  trace meta/IoU, piece count + gradients, equal-size 24 px grid-snapped cards, connector
+  socket→anchor reach, two-way highlight, explode travel/rotation/stagger, no-ellipsis, overflow at
+  six viewports, mobile spine, navbar glass/blur/z-index/contrast, anchor-scroll below nav,
+  reduced-motion, no-JS, clean console (real logo file, no 404s), light/dark screenshots.
+  Several checks initially passed **vacuously** (single-backslash regexes consumed inside JS template
+  literals) and were made real; the snapshot `rectOf` field mismatch (`w`/`h`) and an ellipsis-regex
+  mangling were fixed the same way.
+
+### Files Changed
+- **New:** `frontend/components/services/hubLayout.ts`, `frontend/components/services/logoGeometry.ts`
+  (generated), `frontend/scripts/trace-logo.mjs`.
+- **Edited:** `frontend/components/services/ServicesHub.tsx` (rewritten onto the traced pieces),
+  `frontend/app/globals.css` (§7e hub styles + `@media (min-width:1024px)` diagram, navbar tokens),
+  `frontend/scripts/verify-three.mjs` (suite `[14]`), `frontend/package.json` (`trace:logo` script),
+  `Backend/vercel.json` (Task C objective only).
+- **Docs:** `PROJECT_NOTES.md` (§32 + this entry), `README.md` §12, `DEPLOYMENT.md` §1.
+
+### Verification (actual)
+- `node scripts/verify-three.mjs` ✅ **158/158** (baseline 121) · `NO_WEBGL=1 …` ✅ **9/9**.
+- IoU **0.9983910699185224 ≥ 0.95** ✅ (report: `frontend/test-output/screenshots/logo-trace-report.json`).
+- Horizontal overflow **0 px** at 1920/1440/1366/1024/768/390 ✅.
+- Navbar contrast light 4.61:1 / dark 6.78:1 ✅; hub explode travel 0.0398 (≤8%) / rotation 2.55° (≤3°) ✅.
+- Frontend lint ✅ 0 problems · build ✅ 12 routes. Backend lint ✅ · build ✅ 46 files ·
+  `NODE_ENV=test npm run smoke` ✅ **124/124**.
+- **Bundle (measured):** homepage initial static JS **316.2 KB → 318.7 KB on the wire (+2.5 KB,
+  +0.8%)**; three-chunk still not in the initial payload; zero new dependencies.
+- Screenshots: `frontend/test-output/screenshots/` — `logo-{original,svg-assembled,side-by-side,diff,
+  silhouette-original,silhouette-svg}.png`, `hub2-{desktop,mobile}-{light,dark}-{closed,open}.png`,
+  `navbar-hub-{light,dark}-1366x768.png` (+ refreshed `hub-*` and `home-*`).
+
+### Known issues / follow-up
+- Fold trace anchors to the assembly node (measured 16-source-px channel constraint) — see §32.6.
+- Lighthouse / Firefox / Safari unavailable in this environment → recorded as NOT VERIFIED.
+- The `vercel.json` edit does **not** clear the Vercel Hobby “Blocked” state (account-level) — see
+  `DEPLOYMENT.md` §1 Options A–D.
+- Backend rate limiter (300 req/15 min) can trip mid-harness → restart the dev backend before a run.
+
 ## 29. Grid Design System (Task E)
 
 1. **Tokens** (`globals.css` `:root`, dark overrides in `.dark`): `--grid-fine` (24px),
@@ -1512,6 +1618,11 @@ surfaces) instead of forcing every logo to monochrome.
 7. **Tune** — spacing/colours/opacity/mask: the tokens above. Trace pulse speed: `--motion-grid-trace`.
 
 ## 30. Exploded Logo Hub Architecture (Task E)
+
+> **Superseded by §32 (Task F).** The Task E hub used a *hand-drawn approximation* of the mark
+> (240-unit viewBox with constants borrowed from the 3D hero). It has been replaced by the traced
+> real logo + deterministic blueprint layout described in §32; the a11y/no-JS/mobile behaviour
+> documented below still applies.
 
 1. **File** `frontend/components/services/ServicesHub.tsx`, mounted between ProductCards and
    ServicesGrid in `app/page.tsx` (section id `hub`, heading id `hub-heading`).
@@ -1556,3 +1667,115 @@ Code-side readiness: `Backend/config/db.js` (lazy, `globalThis`-cached Mongo con
 Vercel), `frontend/lib/imagePrep.ts` (client-side downscale/encode under the ~4.5 MB body cap).
 
 **Future optimisation (planned, not implemented):** direct-to-Cloudinary signed uploads.
+
+## 32. Real Logo Exploded Hub + Navbar Fix + vercel.json (Task F)
+
+### 32.1 Why the old hub was wrong
+Task E's hub drew a *hand-drawn approximation* of the mark in `viewBox "0 0 240 240"` using ribbon
+constants lifted from the 3D hero (`R=78`, band 26, vertex gap 16). It looked diamond-ish but was
+not the owner's artwork: wrong silhouette, invented fold, wrong leaf shape, approximated colours —
+and its card positions were hand-tuned rather than derived, which is how the assembly anchor ended up
+in the wrong coordinate space (1085+ px overflow). Task F rebuilds it **from the real logo**.
+
+### 32.2 Real logo source
+`frontend/public/Main Logo.png` — 4096×4096 RGBA PNG with genuine alpha (~62.4% fully transparent).
+`Real Logo.png` does not exist; the tracer and harness auto-detect either name. The mark separates
+into **five** movable pieces: `top`, `right`, `bottom`, `fold`, `leaf`.
+
+### 32.3 How the SVG paths are produced
+`npm run trace:logo` → `frontend/scripts/trace-logo.mjs` → **generates**
+`frontend/components/services/logoGeometry.ts` (marked GENERATED; never hand-edit).
+1. Read the source PNG alpha mask (threshold 128).
+2. Connected-component segmentation → per-piece masks (`fold` carved from the `right` band along the
+   crease detected inside it so it can animate independently).
+3. Crack-following boundary extraction → raw contours.
+4. Douglas-Peucker simplification, tolerance **2 px in the 4096 source space (0.05% of the mark)** —
+   straight edges stay exactly straight; rounded corners become tight polylines. Bezier corner fitting
+   was measured and **rejected** (IoU 0.872–0.959 vs 0.998 for the polyline).
+5. Gradients: least-squares fit over interior pixels, sampled into **16 stops**, `gradientUnits="userSpaceOnUse"`.
+6. Output: `LOGO_VIEWBOX "0 0 4096 4096"` (source pixels — no rescaling/lossy step), path `d` per
+   piece, gradient defs, `LOGO_TRACE_META { iou: 0.99839, … }`. First gradient stops: top `#021d69`,
+   bottom `#032980`, right `#065ed0`, fold `#021f6f`, leaf `#378c10` (brand blues/navy + Growth Green).
+
+### 32.4 IoU — how it is calculated and what it measured
+Rasterise the assembled SVG silhouette and the source alpha mask on the same 4096² grid at threshold
+128, then `IoU = |A ∩ B| / |A ∪ B|`. Measured: **intersection 6,245,645, union 6,255,710 → IoU =
+0.9983910699185224** (svg-only 4,910 px, ref-only 5,155 px). Requirement ≥ 0.95 → **PASS**. Recorded
+in `logo-trace-report.json` and asserted by the harness.
+
+### 32.5 Service → piece mapping
+`hubSlot` 0–4 → `HUB_SLOT_PIECES = ["top", "right", "bottom", "fold", "leaf"]` — deterministic, never
+shuffled; any subset of the five still resolves to a stable diagram. Seed mapping:
+`web-development`→0/top, `ai-solutions`→1/right, `e-commerce`→2/bottom, `business-growth`→3/fold,
+`it-consulting`→4/leaf. Labels show `hubLabel || title` + the backend description; anchors link to
+`#service-{slug}` (the target card flashes via CSS `:target`).
+
+### 32.6 Connector routing (`hubLayout.ts`)
+One design space `1000×700` holds the logo box `{340,130,320}`, equal `300×180` cards in columns
+`{left:0, right:700}` × rows `{1:110, 2:310}`. Every card origin/dimension is a multiple of the 20-unit
+grid unit, which equals **24 px at the 1200 px reference width** (matches `--grid-fine`). Anchors are
+converted from source px with `sourceToDesign` — **all five, including `assembly` (the bug fix)**.
+Each piece gets an axis-aligned (orthogonal) trace from its card socket to its anchor: top→left/row1
+(via x=324), bottom→left/row2 (via x=312), right→right/row2 (via x=676), leaf→right/row1 (via x=688),
+fold→centre socket straight down to the **assembly node**. The fold's own crease is reachable only
+through a 16-source-px channel (≈1.3 px at hub size) — a 1.4 px trace would touch the artwork on both
+sides, so the fold anchors to the assembly node instead (zero crossings). Cards and wires share the
+same coordinate space → no `getBoundingClientRect` loops, no layout thrash, no drift.
+
+### 32.7 Interaction, motion, text
+Two-way highlight (card ⇄ piece) via `is-lit`; `onPointerLeave` sits on the SVG root because a
+per-piece leave fires the instant the piece translates away. Explode: max travel fraction **0.0398**
+(≤ 8%), max rotation **2.55°** (≤ 3°), stagger `[0,48,96,144,192]` ms, spring-soft ease, breathing
+`scale(1.015)` gated by `.is-inview` (IntersectionObserver — paused off-screen). Cards are equal size
+and grid-snapped; titles/descriptions render in full (no ellipsis/clamp/overflow).
+
+### 32.8 Mobile (<1024 px)
+Vertical spine: assembled logo, then the five cards stacked, connectors hidden, tap toggles.
+`cardSlotStyle` writes `--slot-l/-t/-w/-h` custom properties; only `@media (min-width:1024px)`
+`.hub-card-slot` consumes them — mobile stays in normal flow. Horizontal overflow measured **0** at
+1920/1440/1366/1024/768/390.
+
+### 32.9 Reduced motion / no-JS / a11y
+`useReducedMotion` → no explode, no breathing, no connectors; static assembled mark with all five
+titles readable. Without JS every label is still in the DOM. Trigger is a real `<button>` with
+`aria-expanded`/`aria-controls`; focus explodes; Escape reassembles; SVG is a labelled `role="img"`;
+decorative traces/grid are `aria-hidden`.
+
+### 32.10 Navbar fix
+Task B defined the tokens; Task F made them effective for the hub: light `rgba(255,255,255,0.88)` /
+dark `rgba(10,15,36,0.9)`, `backdrop-filter: blur(16px)`, border + shadow, `header z-index: 200` over
+`main z-index: 1`, and `html { scroll-padding-top: 6rem }` so `#hub` anchor jumps land below the nav
+(harness clicks the real navbar `#hub` link and asserts the heading sits below the nav bottom).
+Contrast worst-case: light **4.61:1**, dark **6.78:1** (both ≥ 4.5). The navbar glass surface itself
+is intentionally exempted from the logo white-plate rule (it is the header, not a logo plate).
+
+### 32.11 `Backend/vercel.json`
+Only backend file changed this task:
+`{"$schema":"https://openapi.vercel.sh/vercel.json","framework":"express","fluid":true}` — valid
+JSON. Only `fluid` was added; `memory` is not settable via vercel.json (official docs) and Hobby's
+`maxDuration` default already equals the platform max (300 s), so nothing else was guessed. No deploy
+was attempted (Vercel CLI 58.4.0 present).
+
+### 32.12 Why this does NOT fix the Vercel “Blocked” state
+The Hobby block is **account-level** (private repo + Git commit author ≠ Vercel account identity),
+not a build/config failure. A `vercel.json` key cannot change who authors commits or the plan tier.
+See **`DEPLOYMENT.md` §1** for Options A–D (connect the right GitHub identity / CLI deploy / make the
+repo public / Vercel Pro).
+
+### 32.13 What is NOT verifiable locally
+- **Lighthouse** — not installed → no score claimed (bundle bytes reported instead: 316.2 → 318.7 KB
+  homepage initial static JS, +0.8%, zero new deps).
+- **Firefox / Safari** — CLI has Chromium only → code-reviewed compatibility, not measured.
+- **Actual Vercel deploy / account Blocked state** — no dashboard or account access.
+- **Local MongoDB** — none; verification uses the bundled in-memory server (`dev:mem`).
+
+### 32.14 Tuning guide
+- Explode distances/rotations: `HUB_PIECES[*].explode` in `hubLayout.ts`; stagger: `ServicesHub.tsx`.
+- Card/column/row/grid geometry: `HUB_DESIGN`, `HUB_CARD`, `HUB_COLUMNS`, `HUB_ROWS`, `HUB_GRID_UNIT`,
+  `HUB_REFERENCE_WIDTH` in `hubLayout.ts` (keep every anchor in **design** units).
+- Traced artwork/gradients: rerun `npm run trace:logo` — never edit `logoGeometry.ts` by hand.
+- Navbar glass: `--nav-bg`, `--nav-blur`, `--nav-border`, `--nav-shadow` tokens in `globals.css` §2.
+- Diagram/responsive CSS: `globals.css` §7e (mobile) and §7e-bis (`min-width:1024px` diagram).
+- Checks: suite `[14]` in `frontend/scripts/verify-three.mjs` (CHECKs 21–55 + 23a).
+  **Gotcha:** in-page code lives in JS template literals — single backslashes are consumed before
+  reaching the page; use doubled `\\` or backslash-free constructs (`String.fromCharCode(8230)`).

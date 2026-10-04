@@ -33,6 +33,12 @@ a different identity from the Vercel account, Vercel blocks the production deplo
 ### What this means
 
 - The block **cannot be fixed by a code change**, and no local edit can bypass it.
+- **`Backend/vercel.json` does not bypass it either.** That file was updated (Task F) to
+  `{ "$schema": "https://openapi.vercel.sh/vercel.json", "framework": "express", "fluid": true }`
+  — the schema + Express preset document *how* to build the function, and `fluid` opts into
+  Fluid Compute. Neither key has any effect on **who** authored the commit or on the plan's
+  private-repo collaboration rules, which is what the block checks. Resolving the block still
+  requires Option A, B, C or D below.
 - It is fixed only by reconciling the **Git identity** with the **Vercel account**, by
   connecting GitHub under the right account, by deploying from your own machine with the
   Vercel CLI, by making the repository public, or by upgrading the plan.
@@ -167,7 +173,12 @@ not change billing, the plan, or team membership, and makes no claim that this w
 | Output Directory | *(none)* |
 | Node.js Version | 20.x or 22.x |
 
-`Backend/vercel.json` declares `{ "framework": "express" }`. `Backend/server.js` exports the
+`Backend/vercel.json` declares `{ "$schema": …, "framework": "express", "fluid": true }`.
+`framework: "express"` documents the preset (it is also auto-detected from `server.js`);
+`fluid: true` opts the project into **Fluid Compute** (the documented vercel.json switch — it does
+**not** affect the Hobby "Blocked" state, see §1; `memory` is *not* settable via vercel.json and the
+Hobby `maxDuration` default already equals the platform maximum of 300 s, so neither was guessed).
+`Backend/server.js` exports the
 configured Express app (`export default app;`), so Vercel detects it as the single handler.
 `start()` (which connects the DB and calls `app.listen`) runs **only when not on Vercel**
 (`if (!process.env.VERCEL)`), so the function does not connect eagerly or exit on a transient

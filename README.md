@@ -201,7 +201,7 @@ Full tables: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §8–§12.
 - [ ] `frontend`: `npm run lint` ✅ (0 problems) `npm run build` ✅ (14 routes)
 - [ ] `Backend`: `npm run lint` ✅ `npm run build` ✅ (46 files) `npm run smoke` ✅ (124/124 assertions)
 - [ ] Full-stack smoke: public content, intake + reference ID, visitor dedupe, admin login/stats/CSV/logout, logo upload lifecycle, all routes 200
-- [ ] Three.js harness: `node scripts/verify-three.mjs` ✅ 121/121 · `NO_WEBGL=1 …` ✅ 9/9 (incl. brand/layout/first-load + grid/exploded-hub checks + screenshots in `frontend/test-output/screenshots/`)
+- [ ] Three.js harness: `node scripts/verify-three.mjs` ✅ 158/158 · `NO_WEBGL=1 …` ✅ 9/9 (incl. brand/layout/first-load + grid + real-logo hub checks + screenshots in `frontend/test-output/screenshots/`)
 
 ## 8. Production notes
 
@@ -289,7 +289,7 @@ Full architecture + tuning guides: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §27
   Optical normalization, counter-scrolling seamless rows, tone-aware contrast aids, hover/focus pause +
   floating label, damped scroll-velocity, off-screen/hidden-tab pause, and a **static wrapped grid**
   under reduced motion.
-- **Verification** — backend smoke **124/124**; frontend harness **121/121** (+ NO_WEBGL 9/9).
+- **Verification** — backend smoke **124/124**; frontend harness **158/158** (+ NO_WEBGL 9/9).
 
 Full architecture + tuning guide: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §28.
 
@@ -299,15 +299,29 @@ Full architecture + tuning guide: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §28.
   120px gradients, faded by a CSS mask) sits behind the public site only. Tokens (`--grid-*`) and
   section annotations (`.section-index`, `.hairline`, `.grid-crosshair`, `.card-ticks`, traces) live in
   `globals.css`; `/admin` never renders any of it. Documented z-index tokens keep it below content.
-- **OUR SERVICES HUB** — `components/services/ServicesHub.tsx`, placed between the product cards and
-  the services grid. It rebuilds the real Jazari ribbon-diamond mark as inline SVG (four bands + green
-  leaf) from the same geometry as the 3D hero, and explodes on hover / keyboard focus / tap, revealing
-  up to five services that come from `GET /api/services` (`hubSlot` 0–4). Labels are real anchors to
-  the matching `#service-{slug}` card; the list is always in the DOM (no-JS + screen-reader safe) and
-  the whole interaction is disabled under `prefers-reduced-motion`.
+- **OUR SERVICES HUB (real logo)** — `components/services/ServicesHub.tsx`, placed between the product
+  cards and the services grid. The mark is **traced from the owner's `public/Main Logo.png`**
+  (4096×4096) by `npm run trace:logo` → `scripts/trace-logo.mjs`, which generates
+  `components/services/logoGeometry.ts`: five real pieces (`top | right | bottom | fold | leaf`),
+  source-pixel `viewBox "0 0 4096 4096"`, 16-stop fitted gradients — **silhouette IoU 0.9984 vs the
+  source alpha mask** (requirement ≥ 0.95). Card/wire geometry is deterministic in
+  `components/services/hubLayout.ts` (1000×700 design space, equal 300×180 cards on a 24 px grid at
+  the 1200 px reference width, orthogonal SVG connectors, **two-way** card ⇄ piece highlighting).
+  It explodes on hover / keyboard focus / tap with ≤ 8% travel, ≤ 3° rotation and a 48 ms stagger,
+  revealing up to five services from `GET /api/services` (`hubSlot` 0–4 → top/right/bottom/fold/leaf);
+  labels are real anchors to the matching `#service-{slug}` card with **no text truncation**. Below
+  1024 px it becomes a vertical spine (no horizontal scroll at any width from 1920 → 390); the list is
+  always in the DOM (no-JS + screen-reader safe) and the whole interaction is disabled under
+  `prefers-reduced-motion`.
+- **Navbar overlap fix** — opaque-enough glass (`rgba(255,255,255,0.88)` light / `rgba(10,15,36,0.9)`
+  dark, `blur(16px)`, border + shadow), `header z-index 200` above content, and `scroll-padding-top:
+  6rem` so the navbar's `#hub` link lands the heading below the header. Contrast worst-case 4.61:1
+  (light) / 6.78:1 (dark).
+- **`Backend/vercel.json`** — only `{ "$schema"…, "framework": "express", "fluid": true }`; this does
+  **not** bypass the Hobby “Blocked” state (account-level) — see [`DEPLOYMENT.md`](./DEPLOYMENT.md) §1.
 - **Deployment** — see [`DEPLOYMENT.md`](./DEPLOYMENT.md). The backend connects to MongoDB lazily and
   the admin upload preprocesses images client-side to stay under Vercel's request-body limit.
 
-Architecture + tuning: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §29–§31.
+Architecture + tuning: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §29–§32.
 
 Development commands are unchanged (see §4): `npm run dev` in `Backend/` and `frontend/`.
