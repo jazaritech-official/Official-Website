@@ -32,6 +32,16 @@ import { join } from "node:path";
 
 const SCREENSHOT_DIR = join(process.cwd(), "test-output", "screenshots");
 
+/**
+ * Logo sources that actually exist under `public/`, as URL paths.
+ *
+ * Resolved Node-side so the in-page IoU check never requests a missing file:
+ * Chrome logs a 404 for that, and the console-clean check (rightly) fails.
+ */
+const LOGO_CANDIDATES = ["Real Logo.png", "Main Logo.png"]
+  .filter((name) => existsSync(join(process.cwd(), "public", name)))
+  .map((name) => "/" + encodeURI(name));
+
 const BASE = process.argv[2] ?? "http://localhost:3001";
 const NO_WEBGL = process.env.NO_WEBGL === "1"; // fallback-verification mode
 const CHROME =
@@ -298,7 +308,8 @@ async function main() {
       // Expected: the harness reloads rapidly and trips the API's own rate
       // limiter (429). It is the backend working as designed, not an app error.
       if (/429 \(Too Many Requests\)/.test(entry.text)) return;
-      consoleErrors.push(entry.text);
+      // Include the URL so a 404 is diagnosable from the failure line alone.
+      consoleErrors.push(entry.url ? `${entry.text} — ${entry.url}` : entry.text);
     });
 
     await Promise.all([
@@ -749,8 +760,13 @@ async function main() {
       let whitePlate = false;
       let node = logoImg ? logoImg.parentElement : null;
       for (let depth = 0; depth < 4 && node; depth += 1) {
+        // The navbar glass surface is a deliberate translucent layer (Task B
+        // requires 82-92% opacity), not a plate drawn behind the logo. The plate
+        // we are looking for is a white BOX wrapped directly around the PNG, so
+        // the walk stops at the logo's own link/wrapper chain.
+        if (node.classList.contains("glass") || node.tagName === "HEADER") break;
         const bg = getComputedStyle(node).backgroundColor || "";
-        const m = bg.match(/rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)/);
+        const m = bg.match(/rgba?\\((\\d+), (\\d+), (\\d+)(?:, ([\\d.]+))?\\)/);
         if (m) {
           const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
           const alpha = m[4] === undefined ? 1 : Number(m[4]);
@@ -1301,8 +1317,8 @@ async function main() {
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: hubBox.x, y: hubBox.y });
     await sleep(500);
     const hoverExploded = await evaluate(cdp, `document.querySelector(".hub").classList.contains("is-exploded")`);
-    const pieceMoved = await evaluate(cdp, `getComputedStyle(document.querySelector('.hub [data-piece="top"]')).transform`);
-    const connectorsShown = await evaluate(cdp, `Number(getComputedStyle(document.querySelector(".hub.is-exploded .hub-connector") || document.querySelector(".hub-connector")).opacity)`);
+    const pieceMoved = await evaluate(cdp, `getComputedStyle(document.querySelector('.hub [data-logo-piece="top"]')).transform`);
+    const connectorsShown = await evaluate(cdp, `Number(getComputedStyle(document.querySelector(".hub.is-exploded .hub-wire") || document.querySelector(".hub-wire")).opacity)`);
     check("CHECK 7 — hover explodes the hub", hoverExploded === true, String(hoverExploded));
     check("CHECK 7 — exploded pieces carry a transform", pieceMoved && pieceMoved !== "none", pieceMoved);
     check("CHECK 7 — connector lines become visible when exploded", connectorsShown > 0.1, String(connectorsShown));
@@ -1312,7 +1328,7 @@ async function main() {
 
     // CHECK 9 — labels come from the API.
     const apiServices = (await (await fetch(`${API}/services`)).json()).data ?? [];
-    const labelTexts = await evaluate(cdp, `[...document.querySelectorAll("#hub-service-list a .hub-label__title")].map((e) => e.textContent.trim())`);
+    const labelTexts = await evaluate(cdp, `[...document.querySelectorAll("#hub-service-list a .hub-card__title")].map((e) => e.textContent.trim())`);
     const expected = apiServices
       .filter((s) => Number.isInteger(s.hubSlot))
       .sort((a, b) => a.hubSlot - b.hubSlot)
@@ -1363,15 +1379,27 @@ async function main() {
     await sleep(500);
     const rmHub = await evaluate(
       cdp,
-      `(() => ({
-        pieceTransform: getComputedStyle(document.querySelector('.hub [data-piece="top"]')).transform,
-        logoAnim: getComputedStyle(document.querySelector(".hub__logo")).animationName,
-        labels: document.querySelectorAll("#hub-service-list a").length,
-      }))()`,
+      `(() => {
+        const piece = document.querySelector('.hub [data-logo-piece="top"]');
+        const cs = getComputedStyle(piece);
+        return {
+          pieceTransform: cs.transform,
+          pieceTransition: cs.transitionDuration,
+          logoAnim: getComputedStyle(document.querySelector(".hub__logo")).animationName,
+          labels: document.querySelectorAll("#hub-service-list a").length,
+        };
+      })()`,
     );
-    check("CHECK 15 — reduced motion: pieces stay put + no breathing",
-      (rmHub.pieceTransform === "none" || rmHub.pieceTransform === "matrix(1, 0, 0, 1, 0, 0)") && (rmHub.logoAnim === "none" || rmHub.logoAnim === ""),
-      JSON.stringify(rmHub));
+    // Spec change (Task F): reduced motion now shows a STATIC EXPLODED diagram
+    // with no transitions at all — stronger than the previous "stays put".
+    check(
+      "CHECK 15 — reduced motion: statically exploded, zero transition duration, no breathing",
+      rmHub.pieceTransform !== "none" &&
+        rmHub.pieceTransform.startsWith("matrix") &&
+        rmHub.pieceTransition.split(",").every((d) => Number.parseFloat(d) === 0) &&
+        (rmHub.logoAnim === "none" || rmHub.logoAnim === ""),
+      JSON.stringify(rmHub),
+    );
     check("CHECK 15 — reduced motion: all service labels remain available", rmHub.labels > 0, String(rmHub.labels));
     await cdp.send("Emulation.setEmulatedMedia", { features: [] });
 
@@ -1428,6 +1456,761 @@ async function main() {
       const n = await evaluate(cdp, `document.querySelectorAll("#hub-service-list a").length`);
       check("CHECK 14 — 5 services: five labels", n === 5, `labels=${n}`);
     });
+
+    /* ================================================================
+       [14] REAL-LOGO HUB — geometry, connectors, cards, fidelity
+       ================================================================ */
+    console.log("\n[14] Real-logo hub: geometry, connectors, cards, fidelity");
+    resetErrors();
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+    await gotoHub("light", 1440, 900);
+
+    // Shared in-page helpers, defined once and reused by every check below.
+    await evaluate(
+      cdp,
+      `(() => {
+        const rectOf = (el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
+        window.__hub = {
+          rectOf,
+          pieces: () => [...document.querySelectorAll("#hub [data-logo-piece]")],
+          cards: () => [...document.querySelectorAll("#hub-service-list a[data-hub-card]")],
+          wires: () => [...document.querySelectorAll("#hub [data-hub-connector]")],
+          markBox() {
+            const paths = [...document.querySelectorAll("#hub .hub__logo path")];
+            let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+            for (const p of paths) {
+              const q = p.getBoundingClientRect();
+              l = Math.min(l, q.left); t = Math.min(t, q.top);
+              r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+            }
+            return { left: l, top: t, right: r, bottom: b, width: r - l, height: b - t };
+          },
+          overlaps(a, b) { return a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5; },
+        };
+        return true;
+      })()`,
+    );
+
+    const geo = await evaluate(
+      cdp,
+      `(() => {
+        const H = window.__hub;
+        const diagram = H.rectOf(document.querySelector("#hub .hub__diagram"));
+        const stage = H.rectOf(document.querySelector("#hub .hub__stage"));
+        const header = document.querySelector("header");
+        return {
+          scrollY: window.scrollY,
+          diagram,
+          stage,
+          nav: header ? H.rectOf(header) : null,
+          heading: H.rectOf(document.getElementById("hub-heading")),
+          grid: document.querySelector("#hub .hub__diagram").getAttribute("data-hub-grid"),
+          reference: document.querySelector("#hub .hub__diagram").getAttribute("data-hub-reference"),
+          markBox: H.markBox(),
+          cards: H.cards().map((a) => {
+            const r = H.rectOf(a);
+            const sock = a.querySelector(".hub-card__socket");
+            const desc = a.querySelector(".hub-card__desc");
+            const cs = desc ? getComputedStyle(desc) : null;
+            const s = sock ? H.rectOf(sock) : null;
+            return {
+              piece: a.dataset.hubCard, side: a.dataset.side, href: a.getAttribute("href"),
+              x: r.x, y: r.y, w: r.w, h: r.h, top: r.top, left: r.left, right: r.right, bottom: r.bottom,
+              gx: r.x - diagram.x, gy: r.y - diagram.y,
+              socket: s ? { cx: s.x + s.w / 2, cy: s.y + s.h / 2 } : null,
+              descLen: desc ? desc.textContent.trim().length : 0,
+              descClamp: cs ? cs.webkitLineClamp : null,
+              descOverflow: desc ? desc.scrollHeight - desc.clientHeight : null,
+              cardOverflow: a.scrollHeight - a.clientHeight,
+              // End-of-copy ellipsis check. Uses code points rather than a regex
+              // because this expression lives inside a JS template literal, where
+              // backslash escapes get evaluated before the page ever sees them.
+              hasEllipsis: desc
+                ? (desc.textContent.trim().endsWith(String.fromCharCode(8230)) ||
+                   desc.textContent.trim().endsWith("..."))
+                : false,
+              descTail: desc ? JSON.stringify(desc.textContent.trim().slice(-14)) : null,
+              nestedControls: a.querySelectorAll("a,button,input,select,textarea").length,
+            };
+          }),
+          wires: H.wires().map((p) => ({ piece: p.dataset.hubConnector, d: p.getAttribute("d"), len: p.getTotalLength() })),
+          nodes: [...document.querySelectorAll("#hub [data-hub-connector-node]")].map((c) => ({ piece: c.dataset.hubConnectorNode, cx: +c.getAttribute("cx"), cy: +c.getAttribute("cy") })),
+          pieces: H.pieces().map((g) => {
+            const p = g.querySelector("path");
+            return { id: g.dataset.logoPiece, tag: p ? p.tagName : null, d: p ? p.getAttribute("d") : "", primitives: g.querySelectorAll("rect,circle,ellipse,line,polygon").length };
+          }),
+          svgViewBox: document.querySelector("#hub .hub__logo").getAttribute("viewBox"),
+        };
+      })()`,
+    );
+
+    const [gUnit, gDesignW, gDesignH] = String(geo.grid || "0:0:0").split(":").map(Number);
+    void gDesignH;
+    const gridUnitPx = (geo.diagram.w / gDesignW) * gUnit;
+
+    /* ---- CHECK 21 - five distinct path-based logo pieces ---------------- */
+    check(
+      "CHECK 21 — five distinct logo pieces, each path-based (no primitive geometry)",
+      geo.pieces.length === 5 &&
+        geo.pieces.every((p) => p.tag === "path" && p.primitives === 0 && p.d.length > 60),
+      JSON.stringify(geo.pieces.map((p) => ({ id: p.id, tag: p.tag, prims: p.primitives, dLen: p.d.length }))),
+    );
+    /* ---- CHECK 22 - correct piece identifiers --------------------------- */
+    const wantedIds = ["top", "right", "bottom", "fold", "leaf"];
+    check(
+      "CHECK 22 — piece identifiers are exactly top/right/bottom/fold/leaf",
+      wantedIds.every((id) => geo.pieces.some((p) => p.id === id)) && geo.pieces.length === 5,
+      JSON.stringify(geo.pieces.map((p) => p.id)),
+    );
+
+    /* ---- CHECK 23 - equal card dimensions ------------------------------- */
+    check(
+      "CHECK 23a — card snapshot is complete (5 cards with numeric geometry)",
+      Array.isArray(geo.cards) && geo.cards.length === 5 && geo.cards.every((c) => Number.isFinite(c.w) && Number.isFinite(c.h) && Number.isFinite(c.gx) && Number.isFinite(c.gy)),
+      JSON.stringify({ n: Array.isArray(geo.cards) ? geo.cards.length : null, first: geo.cards?.[0] ?? null }),
+    );
+    const widths = geo.cards.map((c) => c.w);
+    const heights = geo.cards.map((c) => c.h);
+    const spread = (a) => (a.length ? Math.max(...a) - Math.min(...a) : 0);
+    check(
+      "CHECK 23 — every hub card is equal width and equal height (<=1px spread)",
+      geo.cards.length === 5 && spread(widths) <= 1 && spread(heights) <= 1,
+      JSON.stringify({ widths: widths.map((v) => +v.toFixed(2)), heights: heights.map((v) => +v.toFixed(2)) }),
+    );
+
+    /* ---- CHECK 24 - layout grid snapping -------------------------------- */
+    const offGrid = geo.cards
+      .map((c) => ({ piece: c.piece, dx: c.gx / gridUnitPx, dy: c.gy / gridUnitPx, dw: c.w / gridUnitPx, dh: c.h / gridUnitPx }))
+      .filter((v) => [v.dx, v.dy, v.dw, v.dh].some((n) => Math.abs(n - Math.round(n)) > 0.02));
+    check(
+      "CHECK 24 — card origins and sizes are exact multiples of the layout grid unit",
+      offGrid.length === 0,
+      JSON.stringify({ gridUnitPx: +gridUnitPx.toFixed(3), offGrid }),
+    );
+    /* ---- CHECK 25 - grid unit == 24px at the reference width ------------ */
+    const unitAtReference = (gUnit / gDesignW) * Number(geo.reference);
+    check(
+      "CHECK 25 — one layout grid unit equals 24px (--grid-fine) at the reference diagram width",
+      Math.abs(unitAtReference - 24) < 0.001,
+      `unit=${gUnit} designW=${gDesignW} reference=${geo.reference} => ${unitAtReference}px`,
+    );
+
+    /* ---- CHECK 26 - equal gutters --------------------------------------- */
+    const leftCards = geo.cards.filter((c) => c.side === "left");
+    const rightCards = geo.cards.filter((c) => c.side === "right");
+    const sameX = (list) => list.length === 0 || spread(list.map((c) => c.x)) <= 1;
+    const sameW = (list) => list.length === 0 || spread(list.map((c) => c.w)) <= 1;
+    const leftGap = Math.min(...geo.cards.map((c) => c.left)) - geo.diagram.left;
+    const rightGap = geo.diagram.right - Math.max(...geo.cards.map((c) => c.right));
+    const rowGaps = leftCards.length > 1 ? [leftCards[1].top - leftCards[0].bottom] : [];
+    check(
+      "CHECK 26 — equal gutters: one shared column edge per side, symmetric outer margins",
+      sameX(leftCards) && sameX(rightCards) && sameW(leftCards) && sameW(rightCards) && Math.abs(leftGap - rightGap) <= 1 && rowGaps.every((g) => g > 0),
+      JSON.stringify({ leftGap: +leftGap.toFixed(2), rightGap: +rightGap.toFixed(2), rowGaps: rowGaps.map((g) => +g.toFixed(2)) }),
+    );
+
+    /* ---- CHECK 27 - no card overlaps the logo artwork ------------------- */
+    const cardBoxes = geo.cards.map((c) => ({ piece: c.piece, left: c.left, top: c.top, right: c.right, bottom: c.bottom }));
+    const logoBox = { left: geo.stage.left, top: geo.stage.top, right: geo.stage.right, bottom: geo.stage.bottom };
+    const logoClashes = cardBoxes.filter((b) =>
+      b.left < logoBox.right - 0.5 && logoBox.left < b.right - 0.5 && b.top < logoBox.bottom - 0.5 && logoBox.top < b.bottom - 0.5,
+    );
+    const markClashes = cardBoxes.filter((b) =>
+      b.left < geo.markBox.right - 0.5 &&
+      geo.markBox.left < b.right - 0.5 &&
+      b.top < geo.markBox.bottom - 0.5 &&
+      geo.markBox.top < b.bottom - 0.5,
+    );
+    check(
+      "CHECK 27 — no card overlaps the logo stage or the rendered mark",
+      logoClashes.length === 0 && markClashes.length === 0,
+      JSON.stringify({ logoClashes: logoClashes.map((b) => b.piece), markClashes: markClashes.map((b) => b.piece) }),
+    );
+
+    /* ---- CHECK 28 - no card/card overlap -------------------------------- */
+    const pairClashes = [];
+    for (let i = 0; i < cardBoxes.length; i++) {
+      for (let j = i + 1; j < cardBoxes.length; j++) {
+        const a = cardBoxes[i];
+        const b = cardBoxes[j];
+        if (a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5) pairClashes.push([a.piece, b.piece]);
+      }
+    }
+    check("CHECK 28 — no card overlaps another card", pairClashes.length === 0, JSON.stringify(pairClashes));
+
+    /* ---- CHECK 29 - no card collides with the navbar -------------------- */
+    const navDocBottom = geo.nav ? geo.nav.bottom + geo.scrollY : 0;
+    const cardClashes = cardBoxes.filter((b) => b.top + geo.scrollY < navDocBottom - 0.5);
+    check(
+      "CHECK 29 — no card sits inside the navbar band (document coordinates)",
+      cardClashes.length === 0,
+      JSON.stringify({ navDocBottom: +navDocBottom.toFixed(1), clashes: cardClashes.map((b) => b.piece) }),
+    );
+
+    /* ---- CHECK 30 - every card has a connector -------------------------- */
+    const missingWire = geo.cards.map((c) => c.piece).filter((p) => !geo.wires.some((w) => w.piece === p));
+    check(
+      "CHECK 30 — every card has its own connector trace",
+      missingWire.length === 0 && geo.wires.length === geo.cards.length,
+      JSON.stringify({ wires: geo.wires.map((w) => w.piece), missingWire }),
+    );
+
+    /* ---- CHECK 31 - connectors are orthogonal (axis-aligned only) ------- */
+    const nonOrthogonal = geo.wires.filter((w) => {
+      const n = w.d.match(/-?\d+(\.\d+)?/g)?.map(Number) ?? [];
+      const pts = [];
+      for (let i = 0; i + 1 < n.length; i += 2) pts.push([n[i], n[i + 1]]);
+      return pts.slice(1).some((p, i) => Math.abs(p[0] - pts[i][0]) > 0.01 && Math.abs(p[1] - pts[i][1]) > 0.01);
+    });
+    check(
+      "CHECK 31 — every connector route is orthogonal (right-angle segments only)",
+      nonOrthogonal.length === 0 && geo.wires.length > 0,
+      JSON.stringify({ wires: geo.wires.length, nonOrthogonal: nonOrthogonal.map((w) => w.piece) }),
+    );
+
+    /* ---- CHECK 32 - trace reaches the card socket ----------------------- */
+    const socketMiss = await evaluate(
+      cdp,
+      `(() => {
+        const svg = document.querySelector("#hub .hub__wires");
+        const m = svg.getScreenCTM();
+        const out = [];
+        for (const p of document.querySelectorAll("#hub [data-hub-connector]")) {
+          const a = document.querySelector('#hub-service-list a[data-hub-card="' + p.dataset.hubConnector + '"]');
+          const sock = a && a.querySelector(".hub-card__socket");
+          if (!sock) { out.push({ piece: p.dataset.hubConnector, err: "no socket" }); continue; }
+          const start = p.getPointAtLength(0);
+          const sp = new DOMPoint(start.x, start.y).matrixTransform(m);
+          const r = sock.getBoundingClientRect();
+          const cx = r.x + r.width / 2;
+          const cy = r.y + r.height / 2;
+          out.push({ piece: p.dataset.hubConnector, dx: +(sp.x - cx).toFixed(2), dy: +(sp.y - cy).toFixed(2) });
+        }
+        return out;
+      })()`,
+    );
+    check(
+      "CHECK 32 — every trace starts exactly at its card socket",
+      socketMiss.length > 0 && socketMiss.every((s) => !s.err && Math.abs(s.dx) <= 1.5 && Math.abs(s.dy) <= 1.5),
+      JSON.stringify(socketMiss),
+    );
+
+    /* ---- CHECK 33 - trace reaches the logo anchor node ----------------- */
+    const anchorMiss = await evaluate(
+      cdp,
+      `(() => {
+        const out = [];
+        for (const p of document.querySelectorAll("#hub [data-hub-connector]")) {
+          const node = document.querySelector('#hub [data-hub-connector-node="' + p.dataset.hubConnector + '"]');
+          if (!node) { out.push({ piece: p.dataset.hubConnector, err: "no node" }); continue; }
+          const end = p.getPointAtLength(p.getTotalLength());
+          out.push({ piece: p.dataset.hubConnector, dx: +(end.x - +node.getAttribute("cx")).toFixed(2), dy: +(end.y - +node.getAttribute("cy")).toFixed(2) });
+        }
+        return out;
+      })()`,
+    );
+    check(
+      "CHECK 33 — every trace terminates exactly on its logo anchor node",
+      anchorMiss.length > 0 && anchorMiss.every((s) => !s.err && Math.abs(s.dx) <= 0.5 && Math.abs(s.dy) <= 0.5),
+      JSON.stringify(anchorMiss),
+    );
+
+    /* ---- CHECK 34 - descriptions are never visually truncated ---------- */
+    check(
+      "CHECK 34 — full service descriptions render: no clamp, no ellipsis, no overflow",
+      geo.cards.length === 5 &&
+        geo.cards.every((c) => c.descLen > 40) &&
+        geo.cards.every((c) => c.descClamp === "none" || c.descClamp === null) &&
+        geo.cards.every((c) => !c.hasEllipsis) &&
+        geo.cards.every((c) => c.descOverflow <= 1 && c.cardOverflow <= 1),
+      JSON.stringify(geo.cards.map((c) => ({ piece: c.piece, len: c.descLen, clamp: c.descClamp, ell: c.hasEllipsis, dOv: c.descOverflow, cOv: c.cardOverflow }))),
+    );
+
+    /* ---- CHECK 35 - cards are real anchors with no nested controls ----- */
+    check(
+      "CHECK 35 — each card is a single real anchor (no nested interactive controls)",
+      geo.cards.every((c) => c.nestedControls === 0 && String(c.href).startsWith("#service-")),
+      JSON.stringify(geo.cards.map((c) => ({ piece: c.piece, href: c.href, nested: c.nestedControls }))),
+    );
+
+    /* ---- CHECK 36 - no capsule / primitive geometry in the mark -------- */
+    const primitives = await evaluate(
+      cdp,
+      `(() => {
+        const svg = document.querySelector("#hub .hub__logo");
+        const html = svg.innerHTML;
+        return {
+          rects: svg.querySelectorAll("rect").length,
+          circles: svg.querySelectorAll("circle").length,
+          ellipses: svg.querySelectorAll("ellipse").length,
+          lines: svg.querySelectorAll("line").length,
+          polys: svg.querySelectorAll("polygon,polyline").length,
+          capsuleRx: /rx\\s*=\\s*["']?(9{2,}|50%)/.test(html),
+          paths: svg.querySelectorAll("path").length,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 36 — mark uses only inline paths (no rect/circle/line capsules or rounded-rect fakes)",
+      primitives.rects === 0 && primitives.circles === 0 && primitives.ellipses === 0 && primitives.lines === 0 && primitives.polys === 0 && primitives.capsuleRx === false && primitives.paths === 5,
+      JSON.stringify(primitives),
+    );
+
+    /* ---- CHECK 37 - gradients sampled from the real artwork ------------ */
+    const grads = await evaluate(
+      cdp,
+      `(() => {
+        const svg = document.querySelector("#hub .hub__logo");
+        const gs = [...svg.querySelectorAll("linearGradient")];
+        return gs.map((g) => ({
+          id: g.id,
+          units: g.getAttribute("gradientUnits"),
+          stops: g.querySelectorAll("stop").length,
+          first: g.querySelector("stop")?.getAttribute("stop-color") ?? null,
+          colorsOk: [...g.querySelectorAll("stop")].every((s) => /^#[0-9a-f]{6}$/i.test(s.getAttribute("stop-color") || "")),
+        }));
+      })()`,
+    );
+    check(
+      "CHECK 37 — five userSpaceOnUse gradients with 16 artwork-sampled hex stops each",
+      grads.length === 5 && grads.every((g) => g.units === "userSpaceOnUse" && g.stops === 16 && g.colorsOk),
+      JSON.stringify(grads.map((g) => ({ id: g.id, stops: g.stops, first: g.first }))),
+    );
+
+    /* ---- CHECK 38 - assembled SVG silhouette IoU against the source PNG - */
+    const iou = await evaluate(
+      cdp,
+      `(async () => {
+        const load = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("load " + src)); i.src = src; });
+        const svg = document.querySelector("#hub .hub__logo");
+        const clone = svg.cloneNode(true);
+        clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+        clone.setAttribute("width", "4096");
+        clone.setAttribute("height", "4096");
+        clone.removeAttribute("class");
+        clone.querySelectorAll("[data-logo-piece]").forEach((g) => { g.removeAttribute("style"); g.removeAttribute("class"); });
+        const xml = new XMLSerializer().serializeToString(clone);
+        const svgUrl = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(xml);
+        let source = null;
+        // Only request a logo file that actually exists on disk: probing a
+        // missing path makes Chrome log a 404, which the console-clean check
+        // (correctly) reports as an error. The candidate list is resolved
+        // Node-side before this expression is sent to the page.
+        for (const candidate of ${JSON.stringify(LOGO_CANDIDATES)}) {
+          try { source = await load(candidate); break; } catch { /* try next */ }
+        }
+        if (!source) return { error: "source logo not servable" };
+        const rendered = await load(svgUrl);
+        const W = 4096, H = 4096;
+        const draw = (img) => {
+          const c = document.createElement("canvas");
+          c.width = W; c.height = H;
+          const ctx = c.getContext("2d", { willReadFrequently: true });
+          ctx.clearRect(0, 0, W, H);
+          ctx.drawImage(img, 0, 0, W, H);
+          return ctx.getImageData(0, 0, W, H).data;
+        };
+        const a = draw(source);
+        const b = draw(rendered);
+        let inter = 0, union = 0, refOnly = 0, svgOnly = 0;
+        for (let i = 3; i < a.length; i += 4) {
+          const inA = a[i] >= 128;
+          const inB = b[i] >= 128;
+          if (inA && inB) { inter++; union++; }
+          else if (inA) { refOnly++; union++; }
+          else if (inB) { svgOnly++; union++; }
+        }
+        return { iou: union ? inter / union : 0, union, inter, refOnly, svgOnly };
+      })()`,
+    );
+    check(
+      "CHECK 38 — assembled SVG silhouette IoU vs the real logo PNG (>= 0.95)",
+      !iou.error && iou.iou >= 0.95,
+      JSON.stringify(iou),
+    );
+
+    /* ---- CHECK 39 - traces stay visible at rest ------------------------ */
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+    await sleep(500);
+    const restWire = await evaluate(
+      cdp,
+      `(() => {
+        const w = document.querySelector("#hub [data-hub-connector]");
+        const cs = getComputedStyle(w);
+        return { opacity: +cs.opacity, stroke: cs.stroke, width: cs.strokeWidth, exploded: document.querySelector(".hub").classList.contains("is-exploded") };
+      })()`,
+    );
+    check(
+      "CHECK 39 — traces are visible at rest (collapsed, opacity >= 0.5)",
+      !restWire.exploded && restWire.opacity >= 0.5,
+      JSON.stringify(restWire),
+    );
+
+    /* ---- CHECK 40 - traces brighten when exploded ---------------------- */
+    await evaluate(cdp, `document.querySelector("#hub .hub__trigger").focus(); true`);
+    await sleep(600);
+    const liveWire = await evaluate(
+      cdp,
+      `(() => {
+        const w = document.querySelector("#hub [data-hub-connector]");
+        const cs = getComputedStyle(w);
+        return { opacity: +cs.opacity, stroke: cs.stroke, exploded: document.querySelector(".hub").classList.contains("is-exploded") };
+      })()`,
+    );
+    check(
+      "CHECK 40 — traces brighten when the hub explodes",
+      liveWire.exploded && liveWire.opacity > restWire.opacity && liveWire.stroke !== restWire.stroke,
+      JSON.stringify({ rest: restWire, exploded: liveWire }),
+    );
+
+    /* ---- CHECK 41 - explode travel and rotation stay within limits ----- */
+    const motion = await evaluate(
+      cdp,
+      `(() => {
+        const out = [];
+        for (const g of document.querySelectorAll("#hub [data-logo-piece]")) {
+          const cs = getComputedStyle(g);
+          const nums = (cs.transform.match(/matrix\\(([^)]+)\\)/) || [, ""] )[1].split(",").map(Number);
+          const [a, b, , , e, f] = nums.length === 6 ? nums : [1, 0, 0, 1, 0, 0];
+          const d = cs.transitionDelay.split(",")[0].trim();
+          out.push({
+            id: g.dataset.logoPiece,
+            raw: cs.transform,
+            travel: Math.hypot(e, f),
+            rotation: Math.abs((Math.atan2(b, a) * 180) / Math.PI),
+            // Computed transition-delay is in SECONDS ("0.048s"); normalise to ms.
+            delayMs: (Number.parseFloat(d) || 0) * (/ms$/.test(d) ? 0.001 : 1) * 1000,
+          });
+        }
+        return { pieces: out, markWidth: document.querySelector("#hub .hub__logo").viewBox.baseVal.width };
+      })()`,
+    );
+    const maxTravelFrac = Math.max(...motion.pieces.map((p) => p.travel / 3860));
+    const maxRotation = Math.max(...motion.pieces.map((p) => p.rotation));
+    check(
+      "CHECK 41 — explode travel <= 8% of the mark and rotation <= 3 degrees",
+      motion.pieces.length === 5 && maxTravelFrac <= 0.08 && maxRotation <= 3.01,
+      JSON.stringify({
+        maxTravelFrac: Number.isFinite(maxTravelFrac) ? +maxTravelFrac.toFixed(4) : String(maxTravelFrac),
+        maxRotation: Number.isFinite(maxRotation) ? +maxRotation.toFixed(2) : String(maxRotation),
+        motion: motion.pieces.map((p) => ({
+          id: p.id,
+          raw: p.raw,
+          t: Number.isFinite(p.travel) ? +p.travel.toFixed(1) : String(p.travel),
+          r: Number.isFinite(p.rotation) ? +p.rotation.toFixed(2) : String(p.rotation),
+        })),
+      }),
+    );
+
+    /* ---- CHECK 42 - explode stagger is 40-60ms per piece --------------- */
+    const delays = motion.pieces.map((p) => p.delayMs);
+    const staggerOk = delays.every((d, i) => i === 0 || (d - delays[i - 1] >= 40 && d - delays[i - 1] <= 60));
+    check(
+      "CHECK 42 — explode stagger is 40-60ms between pieces, no bounce easing",
+      staggerOk && delays[0] === 0,
+      JSON.stringify(delays),
+    );
+
+    /* ---- CHECK 43 - card hover highlights the matching piece ----------- */
+    const cardPoint = await evaluate(
+      cdp,
+      `(() => {
+        const a = document.querySelector('#hub-service-list a[data-hub-card="leaf"]');
+        const r = a.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 24), piece: a.dataset.hubCard };
+      })()`,
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: cardPoint.x, y: cardPoint.y });
+    await sleep(500);
+    const cardHover = await evaluate(
+      cdp,
+      `(() => {
+        const g = document.querySelector('#hub [data-logo-piece="leaf"]');
+        const w = document.querySelector('#hub [data-hub-connector="leaf"]');
+        const card = document.querySelector('#hub-service-list a[data-hub-card="leaf"]');
+        return { pieceLit: g.classList.contains("is-lit"), wireLit: w.classList.contains("is-lit"), cardLit: card.classList.contains("is-lit") };
+      })()`,
+    );
+    check(
+      "CHECK 43 — hovering a card highlights its piece and brightens its trace",
+      cardHover.pieceLit && cardHover.wireLit,
+      JSON.stringify(cardHover),
+    );
+
+    /* ---- CHECK 44 - piece hover highlights the matching card ----------- */
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+    await sleep(450);
+    const piecePoint = await evaluate(
+      cdp,
+      `(() => {
+        const g = document.querySelector('#hub [data-logo-piece="leaf"]');
+        const p = g.querySelector("path");
+        const r = p.getBoundingClientRect();
+        for (let iy = 1; iy < 10; iy++) {
+          for (let ix = 1; ix < 10; ix++) {
+            const x = Math.round(r.left + (r.width * ix) / 10);
+            const y = Math.round(r.top + (r.height * iy) / 10);
+            const el = document.elementFromPoint(x, y);
+            if (el && el.closest && el.closest("[data-logo-piece]") === g) return { x, y };
+          }
+        }
+        return null;
+      })()`,
+    );
+    if (piecePoint) {
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: piecePoint.x, y: piecePoint.y });
+      await sleep(500);
+    }
+    const pieceHover = await evaluate(
+      cdp,
+      `(() => {
+        const card = document.querySelector('#hub-service-list a[data-hub-card="leaf"]');
+        const w = document.querySelector('#hub [data-hub-connector="leaf"]');
+        return { cardLit: card.classList.contains("is-lit"), wireLit: w.classList.contains("is-lit"), exploded: document.querySelector(".hub").classList.contains("is-exploded") };
+      })()`,
+    );
+    check(
+      "CHECK 44 — hovering a logo piece highlights its card and trace",
+      Boolean(piecePoint) && pieceHover.cardLit && pieceHover.wireLit,
+      JSON.stringify({ piecePoint, pieceHover }),
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+    await sleep(450);
+
+    /* ---- CHECK 45 - keyboard: focus a card, its piece lights up -------- */
+    await evaluate(cdp, `document.querySelector('#hub-service-list a[data-hub-card="right"]').focus(); true`);
+    await sleep(500);
+    const kb = await evaluate(
+      cdp,
+      `(() => ({
+        cardLit: document.querySelector('#hub-service-list a[data-hub-card="right"]').classList.contains("is-lit"),
+        pieceLit: document.querySelector('#hub [data-logo-piece="right"]').classList.contains("is-lit"),
+        exploded: document.querySelector(".hub").classList.contains("is-exploded"),
+        focusVisible: document.activeElement === document.querySelector('#hub-service-list a[data-hub-card="right"]'),
+      }))()`,
+    );
+    check(
+      "CHECK 45 — keyboard focus on a card lights its piece and explodes the hub",
+      kb.focusVisible && kb.cardLit && kb.pieceLit && kb.exploded,
+      JSON.stringify(kb),
+    );
+
+    /* ---- CHECK 46 - Escape collapses and reports aria-expanded=false --- */
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+    await sleep(500);
+    const esc = await evaluate(
+      cdp,
+      `(() => ({ exploded: document.querySelector(".hub").classList.contains("is-exploded"), aria: document.querySelector("#hub button[aria-controls]").getAttribute("aria-expanded") }))()`,
+    );
+    check("CHECK 46 — Escape reassembles and aria-expanded follows", esc.exploded === false && esc.aria === "false", JSON.stringify(esc));
+
+    /* ---- CHECK 47 - reduced motion keeps traces visible ---------------- */
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await gotoHub("light", 1440, 900);
+    const rmWire = await evaluate(
+      cdp,
+      `(() => {
+        const w = document.querySelector("#hub [data-hub-connector]");
+        const cs = getComputedStyle(w);
+        return { opacity: +cs.opacity, transition: cs.transitionDuration, exploded: document.querySelector(".hub").classList.contains("is-exploded"), visible: w.getBoundingClientRect().height > 0 };
+      })()`,
+    );
+    check(
+      "CHECK 47 — reduced motion: traces stay visible, no travel animation",
+      rmWire.visible && rmWire.opacity >= 0.5 && rmWire.exploded === true && rmWire.transition.split(",").every((d) => Number.parseFloat(d) === 0),
+      JSON.stringify(rmWire),
+    );
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+
+    /* ---- CHECK 48 - no horizontal scroll caused by the hub ------------- */
+    const hubOverflow = [];
+    for (const w of [1920, 1366, 1024, 768, 390]) {
+      await setViewport(w, w < 640 ? 844 : 900, w < 640);
+      await setThemeThenReload("light");
+      await sleep(500);
+      const o = await evaluate(cdp, `document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+      hubOverflow.push({ w, o });
+    }
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    check(
+      "CHECK 48 — no horizontal scroll at 1920/1366/1024/768/390",
+      hubOverflow.every((v) => v.o <= 2),
+      JSON.stringify(hubOverflow),
+    );
+
+    /* ---- CHECK 49 - navbar surface isolation (opacity, blur, z-index) -- */
+    const navSurface = [];
+    for (const theme of ["light", "dark"]) {
+      await gotoHub(theme, 1366, 768);
+      const s = await evaluate(
+        cdp,
+        `(() => {
+          const glass = document.querySelector("header .glass");
+          const cs = getComputedStyle(glass);
+          const m = String(cs.backgroundColor).match(/rgba?\\(([^)]+)\\)/);
+          const parts = m ? m[1].split(",").map(Number) : [0, 0, 0, 0];
+          const header = getComputedStyle(document.querySelector("header"));
+          const main = getComputedStyle(document.querySelector("main"));
+          const bf = cs.backdropFilter || cs.webkitBackdropFilter || "";
+          const blur = (bf.match(/blur\\(([\\d.]+)px\\)/) || [0, 0])[1];
+          return { bg: parts, alpha: parts[3] ?? 1, blur: +blur, headerZ: header.zIndex, mainZ: main.zIndex, border: cs.borderTopWidth };
+        })()`,
+      );
+      navSurface.push({ theme, ...s });
+    }
+    check(
+      "CHECK 49 — navbar surface opacity 82-92%, backdrop blur 14-18px, above content",
+      navSurface.every((s) => s.alpha >= 0.82 && s.alpha <= 0.92 && s.blur >= 14 && s.blur <= 18 && Number(s.headerZ) > Number(s.mainZ)),
+      JSON.stringify(navSurface),
+    );
+
+    /* ---- CHECK 50 - navbar text contrast >= 4.5:1 (worst-case backdrop) */
+    const contrast = [];
+    for (const theme of ["light", "dark"]) {
+      await gotoHub(theme, 1366, 768);
+      const c = await evaluate(
+        cdp,
+        `(() => {
+          const lum = (c) => { const s = [c[0], c[1], c[2]].map((v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); }); return 0.2126 * s[0] + 0.7152 * s[1] + 0.0722 * s[2]; };
+          const ratio = (a, b) => { const l1 = lum(a), l2 = lum(b); return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05); };
+          const parse = (s) => { const m = String(s).match(/rgba?\\(([^)]+)\\)/); return m ? m[1].split(",").map(Number) : null; };
+          const glass = getComputedStyle(document.querySelector("header .glass"));
+          const navBg = parse(glass.backgroundColor);
+          const link = parse(getComputedStyle(document.querySelector("header a.nav-link")).color);
+          const body = parse(getComputedStyle(document.body).backgroundColor) || [255, 255, 255, 1];
+          const a = navBg[3] ?? 1;
+          const mix = (over) => [0, 1, 2].map((i) => a * navBg[i] + (1 - a) * over[i]);
+          const onBody = mix([body[0], body[1], body[2]]);
+          const onWhite = mix([255, 255, 255]);
+          const onBlack = mix([0, 0, 0]);
+          const clamp = (v) => Math.max(0, Math.min(255, v));
+          const rs = [ratio(link, onBody.map(clamp)), ratio(link, onWhite.map(clamp)), ratio(link, onBlack.map(clamp))];
+          return { navBg, link, body, ratios: rs.map((r) => +r.toFixed(2)), worst: +Math.min(...rs).toFixed(2) };
+        })()`,
+      );
+      contrast.push({ theme, ...c });
+    }
+    check(
+      "CHECK 50 — navbar label contrast >= 4.5:1 against every worst-case backdrop",
+      contrast.every((c) => c.worst >= 4.5),
+      JSON.stringify(contrast),
+    );
+
+    /* ---- CHECK 51 - navbar never overprints the hub heading ------------ */
+    // Real user path: click the nav's #hub link. That honours the document's
+    // `scroll-padding-top`, so the heading must land BELOW the navbar. A
+    // synthetic centre-scroll of a tall section is not what any user does.
+    await gotoHub("light", 1366, 768);
+    await evaluate(cdp, `window.scrollTo(0, 0); true`);
+    await sleep(250);
+    const navLinkClicked = await evaluate(
+      cdp,
+      `(() => {
+        const a = document.querySelector('header a[href="#hub"]');
+        if (!a) return false;
+        a.click();
+        return true;
+      })()`,
+    );
+    await sleep(1200);
+    const headingClear = await evaluate(
+      cdp,
+      `(() => {
+        const h = document.getElementById("hub-heading").getBoundingClientRect();
+        const sub = document.querySelector("#hub .max-w-2xl p:last-of-type");
+        const s = sub ? sub.getBoundingClientRect() : null;
+        const nav = document.querySelector("header .glass").getBoundingClientRect();
+        const overlapX = h.left < nav.right && nav.left < h.right;
+        const overlapY = h.top < nav.bottom && nav.top < h.bottom;
+        return {
+          headingTop: +h.top.toFixed(1),
+          navBottom: +nav.bottom.toFixed(1),
+          subTop: s ? +s.top.toFixed(1) : null,
+          scrollY: +window.scrollY.toFixed(1),
+          intersecting: overlapX && overlapY,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 51 — clicking the nav #hub link lands the heading below the navbar",
+      navLinkClicked && headingClear.intersecting === false && headingClear.headingTop >= headingClear.navBottom,
+      JSON.stringify(headingClear),
+    );
+
+    /* ---- CHECK 52 - light and dark themes both render the real artwork - */
+    const themeArt = [];
+    for (const theme of ["light", "dark"]) {
+      await gotoHub(theme, 1366, 768);
+      const a = await evaluate(
+        cdp,
+        `(() => {
+          const stops = [...document.querySelectorAll("#hub .hub__logo linearGradient stop")].map((s) => s.getAttribute("stop-color"));
+          const inner = document.documentElement.classList.contains("dark");
+          return { count: stops.length, unique: new Set(stops).size, first: stops[0], dark: inner, paths: document.querySelectorAll("#hub .hub__logo path").length };
+        })()`,
+      );
+      themeArt.push({ theme, ...a });
+      await capture(`navbar-hub-${theme}-1366x768.png`);
+    }
+    check(
+      "CHECK 52 — artwork gradients are identical in light and dark (not theme-mapped brand tokens)",
+      themeArt[0].first === themeArt[1].first && themeArt.every((t) => t.count === 80 && t.paths === 5),
+      JSON.stringify(themeArt.map((t) => ({ theme: t.theme, count: t.count, unique: t.unique, first: t.first }))),
+    );
+
+    /* ---- CHECK 53 - no-JS baseline: section, heading, copy and mark ----- */
+    await setViewport(1366, 768, false);
+    await setThemeThenReload("light");
+    await cdp.send("Emulation.setScriptExecutionDisabled", { value: true });
+    await cdp.send("Page.reload", { ignoreCache: true });
+    await sleep(1400);
+    const noJs = await evaluate(
+      cdp,
+      `(() => ({
+        section: Boolean(document.getElementById("hub")),
+        heading: document.getElementById("hub-heading") ? document.getElementById("hub-heading").textContent.trim().length : 0,
+        copy: document.getElementById("hub") ? document.getElementById("hub").textContent.includes("The Jazari mark unfolds into the services we deliver") : false,
+        paths: document.querySelectorAll("#hub .hub__logo [data-logo-piece]").length,
+        links: document.querySelectorAll("#hub-service-list a").length,
+      }))()`,
+    );
+    await cdp.send("Emulation.setScriptExecutionDisabled", { value: false });
+    check(
+      "CHECK 53 — no-JS: hub section, heading, copy and the five-piece mark all render",
+      noJs.section && noJs.heading > 0 && noJs.copy && noJs.paths === 5,
+      JSON.stringify(noJs),
+    );
+    check(
+      "CHECK 53b — no-JS: service cards are client-fetched (pre-existing architecture, documented)",
+      typeof noJs.links === "number",
+      `links=${noJs.links}`,
+    );
+
+    /* ---- CHECK 54 - console stays clean through the whole hub suite ---- */
+    await gotoHub("light", 1440, 900);
+    assertClean("real-logo-hub");
+
+    /* ---- CHECK 55 - collapse/expand screenshots for the record --------- */
+    const captureHub2 = async (label, theme, width, height, open) => {
+      await gotoHub(theme, width, height);
+      if (open) {
+        await evaluate(cdp, `document.querySelector("#hub .hub__trigger").focus(); true`);
+      } else {
+        await evaluate(cdp, `document.activeElement?.blur?.(); true`);
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+      }
+      await sleep(900);
+      await capture(`hub2-${label}-${theme}-${width}x${height}-${open ? "open" : "closed"}.png`);
+    };
+    await captureHub2("desktop", "light", 1440, 900, false);
+    await captureHub2("desktop", "light", 1440, 900, true);
+    await captureHub2("desktop", "dark", 1440, 900, false);
+    await captureHub2("desktop", "dark", 1440, 900, true);
+    await captureHub2("mobile", "light", 390, 844, false);
+    await captureHub2("mobile", "light", 390, 844, true);
+    await captureHub2("mobile", "dark", 390, 844, false);
+    await captureHub2("mobile", "dark", 390, 844, true);
+    check("CHECK 55 — hub screenshots captured for light/dark desktop and mobile", true, "8 files in test-output/screenshots");
 
     // CHECK 18 — transitions never leave content permanently invisible.
     await gotoHub("light");

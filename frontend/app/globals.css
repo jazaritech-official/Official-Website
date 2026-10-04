@@ -30,7 +30,13 @@
   --danger-soft: #fdeeee;
   --border: #e4e9f2;
   --border-strong: #cdd6e5;
-  --nav-bg: rgba(255, 255, 255, 0.74);
+  /* Navigation surface — deliberately opaque enough that section content can
+     never read through the glass and collide with nav text/logo. (TUNING)
+     82-92% surface opacity + 14-18px backdrop blur + hairline border. */
+  --nav-bg: rgba(255, 255, 255, 0.88);
+  --nav-blur: 16px;
+  --nav-border: color-mix(in srgb, var(--border-strong) 78%, transparent);
+  --nav-shadow: 0 8px 30px -18px rgba(var(--shadow-tint), 0.28), 0 1px 2px rgba(var(--shadow-tint), 0.06);
   --overlay: rgba(12, 18, 42, 0.46);
   --focus-ring: #3d76bb;
   --shadow-tint: 33, 44, 101; /* navy rgba base for shadows */
@@ -144,7 +150,9 @@
   --danger-soft: rgba(239, 122, 122, 0.14);
   --border: #26305a;
   --border-strong: #35406f;
-  --nav-bg: rgba(10, 15, 36, 0.74);
+  --nav-bg: rgba(10, 15, 36, 0.9);
+  --nav-border: color-mix(in srgb, #46527f 78%, transparent);
+  --nav-shadow: 0 10px 34px -18px rgba(0, 0, 0, 0.7), 0 1px 2px rgba(0, 0, 0, 0.45);
   --overlay: rgba(4, 7, 18, 0.62);
   --focus-ring: #78aae5;
   --shadow-tint: 2, 5, 16;
@@ -307,11 +315,16 @@
     border: 1px solid var(--border);
   }
 
+  /* Glass = isolation, not decoration. `backdrop-filter` alone does NOT stop
+     heading text from reading through the surface, so the surface itself is
+     near-opaque; the blur then supplies the premium depth without letting the
+     page behind compete with navigation labels. */
   .glass {
     background-color: var(--nav-bg);
-    -webkit-backdrop-filter: blur(16px) saturate(160%);
-    backdrop-filter: blur(16px) saturate(160%);
-    border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+    -webkit-backdrop-filter: blur(var(--nav-blur)) saturate(160%);
+    backdrop-filter: blur(var(--nav-blur)) saturate(160%);
+    border: 1px solid var(--nav-border);
+    box-shadow: var(--nav-shadow);
   }
 
   .eyebrow {
@@ -1181,51 +1194,61 @@ html:not(.js-intro) .hairline {
   }
 }
 
+
 /* ============================================================
    7e. EXPLODED LOGO SERVICES HUB
+   Real traced logo geometry + blueprint card layout.
+   Geometry lives in components/services/hubLayout.ts; the card slots and the
+   wire SVG share that one coordinate space, so nothing is measured at runtime.
    ============================================================ */
 .hub {
   position: relative;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 1.75rem;
-  margin-top: 2.75rem;
-  /* Layout stability — the section reserves its height, so the hub adds no CLS. */
-  min-height: 20rem;
+  gap: 1.5rem;
+  margin-top: 2.5rem;
 }
 
-@media (min-width: 1024px) {
-  .hub {
-    display: grid;
-    place-items: center;
-    min-height: 32rem;
-  }
+/* ---- Mobile first: logo, vertical spine, stacked cards ------------------- */
+.hub__diagram {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
 }
 
-/* The logo is the interactive trigger. Button reset + clear focus ring. */
+/* The desktop circuit traces are replaced by the CSS spine below 1024px. */
+.hub__wires {
+  display: none;
+}
+
+.hub__stage {
+  display: flex;
+  justify-content: center;
+}
+
 .hub__trigger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: none;
-  border: none;
   padding: 0.5rem;
-  border-radius: var(--radius-xl);
+  border: 0;
+  background: none;
+  border-radius: var(--radius-2xl);
   cursor: pointer;
 }
 
 .hub__logo {
-  width: clamp(13rem, 34vw, 21rem);
+  width: clamp(11rem, 46vw, 15rem);
   height: auto;
   overflow: visible;
-  filter: drop-shadow(0 10px 30px color-mix(in srgb, var(--accent) 20%, transparent));
-  animation: jt-hub-breathe 6.5s var(--ease-in-out) infinite;
+  filter: drop-shadow(0 10px 26px color-mix(in srgb, var(--accent) 16%, transparent));
   transition: filter var(--motion-hub-explode) var(--ease-standard);
 }
 
-.hub.is-exploded .hub__logo {
-  filter: drop-shadow(0 12px 34px color-mix(in srgb, var(--accent) 30%, transparent));
+/* Extremely slow breathing — only while the hub is actually on screen. */
+.hub.is-inview .hub__logo {
+  animation: jt-hub-breathe 9s var(--ease-in-out) infinite;
 }
 
 @keyframes jt-hub-breathe {
@@ -1238,175 +1261,205 @@ html:not(.js-intro) .hairline {
   }
 }
 
-/* Each ribbon band / leaf is its own group that travels on explode. */
-.hub [data-piece] {
+/* ---- The five real logo pieces ------------------------------------------ */
+.hub [data-logo-piece] {
   transform-box: fill-box;
   transform-origin: center;
-  transition: transform var(--motion-hub-explode) var(--ease-spring-soft);
-  transition-delay: calc(var(--i, 0) * 42ms);
+  transition: transform var(--motion-hub-explode) var(--ease-technical);
+  transition-delay: calc(var(--i, 0) * 48ms);
 }
 
-.hub.is-exploded [data-piece] {
-  transform: translate(var(--tx, 0), var(--ty, 0)) rotate(var(--rot, 0deg));
+/* --tx / --ty are SVG user units in a 4096 viewBox, i.e. roughly 4% of the mark.
+   The fallbacks carry an explicit unit: CSS `transform` rejects unitless lengths. */
+.hub.is-exploded [data-logo-piece] {
+  transform: translate(var(--tx, 0px), var(--ty, 0px)) rotate(var(--rot, 0deg)) scale(1.015);
 }
 
-.hub-band {
-  fill: none;
-  stroke-width: 26;
-  stroke-linecap: round;
+/* The leaf keeps a permanent, restrained green halo; nothing else is tinted. */
+.hub [data-logo-piece="leaf"] {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--growth) 40%, transparent));
 }
 
-.hub-fold--light {
-  fill: color-mix(in srgb, var(--accent) 55%, var(--slate));
-  opacity: 0.9;
+.hub [data-logo-piece].is-lit {
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent) 55%, transparent));
 }
 
-.hub-fold--dark {
-  fill: color-mix(in srgb, var(--primary) 72%, #0a0f24);
-  opacity: 0.95;
+.hub [data-logo-piece="leaf"].is-lit {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--growth) 60%, transparent));
 }
 
-.hub-leaf {
-  fill: var(--growth);
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--growth) 55%, transparent));
-}
-
-/* Connector lines + micro pulse appear only when exploded. */
-.hub-connector {
-  stroke: color-mix(in srgb, var(--accent) 60%, transparent);
-  stroke-width: 1;
-  stroke-linecap: round;
-  opacity: 0;
-  transition: opacity var(--motion-hub-explode) var(--ease-standard);
-  transition-delay: calc(var(--i, 0) * 42ms + 120ms);
-}
-
-.hub.is-exploded .hub-connector {
-  opacity: 0.5;
-}
-
-.hub-connector__dot {
-  fill: var(--growth);
-  opacity: 0;
-  transition: opacity var(--motion-hub-explode) var(--ease-standard) 260ms;
-}
-
-.hub.is-exploded .hub-connector__dot {
-  opacity: 0.9;
-}
-
-/* Service labels — real anchors, always visible (no-JS safe). */
-.hub__labels {
+/* ---- Mobile card column + spine ----------------------------------------- */
+.hub__cards {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
-  width: 100%;
-  list-style: none;
-  padding: 0;
+  gap: 1rem;
   margin: 0;
+  padding: 0 0 0 2.25rem;
+  list-style: none;
 }
 
-.hub-label__link {
+.hub__cards::before {
+  content: "";
+  position: absolute;
+  left: 0.6rem;
+  top: 1.1rem;
+  bottom: 1.1rem;
+  width: 1.4px;
+  background: color-mix(in srgb, var(--slate) 55%, transparent);
+}
+
+.hub-card-slot {
+  position: relative;
+}
+
+.hub-card-slot::before {
+  content: "";
+  position: absolute;
+  left: -1.65rem;
+  top: 50%;
+  width: 1.65rem;
+  height: 1.4px;
+  background: color-mix(in srgb, var(--slate) 55%, transparent);
+}
+
+.hub-card-slot::after {
+  content: "";
+  position: absolute;
+  left: -1.65rem;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1.4px solid color-mix(in srgb, var(--accent) 45%, var(--slate));
+}
+
+/* ---- Service card (blueprint module) ------------------------------------ */
+.hub-card {
   display: flex;
-  align-items: flex-start;
-  gap: 0.7rem;
-  padding: 0.7rem 0.85rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--surface-elevated) 70%, transparent);
-  text-decoration: none;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.85rem 0.95rem 0.75rem;
   color: inherit;
-  transition:
-    border-color var(--motion-normal) var(--ease-standard),
-    transform var(--motion-fast) var(--ease-out),
-    background-color var(--motion-normal) var(--ease-standard);
+  text-decoration: none;
 }
 
-.hub-label__link:hover,
-.hub-label__link:focus-visible {
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
-  transform: translateY(-2px);
+.hub-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
-.hub-label__icon {
+.hub-card__num {
+  font-family: var(--font-code);
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  color: var(--slate);
+}
+
+.hub-card__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: none;
-  width: 2rem;
-  height: 2rem;
+  width: 1.85rem;
+  height: 1.85rem;
   border-radius: var(--radius-md);
   background: var(--accent-soft);
   color: var(--accent);
 }
 
-.hub-label__body {
-  min-width: 0;
-}
-
-.hub-label__title {
-  display: block;
+.hub-card__title {
   font-size: 0.9rem;
   font-weight: 600;
   line-height: 1.25;
 }
 
-.hub-label__desc {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  margin-top: 0.15rem;
-  font-size: 0.78rem;
-  line-height: 1.45;
+/* NOTE: deliberately NO -webkit-line-clamp. Full service descriptions must be
+   readable; the card grows instead of hiding content behind an ellipsis. */
+.hub-card__desc {
+  font-size: 0.72rem;
+  line-height: 1.42;
   color: var(--muted);
 }
 
-/* Desktop: labels float around the mark, connected by leader lines. */
-@media (min-width: 1024px) {
-  .hub__labels {
-    position: absolute;
-    inset: 0;
-    display: block;
-    pointer-events: none;
-  }
+.hub-card__foot {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: auto;
+  padding-top: 0.35rem;
+}
 
-  .hub-label {
-    position: absolute;
-    width: 16rem;
-    pointer-events: auto;
-  }
+.hub-card__led {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--growth);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--growth) 22%, transparent);
+}
 
-  .hub-label--top {
-    left: 50%;
-    top: 0;
-    transform: translateX(-50%);
-  }
+.hub-card__explore {
+  font-family: var(--font-code);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
 
-  .hub-label--tl {
-    left: 0;
-    top: 18%;
-  }
+/* Recessed socket the trace plugs into. */
+.hub-card__socket {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1.4px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  transition:
+    border-color var(--motion-normal) var(--ease-standard),
+    box-shadow var(--motion-normal) var(--ease-standard);
+}
 
-  .hub-label--tr {
-    right: 0;
-    top: 18%;
-  }
+.hub-card[data-side="left"] .hub-card__socket {
+  right: -5px;
+  top: 50%;
+  margin-top: -5px;
+}
 
-  .hub-label--bl {
-    left: 0;
-    bottom: 18%;
-  }
+.hub-card[data-side="right"] .hub-card__socket {
+  left: -5px;
+  top: 50%;
+  margin-top: -5px;
+}
 
-  .hub-label--br {
-    right: 0;
-    bottom: 18%;
-  }
+.hub-card[data-side="center"] .hub-card__socket {
+  top: -5px;
+  left: 50%;
+  margin-left: -5px;
+}
+
+/* ---- Two-way highlight (driven by a single `is-lit` class from React) ---- */
+.hub-card.is-lit {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  box-shadow: var(--shadow-card);
+}
+
+.hub-card.is-lit::before,
+.hub-card.is-lit::after {
+  opacity: 1;
+}
+
+.hub-card.is-lit .hub-card__socket {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .hub__empty {
   max-width: 34rem;
+  margin: 0 auto;
   text-align: center;
   font-size: 0.85rem;
   color: var(--muted);
@@ -1418,6 +1471,7 @@ html:not(.js-intro) .hairline {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--slate);
+  text-align: center;
 }
 
 .hub__hint-touch {
@@ -1434,7 +1488,7 @@ html:not(.js-intro) .hairline {
   }
 }
 
-/* Service card highlight when the hub links to it (`:target` — no JS). */
+/* Service card highlight when a hub link is followed (`:target` — no JS). */
 #services article:target {
   animation: jt-target-flash 1.8s var(--ease-standard);
 }
@@ -1449,21 +1503,136 @@ html:not(.js-intro) .hairline {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
+/* ============================================================
+   7e-bis. HUB — DESKTOP BLUEPRINT DIAGRAM (>= 1024px)
+   LEFT CARDS | TRACES | CENTRE LOGO | TRACES | RIGHT CARDS,
+   plus the centred lower card that carries the assembly node.
+   ============================================================ */
+@media (min-width: 1024px) {
+  .hub {
+    margin-top: 3rem;
+  }
+
+  .hub__diagram {
+    position: relative;
+    display: block;
+    width: 100%;
+    /* Fixed aspect ratio reserves the section height — the hub adds no CLS. */
+    aspect-ratio: 1000 / 700;
+  }
+
+  .hub__cards {
+    position: absolute;
+    inset: 0;
+    display: block;
+    padding: 0;
+    pointer-events: none;
+  }
+
+  /* The desktop diagram uses SVG traces, not the mobile spine. */
+  .hub__cards::before,
+  .hub-card-slot::before,
+  .hub-card-slot::after {
+    display: none;
+  }
+
+  /* Slot offsets arrive as custom properties so the mobile column (normal flow)
+     is never shifted by absolute offsets. */
+  .hub-card-slot {
+    position: absolute;
+    left: var(--slot-l, 0);
+    top: var(--slot-t, 0);
+    width: var(--slot-w, auto);
+    height: var(--slot-h, auto);
+    pointer-events: auto;
+  }
+
+  .hub-card {
+    height: 100%;
+  }
+
+  .hub__wires {
+    display: block;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    pointer-events: none;
+  }
+
+  .hub__stage {
+    position: absolute;
+    left: 34%;
+    top: 18.5714%;
+    width: 32%;
+    height: 45.7143%;
+    display: grid;
+    place-items: center;
+  }
+
   .hub__logo {
+    width: 100%;
+  }
+
+  /* Circuit traces: visible at rest, brighter when exploded or highlighted. */
+  .hub-wire {
+    fill: none;
+    stroke: color-mix(in srgb, var(--slate) 78%, transparent);
+    stroke-width: 1.4px;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.8;
+    transition:
+      stroke var(--motion-normal) var(--ease-standard),
+      opacity var(--motion-normal) var(--ease-standard);
+  }
+
+  .hub.is-exploded .hub-wire {
+    stroke: color-mix(in srgb, var(--accent) 78%, transparent);
+    opacity: 1;
+  }
+
+  .hub-wire__node {
+    fill: var(--surface);
+    stroke: color-mix(in srgb, var(--accent) 45%, var(--slate));
+    stroke-width: 1.4px;
+    transition: stroke var(--motion-normal) var(--ease-standard);
+  }
+
+  .hub.is-exploded .hub-wire__node {
+    stroke: var(--accent);
+  }
+
+  .hub-wire.is-lit {
+    stroke: var(--accent);
+    opacity: 1;
+  }
+
+  .hub-wire__node.is-lit {
+    fill: var(--accent);
+    stroke: var(--accent);
+  }
+}
+
+/* ---- Reduced motion: static exploded state, no movement ------------------ */
+@media (prefers-reduced-motion: reduce) {
+  .hub__logo,
+  .hub.is-inview .hub__logo {
     animation: none !important;
   }
 
-  .hub [data-piece] {
+  .hub [data-logo-piece] {
     transition: none !important;
+    /* Statically exploded so the diagram still reads as exploded. */
+    transform: translate(var(--tx, 0px), var(--ty, 0px)) rotate(var(--rot, 0deg));
   }
 
-  .hub.is-exploded [data-piece] {
-    transform: none !important;
-  }
-
-  .hub-connector__dot {
-    opacity: 0 !important;
+  .hub-card,
+  .hub-wire,
+  .hub-wire__node,
+  .hub-card__socket {
+    transition: none !important;
   }
 }
 
