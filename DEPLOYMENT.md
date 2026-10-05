@@ -377,6 +377,30 @@ Freebuff did not rename any Vercel project.
 
 ## 14. Verification performed for this document
 
-- `Backend`: `npm run lint` ✅, `npm run build` ✅ (45 files), `NODE_ENV=test npm run smoke` ✅.
-- `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅.
+- `Backend`: `npm run lint` ✅, `npm run build` ✅ (46 files), `NODE_ENV=test npm run smoke` ✅ (124/124).
+- `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅ (12 routes).
+- **`vercel.json` schema-validated** against Vercel's official schema
+  (`https://openapi.vercel.sh/vercel.json`, which sets `additionalProperties: false`): all three keys
+  are valid — `$schema`, `framework: "express"` (present in the framework enum) and `fluid: true`
+  (“Enables Fluid compute for the project”). The schema deliberately does **not** allow top-level
+  `memory` or `maxDuration`, which is why neither is set here.
+- **Entry-point detection** confirmed against Vercel's Express guide: Vercel looks for `app`, `index`
+  or `server` at the project root (or under `src/`) exporting the app as the default export —
+  `Backend/server.js` does exactly that (`export default app`) and only calls `app.listen()` when
+  `process.env.VERCEL` is unset.
+- **Serverless simulation (`VERCEL=1`, `NODE_ENV=production`)** — imported `server.js` with no port
+  listener, then drove requests through the default export: mongoose `readyState` was **0** after
+  import (no eager connection), `GET /api/health` returned **200** with `database:"disconnected"` in
+  40 ms, DB-backed routes returned a structured **503 `DATABASE_UNAVAILABLE`** after the 10 s
+  server-selection timeout (this machine's IP is not in the Atlas allow-list), and the process kept
+  serving every subsequent request — **no `process.exit`, no crash loop**, exit 0. The probe script
+  was deleted afterwards; no backend source file was modified by this verification.
+- **Bundle size**: `Backend/node_modules` is 71 MB, and Vercel's file tracing ships only what the
+  entry imports — far below the 250 MB Vercel Functions limit.
 - No secret value is present in this document — variable **names** only.
+
+**Not verifiable from this machine:** a real `vercel build` / `vercel deploy` (the Vercel CLI is not
+authenticated here — run `vercel login`, then Option B above), the live Hobby “Blocked” state,
+Lighthouse, Firefox and Safari. Two owner-side prerequisites for a working production API: a
+`JWT_SECRET` of **≥ 32 characters** (production config refuses shorter values — the local dev `.env`
+one is intentionally short) and an Atlas network-access rule that includes Vercel's egress IPs (§11).

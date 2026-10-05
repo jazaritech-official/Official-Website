@@ -1598,6 +1598,35 @@ surfaces) instead of forcing every logo to monochrome.
   `DEPLOYMENT.md` §1 Options A–D.
 - Backend rate limiter (300 req/15 min) can trip mid-harness → restart the dev backend before a run.
 
+## 2026-10-04 — Task F follow-up: Vercel serverless readiness (verification only)
+
+### Completed (no backend source file changed — docs only)
+- **`vercel.json` validated against Vercel's official schema** (`https://openapi.vercel.sh/vercel.json`,
+  `additionalProperties: false`): `$schema`, `framework: "express"` (in the framework enum) and
+  `fluid: true` all valid — 0 errors. Top-level `memory`/`maxDuration` are **not** schema-allowed,
+  confirming the earlier decision to omit them.
+- **Entry-point conformance** vs Vercel's Express guide: detection expects `app|index|server` at the
+  project root with a default export — `Backend/server.js` exports the configured app and guards
+  `start()` with `!process.env.VERCEL` (neither a port listener nor a DB connect runs on import).
+- **Serverless simulation** (`VERCEL=1 NODE_ENV=production`, temp probe, deleted after the run):
+  import-only → mongoose `readyState` 0 (lazy); `GET /api/health` → 200 in 40 ms with
+  `database:"disconnected"`; DB routes → structured 503 `DATABASE_UNAVAILABLE` after the 10 s
+  server-selection timeout (Atlas IP not whitelisted here); the process survived repeated failures
+  and kept answering — no `process.exit`, sim exit 0.
+- **Bundle**: `Backend/node_modules` = 71 MB and Vercel traces only entry-imported files → far below
+  the 250 MB Function limit (`mongodb-memory-server`/`eslint` are dev-only and never traced).
+
+### Verification
+- Backend lint/build/smoke unchanged (no source edits) → Task F results stand: 46 files, 124/124.
+- `git status`: only `DEPLOYMENT.md` + this entry changed in this follow-up.
+
+### Known issues / follow-up
+- Real `vercel build` / `vercel deploy` **NOT run**: the Vercel CLI on this machine is unauthenticated
+  (no `auth.json`) → owner must `vercel login` then deploy (DEPLOYMENT.md §2, Option B). Git-connected
+  deploys remain Blocked (§1 Options A–D).
+- Production requires `JWT_SECRET` ≥ 32 chars (local dev `.env` value is shorter and is correctly
+  rejected in production mode), the Cloudinary trio, and an Atlas allow-list entry for Vercel egress.
+
 ## 29. Grid Design System (Task E)
 
 1. **Tokens** (`globals.css` `:root`, dark overrides in `.dark`): `--grid-fine` (24px),
