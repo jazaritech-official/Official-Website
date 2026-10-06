@@ -13,6 +13,14 @@
  * Outputs:
  *   - `public/brand/logo-main.png`      trimmed mark (UI usage, all themes)
  *   - `public/brand/app-icon-main.png`  square, padded mark (favicon / app icon)
+ *   - `app/favicon.ico`                 16/32/48 PNG-embedded ICO (tab icon)
+ *   - `app/icon.png`                    32×32 PNG (Next file-convention icon)
+ *   - `app/apple-icon.png`              180×180 PNG (iOS home screen)
+ *   - `public/brand/icon-192.png`       192×192 PNG (web manifest)
+ *   - `public/brand/icon-512.png`       512×512 PNG (web manifest)
+ *
+ * Every icon is the REAL logo mark only — no wordmark, transparent background,
+ * centred with a small safe margin so it stays recognisable at 16 px.
  *
  * The owner originals (Main Logo.png, Primary Logo.png, Icon.png, …) are never
  * modified. Run this only if the source logo changes.
@@ -25,6 +33,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE = path.join(root, "public", "Main Logo.png");
 const OUT_DIR = path.join(root, "public", "brand");
+const APP_DIR = path.join(root, "app");
 
 /* --- PNG decode ---------------------------------------------------------- */
 function decodePng(file) {
@@ -243,3 +252,57 @@ const iconPixels = padToSquare(resample(source, box, innerW, innerH), ICON, inne
 const iconPath = path.join(OUT_DIR, "app-icon-main.png");
 fs.writeFileSync(iconPath, encodePng(ICON, ICON, iconPixels));
 console.log(`[logo] wrote ${path.relative(root, iconPath)} (${ICON}x${ICON}, ${fs.statSync(iconPath).size} B)`);
+
+/* --- Icon set (favicon / apple / manifest) -------------------------------- */
+
+/** The square PNG for one icon size, mark centred with a legible safe margin. */
+function iconPng(size, fill = 0.88) {
+  const s = (size * fill) / Math.max(boxW, boxH);
+  const w = Math.max(1, Math.round(boxW * s));
+  const h = Math.max(1, Math.round(boxH * s));
+  return encodePng(size, size, padToSquare(resample(source, box, w, h), size, w, h));
+}
+
+/**
+ * Minimal ICO container with PNG-compressed frames (supported by every modern
+ * browser and by Windows Vista+). No dependency is required — the frames are
+ * the PNGs produced above.
+ */
+function encodeIco(frames) {
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // reserved
+  header.writeUInt16LE(1, 2); // 1 = icon
+  header.writeUInt16LE(frames.length, 4);
+  const dir = Buffer.alloc(16 * frames.length);
+  let offset = header.length + dir.length;
+  frames.forEach((frame, index) => {
+    const at = index * 16;
+    dir[at] = frame.size >= 256 ? 0 : frame.size; // 0 encodes 256
+    dir[at + 1] = frame.size >= 256 ? 0 : frame.size;
+    dir[at + 2] = 0; // palette count
+    dir[at + 3] = 0; // reserved
+    dir.writeUInt16LE(1, at + 4); // colour planes
+    dir.writeUInt16LE(32, at + 6); // bits per pixel
+    dir.writeUInt32LE(frame.png.length, at + 8);
+    dir.writeUInt32LE(offset, at + 12);
+    offset += frame.png.length;
+  });
+  return Buffer.concat([header, dir, ...frames.map((frame) => frame.png)]);
+}
+
+fs.mkdirSync(APP_DIR, { recursive: true });
+const icoFrames = [16, 32, 48].map((size) => ({ size, png: iconPng(size) }));
+const faviconPath = path.join(APP_DIR, "favicon.ico");
+fs.writeFileSync(faviconPath, encodeIco(icoFrames));
+console.log(`[logo] wrote ${path.relative(root, faviconPath)} (16/32/48, ${fs.statSync(faviconPath).size} B)`);
+
+const iconTargets = [
+  [path.join(APP_DIR, "icon.png"), 32],
+  [path.join(APP_DIR, "apple-icon.png"), 180],
+  [path.join(OUT_DIR, "icon-192.png"), 192],
+  [path.join(OUT_DIR, "icon-512.png"), 512],
+];
+for (const [target, size] of iconTargets) {
+  fs.writeFileSync(target, iconPng(size));
+  console.log(`[logo] wrote ${path.relative(root, target)} (${size}x${size}, ${fs.statSync(target).size} B)`);
+}

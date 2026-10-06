@@ -8,7 +8,7 @@ import { SectionIndex } from "@/components/layout/SectionIndex";
 import { Skeleton } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
-import { ArrowUpRightIcon, iconRegistry, InfoIcon, RefreshIcon, type IconName } from "@/components/icons";
+import { ArrowUpRightIcon, iconRegistry, InfoIcon, LayersIcon, RefreshIcon, type IconName } from "@/components/icons";
 import type { Service } from "@/types/api";
 
 function ServiceCard({ service }: { service: Service }) {
@@ -84,29 +84,17 @@ export function ServicesGrid() {
         </div>
 
         {loading ? (
-          <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3" aria-hidden="true">
+          <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3" aria-hidden="true" data-services-state="loading">
             {Array.from({ length: 6 }, (_, index) => (
               <CardSkeleton key={index} />
             ))}
           </div>
         ) : error ? (
-          <div className="mt-10">
+          /* ERROR — the backend gave no usable data. Connectivity problem, not absence. */
+          <div className="mt-10" data-services-state="error">
             <EmptyState
-              title="Services are temporarily unavailable"
-              description={error.message}
-              icon={<RefreshIcon size={22} />}
-              action={
-                <Button variant="outline" size="sm" onClick={reload}>
-                  Try again
-                </Button>
-              }
-            />
-          </div>
-        ) : services.length === 0 ? (
-          <div className="mt-10">
-            <EmptyState
-              title="Service catalogue is being updated"
-              description="We're refreshing our service definitions. Please check back in a moment."
+              title="We couldn't load our services"
+              description={`${error.message} This is a connection problem, not a missing catalogue — please retry.`}
               icon={<RefreshIcon size={22} />}
               action={
                 <Button variant="outline" size="sm" onClick={reload}>
@@ -115,8 +103,24 @@ export function ServicesGrid() {
               }
             />
           </div>
+        ) : services.length === 0 ? (
+          /* EMPTY — the backend answered successfully with zero records. */
+          <div className="mt-10" data-services-state="empty">
+            <EmptyState
+              title="No services published yet"
+              description="The service catalogue is being prepared. Tell us what you're building and we'll respond with the right scope."
+              icon={<LayersIcon size={22} />}
+              action={
+                <a href="#start">
+                  <Button variant="outline" size="sm">
+                    Start your project
+                  </Button>
+                </a>
+              }
+            />
+          </div>
         ) : (
-          <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3" data-services-state="loaded">
             {services.map((service, index) => (
               <Reveal key={service._id} delay={(index % 3) * 80} className="h-full">
                 <ServiceCard service={service} />

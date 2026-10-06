@@ -57,7 +57,12 @@ function RowSkeleton() {
 
 /** Product catalogue management + the smart template library. */
 export function ProductsManager() {
-  const [tab, setTab] = useState<"products" | "templates">("products");
+  // Deep link from the sidebar's "Product Presets" item (same route, #anchor).
+  // Initialised lazily: AdminShell only renders children after the session
+  // check, so this component never participates in SSR hydration.
+  const [tab, setTab] = useState<"products" | "templates">(() =>
+    typeof window !== "undefined" && window.location.hash === "#product-presets" ? "templates" : "products",
+  );
   const [draftQuery, setDraftQuery] = useState("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -177,17 +182,23 @@ export function ProductsManager() {
     <div className="space-y-6">
       {/* Tabs */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div role="tablist" aria-label="Product management views" className="inline-flex rounded-full border border-line bg-surface p-1">
+        <div
+          id="product-presets"
+          role="tablist"
+          aria-label="Product management views"
+          className="inline-flex rounded-full border border-line bg-surface p-1"
+        >
           {(
             [
               { id: "products", label: "Products" },
-              { id: "templates", label: "Smart templates" },
+              { id: "templates", label: "Product Presets" },
             ] as const
           ).map((item) => (
             <button
               key={item.id}
               role="tab"
               type="button"
+              data-admin-tab={item.id}
               aria-selected={tab === item.id}
               onClick={() => setTab(item.id)}
               className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${

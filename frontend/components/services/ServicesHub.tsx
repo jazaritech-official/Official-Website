@@ -334,8 +334,8 @@ export function ServicesHub() {
           </div>
 
           {cards.length === 0 && (
-            <p className="hub__empty">
-              Our service catalogue is being updated — the services below are the full, current list.
+            <p className="hub__empty" data-hub-state="empty">
+              No services are featured in the hub yet — the full catalogue appears below.
             </p>
           )}
 

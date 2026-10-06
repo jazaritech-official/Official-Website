@@ -1,0 +1,213 @@
+{
+  "_generated": "GENERATED - NEVER HAND-EDIT. Produced by `npm run snapshot:content` from the public API. Public data only; no secrets.",
+  "generatedAt": "2026-10-06T12:46:06.015Z",
+  "source": "http://localhost:5000/api",
+  "counts": {
+    "logos": 0,
+    "products": 4,
+    "services": 14
+  },
+  "logos": [],
+  "products": [
+    {
+      "_id": "6ac4ed6cf49abe6a5c3f3913",
+      "name": "Jazari Commerce Suite",
+      "logo": "",
+      "productUrl": "",
+      "category": "E-commerce",
+      "highlightPoints": [
+        "Secure checkout with multiple payment gateways",
+        "Real-time inventory and order tracking",
+        "Mobile-optimized storefront",
+        "Admin analytics for sales performance"
+      ],
+      "sortOrder": 10,
+      "createdAt": "2026-10-06T12:45:32.494Z"
+    },
+    {
+      "_id": "6ac4ed6cf49abe6a5c3f3914",
+      "name": "Jazari Flow",
+      "logo": "",
+      "productUrl": "",
+      "category": "SaaS",
+      "highlightPoints": [
+        "Subscription billing and multi-tenant access",
+        "Role-based permissions for every team",
+        "Real-time operational dashboards",
+        "Automatic updates with zero downtime"
+      ],
+      "sortOrder": 20,
+      "createdAt": "2026-10-06T12:45:32.495Z"
+    },
+    {
+      "_id": "6ac4ed6cf49abe6a5c3f3915",
+      "name": "Jazari Pulse",
+      "logo": "",
+      "productUrl": "",
+      "category": "AI Tool",
+      "highlightPoints": [
+        "AI-powered workflow automation",
+        "Smart recommendations from your own data",
+        "Scalable architecture for growing teams"
+      ],
+      "sortOrder": 30,
+      "createdAt": "2026-10-06T12:45:32.495Z"
+    },
+    {
+      "_id": "6ac4ed6cf49abe6a5c3f3916",
+      "name": "Jazari Desk",
+      "logo": "",
+      "productUrl": "",
+      "category": "ERP / Business Software",
+      "highlightPoints": [
+        "Centralized operations in one workspace",
+        "Workflow automation and custom reporting",
+        "Role-based access for departments"
+      ],
+      "sortOrder": 40,
+      "createdAt": "2026-10-06T12:45:32.495Z"
+    }
+  ],
+  "services": [
+    {
+      "_id": "6ac4ed6c40621d5e141a1f71",
+      "slug": "software-solutions",
+      "description": "Custom platforms, internal tools and integrations engineered around the way your business actually operates.",
+      "hubLabel": "",
+      "hubSlot": null,
+      "icon": "code",
+      "sortOrder": 10,
+      "title": "Software Solutions"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f72",
+      "slug": "business-growth",
+      "description": "Strategy, process and technology roadmaps that turn operational efficiency into measurable revenue growth.",
+      "hubLabel": "Business Growth",
+      "hubSlot": 3,
+      "icon": "chart",
+      "sortOrder": 20,
+      "title": "Business Growth"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f73",
+      "slug": "graphic-designing",
+      "description": "Brand identities, visual systems and marketing collateral crafted for consistency across every touchpoint.",
+      "hubLabel": "",
+      "hubSlot": null,
+      "icon": "palette",
+      "sortOrder": 30,
+      "title": "Graphic Designing"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f74",
+      "slug": "marketing",
+      "description": "Performance marketing, SEO and content programmes that put your products in front of the right audience.",
+      "hubLabel": "",
+      "hubSlot": null,
+      "icon": "megaphone",
+      "sortOrder": 40,
+      "title": "Marketing"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f75",
+      "slug": "ai-solutions",
+      "description": "Practical AI — document intelligence, recommendation engines and automation that remove repetitive work.",
+      "hubLabel": "AI Solutions",
+      "hubSlot": 1,
+      "icon": "chip",
+      "sortOrder": 50,
+      "title": "AI Solutions"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f76",
+      "slug": "e-commerce",
+      "description": "Storefronts, checkout flows and order operations built to convert and to scale through peak demand.",
+      "hubLabel": "E-commerce",
+      "hubSlot": 2,
+      "icon": "cart",
+      "sortOrder": 60,
+      "title": "E-commerce"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f77",
+      "slug": "mobile-app-development",
+      "description": "Native and cross-platform applications with dependable performance and a genuinely polished feel.",
+      "hubLabel": "",
+      "hubSlot": null,
+      "icon": "mobile",
+      "sortOrder": 70,
+      "title": "Mobile App Development"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f78",
+      "slug": "web-development",
+      "description": "Fast, accessible and search-friendly websites engineered for longevity, not just launch day.",
+      "hubLabel": "Web Development",
+      "hubSlot": 0,
+      "icon": "website",
+      "sortOrder": 80,
+      "title": "Web Development"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f79",
+      "slug": "ui-ux-design",
+      "description": "Research-led interface design that makes complex products feel effortless for the people using them.",
+      "hubLabel": "",
+      "hubSlot": null,
+      "icon": "pen",
+      "sortOrder": 90,
+      "title": "UI/UX Design"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f7a",
+      "slug": "cloud-and-devops",
+      "description": "Cloud architecture, CI/CD and observability so releases are routine and infrastructure stays predictable.",
+      "hubLabel": "",
+      "hubSlot": null,
+      "icon": "cloud",
+      "sortOrder": 100,
+      "title": "Cloud and DevOps"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f7b",
+      "slug": "cybersecurity",
+      "description": "Hardening, review and monitoring that protect customer data and keep your compliance posture solid.",
+      "hubLabel": "",
+      "hubSlot": null,
+      "icon": "shield",
+      "sortOrder": 110,
+      "title": "Cybersecurity"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f7c",
+      "slug": "data-and-analytics",
+      "description": "Pipelines, warehousing and dashboards that turn scattered operational data into decisions you can defend.",
+      "hubLabel": "",
+      "hubSlot": null,
+      "icon": "analytics",
+      "sortOrder": 120,
+      "title": "Data and Analytics"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f7d",
+      "slug": "it-consulting",
+      "description": "Vendor-neutral technical guidance for platform selection, modernisation and delivery strategy.",
+      "hubLabel": "IT Consulting",
+      "hubSlot": 4,
+      "icon": "consulting",
+      "sortOrder": 130,
+      "title": "IT Consulting"
+    },
+    {
+      "_id": "6ac4ed6c40621d5e141a1f7e",
+      "slug": "automation",
+      "description": "Workflow and back-office automation that removes manual handoffs and the errors that come with them.",
+      "hubLabel": "",
+      "hubSlot": null,
+      "icon": "automation",
+      "sortOrder": 140,
+      "title": "Automation"
+    }
+  ]
+}

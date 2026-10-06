@@ -64,12 +64,11 @@ export const metadata: Metadata = {
   alternates: {
     canonical: "/",
   },
-  icons: {
-    icon: [
-      { url: "/brand/app-icon-main.png", type: "image/png", sizes: "512x512" },
-    ],
-    apple: [{ url: "/brand/app-icon-main.png", sizes: "512x512" }],
-  },
+  // Icons use the Next.js file conventions (`app/favicon.ico`, `app/icon.png`,
+  // `app/apple-icon.png`) — ONE system, generated from the real logo mark by
+  // `scripts/build-logo-assets.mjs`. Do not also declare `icons` here: two
+  // competing systems is how the default Next.js triangle previously survived.
+  manifest: "/manifest.webmanifest",
 };
 
 export const viewport: Viewport = {

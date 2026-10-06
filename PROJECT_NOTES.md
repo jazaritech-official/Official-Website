@@ -1962,3 +1962,144 @@ repo public / Vercel Pro).
 - **Seam prominence:** `.section-seam` gradient stops + `opacity`.
 - **Contrast:** move the offending token in `globals.css`, then re-run `npm run audit:contrast` until
   it is green (the script prints the exact failing ratio).
+## 2026-10-06 — Task H: services states, real favicon, content resilience, admin information architecture
+
+### Why (root causes, evidence-based)
+1. **Services did not appear in production because the database was empty, not because of a bug.**
+   A read-only probe (`curl`) of the deployed API returned `HTTP 200` with `{"success":true,"data":[]}`
+   for `GET /api/services` — i.e. a successful response with **0 records** — while
+   `GET /api/health` returned `200 {"status":"ok","environment":"production","database":"connected"}`.
+   The frontend was already distinguishing EMPTY from ERROR internally, but the empty copy
+   ("Service catalogue is being updated … Retry") read like a temporary fault. Seeding remains an
+   owner action (`DEPLOYMENT.md` §15.2) — this task never touches production data.
+2. **The wrong favicon shipped because `app/favicon.ico` was the stock Next.js file.** A file at
+   `app/favicon.ico` wins the `<link rel="icon">` race against `metadata.icons`, so the default
+   triangle was served regardless of the (separately declared) 512 px brand PNG. Root cause: two
+   competing icon systems, one of them the framework default.
+3. **The frontend could go blank when the API was briefly unreachable** — every public collection was
+   fetched live with no last-known-good fallback.
+4. **The admin portal used internal jargon** (Dashboard / Logos / Templates / Submissions / Team /
+   Account) with no stated purpose, which is hard for a non-technical owner.
+5. **An owner-supplied MongoDB URI was pasted into the tracked `Backend/.env.example`** (working tree
+   only — `HEAD` never contained it). See §34.6.
+
+### 34.1 Public content data flow (resilience hierarchy)
+`frontend/lib/publicContent.ts` is the **single canonical loader** for the three public collections
+(`logos`, `products`, `services`). `lib/api.ts` routes `api.logos/products/services()` through it, so
+`ServicesGrid`, `ServicesHub`, `ServiceLinks`, `LogoMarquee` and `ProductCards` all share **one**
+request per resource (in-flight dedupe + a 60 s in-memory memo).
+
+Source order (never bypassed):
+
+```
+1. live API (authoritative)
+2. validated last-known-good cache   (localStorage)
+3. validated build-time snapshot     (public/content-snapshot.json)
+4. designed empty/error state        (throws -> the UI's own error state with Retry)
+```
+
+Every layer is schema-validated (`validateList`) **before** it renders; a layer that fails validation
+is discarded and the loader falls through. An `HTTP 200` with `[]` is a *valid* empty list (the UI's
+designed EMPTY state); only a total absence of usable data throws, producing the ERROR state.
+
+### 34.2 Cache strategy (localStorage)
+- Key: `jazari:public-content:v{CACHE_VERSION}:{resource}` (versioned; bump to invalidate).
+- Envelope `{ v, savedAt, data }`; `savedAt` is checked against a bounded `MAX_AGE_MS` (~30 days).
+- Validated on **write** and on **read**; a corrupt JSON body (or a storage-disabled browser) is
+  discarded inside `try/catch` and the key is removed.
+- Entry size cap (`MAX_ENTRY_BYTES` ≈ 512 KB) and an empty list is **never** cached.
+- Only these three **public** resources are ever cached. Admin, auth, submission and visitor data are
+  never written to storage (asserted by the harness, CHECK 64).
+
+### 34.3 Snapshot strategy (build-time)
+- `npm run snapshot:content` → `frontend/scripts/snapshot-content.mjs` (dependency-free) writes
+  `frontend/public/content-snapshot.json` with a `_generated` header
+  ("GENERATED - NEVER HAND-EDIT … Public data only; no secrets").
+- It reads **public GETs only** (`/logos`, `/products`, `/services`) and, on any failure, **preserves
+  the previous good list, prints a warning and exits 0** — a snapshot refresh can never fail a build or
+  overwrite good data with an empty array.
+- Base URL resolution: `SNAPSHOT_API_BASE` → `NEXT_PUBLIC_API_URL` → `${BACKEND_ORIGIN}/api` →
+  `http://localhost:5000/api`.
+- **Committed** (not gitignored): it is the fallback that must exist in the deployed bundle. Regenerate
+  it before a deploy (`npm run snapshot:content`). It is deliberately **not** wired as `prebuild`,
+  because a network-dependent `prebuild` would risk the Vercel build for no benefit.
+
+### 34.4 Timeouts, retry and image fallback
+- Public GETs use an 8 s `AbortController` timeout with bounded retry (3 attempts, 300 ms / 900 ms
+  backoff). A caller-driven abort (unmount) is never retried. No mutation is ever retried.
+- `next.config.ts` already allowed the real Cloudinary origin (`res.cloudinary.com`) — **no new domain
+  was invented**.
+- A failed product image falls back to a designed monogram (`ProductCards`), matching the existing
+  `LogoMarquee` behaviour — never the browser's broken-image icon.
+
+### 34.5 Favicon / icon system
+- **ONE system:** the Next.js file conventions — `frontend/app/favicon.ico` (16/32/48, PNG-embedded
+  ICO), `frontend/app/icon.png` (32), `frontend/app/apple-icon.png` (180) — plus a web manifest
+  (`frontend/app/manifest.ts` → `/manifest.webmanifest`, `theme_color` Deep Navy `#212C65`,
+  192 + 512 icons from `public/brand/`). `metadata.icons` was **removed** so nothing competes with the
+  file conventions.
+- Generated from the owner logo by the pre-existing **dependency-free** `frontend/scripts/build-logo-assets.mjs`
+  (extended; `npm run build:icons`): real mark only, transparent, centred with a safe margin. The ICO
+  container is hand-built (header + directory + PNG frames) — no image dependency was added.
+
+### 34.6 Secret hygiene
+- `Backend/.env.example` contained a **real** Atlas connection string carrying embedded credentials
+  **in the working tree only**; `git show HEAD:Backend/.env.example` contained **no** real credentials, so nothing was ever
+  committed with a live secret. The file was **rewritten to placeholders only** (all 25 keys restored,
+  including the three the stray edit had dropped).
+- `npm run check:secrets` → `frontend/scripts/check-no-secrets.mjs` (dependency-free) scans **tracked**
+  `.env*`/docs/config across the whole repo (git top-level, not just `frontend/`), prints **`file:line`
+  only — never the value**, and exits 1 on: a MongoDB URI with embedded real credentials, a
+  Cloudinary-looking key/secret, or a 32+ character secret-shaped assignment. Placeholders
+  (`<…>`, `your-…`) are explicitly excluded. Proven non-vacuous against a synthetic fixture (2 findings,
+  exit 1) which was then deleted.
+- ⚠️ **The exposed Atlas DB user password must be rotated** (it lived in a working-tree file that could
+  have been screen-shared or cloned). See the final report's Owner Actions.
+
+### 34.7 Admin information architecture
+- **Routes are unchanged** — only labels, grouping, titles and descriptions changed.
+- Sidebar: **Overview** stays above the groups. Groups (mono section labels):
+  `CONTENT` → Homepage Logos, Products, Product Presets; `LEADS` → Project Requests, Visitors;
+  `SETTINGS` → Admins & Access, My Account.
+- "Product Presets" is a panel **inside** `/admin/products` (there is no `/admin/templates` route), so
+  it is surfaced as an in-page anchor (`/admin/products#product-presets`) that selects the Presets tab.
+  No bookmark breaks.
+- `frontend/components/admin/AdminPageHeader.tsx` is the **one** header used by every admin page:
+  group eyebrow + title + one-line purpose + optional "Where this appears" hint. It is rendered from the
+  thin `app/admin/(portal)/*/page.tsx` wrappers, so no markup is copy-pasted.
+- Browser titles come from per-page `metadata.title` + the admin layout template
+  (`"%s - Jazari Admin"`), e.g. "Project Requests - Jazari Admin". `robots: noindex` is retained.
+- Overview shows `AdminQuickGuide` ("What each section does"), dismissal remembered via
+  `useSyncExternalStore` over `localStorage` inside `try/catch` (no setState-in-effect, hydration-safe).
+- Permissions are untouched: `Admins & Access` remains super-admin-only, enforced by the backend
+  `requireRole("super_admin")` (the sidebar/redirect remain UX only).
+
+### 34.8 Services empty vs error
+`ServicesGrid` now renders clearly different, designed states, marked with
+`data-services-state="loading|empty|error|loaded"` for testing:
+- **EMPTY** (HTTP 200, 0 records): "No services published yet" + a "Start your project" link — NOT the
+  misleading "being updated / Retry".
+- **ERROR** (no usable data at all): "We couldn't load our services" + explicit "this is a connection
+  problem" + **Retry**.
+
+### 34.9 Testing notes
+- `frontend/scripts/verify-three.mjs` **extended** (never weakened) with suite **[15]** — CHECKs 56–76:
+  icons/manifest (head links, 200 + content type, valid multi-frame ICO, not the stock Next.js favicon,
+  real PNG), services states (loaded / cache fallback / snapshot fallback / designed error / corrupted
+  cache / designed empty), and admin IA (sidebar groups, plain-language labels, reusable header,
+  browser title, Overview guide, unchanged routes). Resilience is exercised with CDP
+  `Network.setBlockedURLs` (API/snapshot offline) and `Fetch.fulfillRequest` (an empty 200) — the suite
+  can genuinely fail.
+- Backend smoke (`Backend/scripts/smoke.js`) was extended only if backend behaviour changed; the public
+  GET contract is unchanged.
+- Restart the dev backend before a full harness run: the shared limiter (300 req / 15 min) can otherwise
+  turn legitimate 429s into false failures.
+
+### 34.10 Known limitations / follow-up
+- Production still requires the one-time seed (`DEPLOYMENT.md` §15.2) — never run from here.
+- Lighthouse / Firefox / Safari / the real Vercel deployment remain **NOT VERIFIED** (no access here).
+- Marketing claims in `Hero.tsx` (10k+ users, 140+ products, 99.9% uptime, "4.9/5 client rating",
+  avatar initials AK/MR/TS) are **audited and reported, not changed** — they need owner verification and
+  ideally a backend "site settings" source.
+- Optional extras not implemented: `Cache-Control: public, s-maxage=60, stale-while-revalidate=86400`
+  on the three public GETs, and a full `/admin/services` CRUD manager (see the final report).

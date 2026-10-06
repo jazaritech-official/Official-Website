@@ -525,7 +525,38 @@ changing these.
 | 6 | `npm run seed:prod` exits 1 with **REFUSED** | `CONFIRM_PRODUCTION_SEED` is not set | Set it to `true` for that single run (§15.2). This is the safety guard working. |
 | 7 | `npm run seed:prod` prints **missing MONGODB_URI** even though `Backend/.env` has it | The script reads the **process environment only** and does not load `.env` (by design) | Provide `MONGODB_URI` in the same shell command (§15.2). |
 | 8 | `503 DATABASE_UNAVAILABLE` after ~10 s on any DB route | Atlas network access does not include Vercel's egress IPs | Add `0.0.0.0/0` (or the Vercel egress range) under Atlas → Network Access; see §11. |
+| 9 | `/api/services` returns **`200`** with **0 items** and the site shows **“No services published yet”** | **EMPTY** — the backend answered successfully with zero records (unseeded database). This is *not* an error. | Run the production seed (§15.2). Verify `/api/services` returns 14 items afterwards. |
+| 10 | The site shows **“We couldn't load our services”** with a **Retry** button | **ERROR** — the backend did not provide usable data (network, 5xx, 503 or a timeout). Distinct from EMPTY on purpose. | Check `GET /api/health`, the Atlas allow-list (§11) and the backend logs, then press Retry (or reload). Do **not** re-seed to fix a connectivity problem. |
+
+**EMPTY vs ERROR, in one line.** `EMPTY = HTTP 200 with 0 records` (unseeded → seed the database);
+`ERROR = the backend gave no usable data` (connectivity → fix access, then retry). The public services
+UI now renders two clearly different designed states and never calls a connectivity failure a
+“catalogue being updated”.
 
 **Security notes.** Never commit a connection string or the admin password; never paste them into a
 ticket or screenshot. `seed:prod` prints the database **name** and counts only — verify a run by
 reading those, not by echoing the environment.
+
+### 15.5 Static assets, content snapshot & secret hygiene (Task H)
+
+- **Favicon.** The tab icon is the real Jazari mark, generated from the owner logo by the dependency-free
+  `frontend` script `npm run build:icons`. It writes `app/favicon.ico` (16/32/48), `app/icon.png` (32),
+  `app/apple-icon.png` (180) and `public/brand/icon-{192,512}.png`, and the web manifest lives at
+  `/manifest.webmanifest`. Do not add an `icons` block back to `metadata` — one system only.
+- **Content snapshot.** The build-time fallback for the public collections is
+  `frontend/public/content-snapshot.json`, written by `npm run snapshot:content` (dependency-free,
+  public GETs only). Regenerate it before a deploy; it is committed, never gitignored. If the API is
+  unreachable it preserves the previous good file and exits 0, so it can never fail a build or blank the
+  fallback.
+- **Cache headers.** No `Cache-Control` header was added to the public GETs in this task (the frontend
+  keeps its own resilience layer instead), so no CDN caching behaviour changed on the backend.
+- **`.env.example` is a template, never a config.** It must contain **placeholders only**
+  (`mongodb+srv://<username>:<password>@<cluster-host>/<database>`). Run `npm run check:secrets` (in
+  `frontend/`) before committing — it scans tracked example/doc files and fails on any real-looking
+  secret, printing `file:line` only. If a real credential was ever pasted into a tracked file, **rotate
+  it** and keep the URI in the Vercel environment only.
+- **Deployment environment variables (names only — never values):**
+  - `Backend`: `MONGODB_URI`, `JWT_SECRET` (≥ 32 chars in production), `CLIENT_ORIGIN`, `COOKIE_SECURE`,
+    `COOKIE_SAMESITE`, `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`.
+  - `frontend`: `NEXT_PUBLIC_API_URL` / `BACKEND_ORIGIN` (same-origin proxy, §15.3), `NEXT_PUBLIC_SITE_URL`.
+  - Optional snapshot base for CI: `SNAPSHOT_API_BASE`.

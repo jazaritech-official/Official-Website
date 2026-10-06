@@ -35,6 +35,7 @@ import type {
   VisitorTrackInput,
   VisitorTrackResult,
 } from "@/types/api";
+import { loadPublicContent } from "@/lib/publicContent";
 
 // Two supported modes:
 //  Mode 1 (production default) — NEXT_PUBLIC_API_URL is empty or "/api": the
@@ -259,29 +260,17 @@ export async function downloadFile(path: string, query: Query, filename: string)
  * ====================================================================== */
 
 /**
- * Short-lived in-memory cache for public GETs so sections that need the same
- * content (e.g. services grid + footer links) share one request. Always
- * refetches after the TTL, so the backend remains the source of truth.
+ * The three public collections resolve through the resilience hierarchy in
+ * `lib/publicContent.ts` (live API → validated localStorage cache → validated
+ * build-time snapshot → designed error), with one shared request per resource.
+ * Everything else here is the plain typed request layer.
  */
-const readCache = new Map<string, { expires: number; promise: Promise<unknown> }>();
-
-function cached<T>(path: string, ttlMs = 60_000): Promise<T> {
-  const hit = readCache.get(path);
-  const now = Date.now();
-  if (hit && hit.expires > now) return hit.promise as Promise<T>;
-
-  const promise = request<T>(path);
-  readCache.set(path, { expires: now + ttlMs, promise });
-  promise.catch(() => readCache.delete(path)); // never cache failures
-  return promise;
-}
-
 export const api = {
   /* --- Public ----------------------------------------------------------- */
   health: () => request<HealthData>("/health"),
-  logos: () => cached<PublicLogo[]>("/logos"),
-  products: () => cached<Product[]>("/products"),
-  services: () => cached<Service[]>("/services"),
+  logos: () => loadPublicContent<PublicLogo[]>("logos").then((result) => result.data),
+  products: () => loadPublicContent<Product[]>("products").then((result) => result.data),
+  services: () => loadPublicContent<Service[]>("services").then((result) => result.data),
   submitProject: (body: SubmissionInput) => request<SubmissionResult>("/submission", { method: "POST", body }),
 
   /** Fire-and-forget analytics beacon — never throws to the caller. */

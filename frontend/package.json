@@ -4,11 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/snapshot-content.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "audit:contrast": "node scripts/audit-contrast.mjs",
-    "trace:logo": "node scripts/trace-logo.mjs"
+    "trace:logo": "node scripts/trace-logo.mjs",
+    "snapshot:content": "node scripts/snapshot-content.mjs",
+    "build:icons": "node scripts/build-logo-assets.mjs",
+    "check:secrets": "node scripts/check-no-secrets.mjs"
   },
   "dependencies": {
     "next": "16.3.8",

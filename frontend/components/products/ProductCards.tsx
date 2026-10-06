@@ -19,6 +19,7 @@ import {
   RefreshIcon,
   type IconName,
 } from "@/components/icons";
+import { useState } from "react";
 import type { Product } from "@/types/api";
 
 const CATEGORY_ICON: Record<string, string> = {
@@ -43,12 +44,13 @@ function ProductCard({ product }: { product: Product }) {
   const points = product.highlightPoints.slice(0, 4);
   const hasLink = Boolean(product.productUrl);
   const tiltRef = useTilt<HTMLElement>();
+  const [logoFailed, setLogoFailed] = useState(false);
 
   return (
     <article ref={tiltRef} className="card card-hover card-ticks tilt-card group relative flex h-full flex-col p-6">
       <div className="flex items-start justify-between gap-4">
         <div className="flex size-14 items-center justify-center overflow-hidden rounded-2xl border border-line bg-surface">
-          {product.logo ? (
+          {product.logo && !logoFailed ? (
             <Image
               src={product.logo}
               alt={`${product.name} logo`}
@@ -56,8 +58,10 @@ function ProductCard({ product }: { product: Product }) {
               height={56}
               sizes="56px"
               className="size-full object-contain p-1.5"
+              onError={() => setLogoFailed(true)}
             />
           ) : (
+            /* Designed monogram fallback — never a broken-image icon. */
             <span className="text-gradient text-lg font-semibold">{monogram(product.name) || "JT"}</span>
           )}
         </div>

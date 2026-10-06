@@ -8,12 +8,13 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { iconRegistry, RefreshIcon, type IconName } from "@/components/icons";
+import { AdminQuickGuide } from "./AdminQuickGuide";
 import type { DashboardSeriesPoint, DashboardStats } from "@/types/api";
 
 const CARDS: { key: keyof Pick<DashboardStats, "products" | "logos"> | "submissions" | "today" | "total"; label: string; icon: IconName; hint: string }[] = [
-  { key: "products", label: "Products", icon: "layers", hint: "In the product catalogue" },
-  { key: "logos", label: "Logos", icon: "palette", hint: "Uploaded brand assets" },
-  { key: "submissions", label: "Submissions", icon: "inbox", hint: "Project requests received" },
+  { key: "products", label: "Products", icon: "layers", hint: "Shown on the homepage" },
+  { key: "logos", label: "Homepage Logos", icon: "palette", hint: "In the logo wall" },
+  { key: "submissions", label: "Project Requests", icon: "inbox", hint: "Received from the site" },
   { key: "today", label: "Unique visitors today", icon: "users", hint: "Since 00:00 UTC" },
   { key: "total", label: "Total unique visitors", icon: "globe", hint: "All time, deduplicated" },
 ];
@@ -162,6 +163,8 @@ export function DashboardClient() {
 
   return (
     <div className="space-y-6">
+      <AdminQuickGuide />
+
       {/* Stat cards */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         {CARDS.map((card) => {

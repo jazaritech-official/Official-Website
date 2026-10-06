@@ -2355,3 +2355,33 @@ html:not(.dark) .logo-item[data-tone="light"] .logo-item__img {
     mask-image: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Admin — Jazari Blueprint identity
+   The admin portal uses the same signature language as the public site
+   (numbered/mono indexes, drawn hairlines, corner ticks, a single Growth-Green
+   “live” node), just denser. Status is always conveyed with text, never colour
+   alone.
+   --------------------------------------------------------------------------- */
+
+.admin-page-header__tick {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
+  border-top: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* The Product Presets deep-link lands below the sticky admin header. */
+#product-presets {
+  scroll-margin-top: 5.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-enter {
+    animation: none !important;
+  }
+}

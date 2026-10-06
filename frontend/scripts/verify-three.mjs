@@ -2503,6 +2503,391 @@ async function main() {
 
     await cdp.send("Emulation.clearDeviceMetricsOverride");
     await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+
+    /* =====================================================================
+     * [15] Icons + services states + content resilience + admin IA
+     * ------------------------------------------------------------------- */
+    console.log("\n[15] Icons, services states, content resilience & admin information architecture");
+    const STOCK_NEXT_FAVICON_BYTES = 25931; // measured size of the stock Next.js favicon.ico
+    // Wait until the services section has LEFT the transient loading state.
+    const SERVICES_SETTLED = `document.querySelector('[data-services-state]:not([data-services-state="loading"])') !== null`;
+    // Scroll a section into view, set the theme, then capture the viewport.
+    const shotSection = async (selector, name, theme = "light") => {
+      await evaluate(
+        cdp,
+        `(() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (el) el.scrollIntoView({ block: 'center', behavior: 'instant' });
+          document.documentElement.classList.toggle('dark', ${theme === "dark"});
+          return true;
+        })()`,
+      );
+      await sleep(350);
+      await capture(name);
+    };
+
+    // --- 15a. Icons + manifest (HTTP only, no WebGL required) -------------
+    const homeHtml = await (await fetch(`${BASE}/`)).text();
+    const iconLinks = [...homeHtml.matchAll(/<link[^>]*rel="(?:icon|apple-touch-icon|manifest)"[^>]*>/g)].map((m) => m[0]);
+    const hasFaviconLink = iconLinks.some((l) => l.includes("/favicon.ico"));
+    const hasPngIcon = iconLinks.some((l) => l.includes('rel="icon"') && l.includes('type="image/png"'));
+    const hasAppleIcon = iconLinks.some((l) => l.includes('rel="apple-touch-icon"'));
+    const hasManifestLink = iconLinks.some((l) => l.includes('rel="manifest"'));
+    check(
+      "CHECK 56 — head declares favicon.ico, a PNG icon, an apple-touch-icon and a manifest",
+      hasFaviconLink && hasPngIcon && hasAppleIcon && hasManifestLink,
+      JSON.stringify({ hasFaviconLink, hasPngIcon, hasAppleIcon, hasManifestLink }),
+    );
+
+    const declaredUrls = [...new Set(iconLinks.map((l) => (l.match(/href="([^"]+)"/) || [])[1]).filter(Boolean))];
+    const iconResponses = [];
+    let iconsOk = true;
+    for (const url of declaredUrls) {
+      const response = await fetch(new URL(url, BASE));
+      const type = response.headers.get("content-type") || "";
+      const good = response.status === 200 && !/text\/html/.test(type);
+      if (!good) iconsOk = false;
+      iconResponses.push({ url: url.split("?")[0], status: response.status, type });
+    }
+    check(
+      "CHECK 57 — every declared icon/manifest URL returns 200 with a non-HTML content type (no 404)",
+      iconsOk && declaredUrls.length >= 4,
+      JSON.stringify(iconResponses),
+    );
+
+    const faviconBytes = Buffer.from(await (await fetch(`${BASE}/favicon.ico`)).arrayBuffer());
+    const icoFrames = faviconBytes.length > 6 ? faviconBytes.readUInt16LE(4) : 0;
+    const icoType = faviconBytes.length >= 6 ? faviconBytes.readUInt16LE(2) : -1;
+    check(
+      "CHECK 58 — /favicon.ico is a valid multi-frame ICO",
+      icoType === 1 && icoFrames >= 3,
+      JSON.stringify({ type: icoType, frames: icoFrames, bytes: faviconBytes.length }),
+    );
+    check(
+      "CHECK 59 — favicon is the Jazari mark, NOT the stock Next.js triangle (bytes differ from the measured default)",
+      faviconBytes.length !== STOCK_NEXT_FAVICON_BYTES && faviconBytes.length > 200,
+      String(faviconBytes.length),
+    );
+
+    const manifestJson = await (await fetch(`${BASE}/manifest.webmanifest`)).json();
+    const manifestIcons = Array.isArray(manifestJson.icons) ? manifestJson.icons : [];
+    check(
+      "CHECK 60 — manifest declares 192 + 512 icons and the Deep Navy theme colour",
+      manifestIcons.some((i) => i.sizes === "192x192") &&
+        manifestIcons.some((i) => i.sizes === "512x512") &&
+        manifestJson.theme_color === "#212C65",
+      JSON.stringify({ icons: manifestIcons.map((i) => i.sizes), theme: manifestJson.theme_color }),
+    );
+
+    // Non-vacuous: the PNG icon must be a real PNG, not a 404 HTML body.
+    const icon32 = Buffer.from(await (await fetch(`${BASE}/icon.png`)).arrayBuffer());
+    const icon32IsPng = icon32.length > 8 && icon32[0] === 0x89 && icon32[1] === 0x50 && icon32[2] === 0x4e && icon32[3] === 0x47;
+    check("CHECK 61 — /icon.png is a real PNG file (magic bytes verified)", icon32IsPng && icon32.length > 100, String(icon32.length));
+
+    // --- 15b. Services LOADED (live API) ----------------------------------
+    resetErrors();
+    await cdp.send("Page.navigate", { url: `${BASE}/` });
+    await waitFor(cdp, `document.readyState === "complete"`, 12000, "home reload");
+    await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 12000, "services loaded");
+    const loadedState = await evaluate(
+      cdp,
+      `(() => {
+        const grid = document.querySelector('[data-services-state="loaded"]');
+        return {
+          state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state'),
+          cards: grid ? grid.querySelectorAll(':scope > *').length : 0,
+          hubCards: document.querySelectorAll('#hub-service-list .hub-card').length,
+          footerLinks: document.querySelectorAll('footer a[href="#services"]').length,
+        };
+      })()`,
+    );
+    check("CHECK 62 — services render from the live API in the loaded state", loadedState.state === "loaded" && loadedState.cards === 14, JSON.stringify(loadedState));
+    check(
+      "CHECK 63 — the ONE public services source feeds the grid, the hub and the footer",
+      loadedState.cards === 14 && loadedState.hubCards >= 1 && loadedState.footerLinks >= 1,
+      JSON.stringify(loadedState),
+    );
+    await shotSection("#services", "services-loaded-light.png", "light");
+    await shotSection("#services", "services-loaded-dark.png", "dark");
+
+    const cacheKeys = await evaluate(
+      cdp,
+      `(() => {
+        const keys = Object.keys(localStorage).filter((k) => k.startsWith('jazari:public-content:'));
+        return { keys, privateKeys: keys.filter((k) => /admin|token|submission|auth|visitor/i.test(k)) };
+      })()`,
+    );
+    check(
+      "CHECK 64 — the public cache exists and contains no admin/private keys",
+      cacheKeys.keys.length >= 2 && cacheKeys.privateKeys.length === 0,
+      JSON.stringify(cacheKeys),
+    );
+
+    // --- 15c. Cache fallback: block the API, reload -----------------------
+    await cdp.send("Network.enable");
+    await cdp.send("Network.setBlockedURLs", { urls: ["*localhost:5000*", "*127.0.0.1:5000*"] });
+    await cdp.send("Page.navigate", { url: `${BASE}/?cache-fallback=1` });
+    await waitFor(cdp, `document.readyState === "complete"`, 12000, "home reload (api blocked)");
+    await waitFor(cdp, SERVICES_SETTLED, 15000, "services state (api blocked)");
+    const cacheFallback = await evaluate(
+      cdp,
+      `(() => {
+        const grid = document.querySelector('[data-services-state="loaded"]');
+        return { state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state'), cards: grid ? grid.querySelectorAll(':scope > *').length : 0 };
+      })()`,
+    );
+    check(
+      "CHECK 65 — API unreachable → services render from the validated localStorage cache",
+      cacheFallback.state === "loaded" && cacheFallback.cards === 14,
+      JSON.stringify(cacheFallback),
+    );
+    // Offline screenshots: content still renders while the API is blocked.
+    await shotSection("#products", "offline-fallback-logos-light.png", "light");
+    await shotSection("#products", "offline-fallback-logos-dark.png", "dark");
+    await shotSection("[aria-labelledby='product-cards-heading']", "offline-fallback-products-light.png", "light");
+    await shotSection("[aria-labelledby='product-cards-heading']", "offline-fallback-products-dark.png", "dark");
+
+    // --- 15d. Snapshot fallback: clear cache, API still blocked -----------
+    await evaluate(
+      cdp,
+      `(() => { Object.keys(localStorage).filter((k) => k.startsWith('jazari:public-content:')).forEach((k) => localStorage.removeItem(k)); return true; })()`,
+    );
+    await cdp.send("Page.navigate", { url: `${BASE}/?snapshot-fallback=1` });
+    await waitFor(cdp, `document.readyState === "complete"`, 12000, "home reload (snapshot)");
+    await waitFor(cdp, SERVICES_SETTLED, 15000, "services state (snapshot)");
+    const snapshotFallback = await evaluate(
+      cdp,
+      `(() => {
+        const grid = document.querySelector('[data-services-state="loaded"]');
+        return { state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state'), cards: grid ? grid.querySelectorAll(':scope > *').length : 0 };
+      })()`,
+    );
+    check(
+      "CHECK 66 — first visit, no cache, API down → services render from the build-time snapshot",
+      snapshotFallback.state === "loaded" && snapshotFallback.cards === 14,
+      JSON.stringify(snapshotFallback),
+    );
+
+    // --- 15e. Designed ERROR: block API + snapshot ------------------------
+    await cdp.send("Network.setBlockedURLs", { urls: ["*localhost:5000*", "*127.0.0.1:5000*", "*content-snapshot.json*"] });
+    await cdp.send("Page.navigate", { url: `${BASE}/?error-state=1` });
+    await waitFor(cdp, `document.readyState === "complete"`, 12000, "home reload (error)");
+    await waitFor(cdp, SERVICES_SETTLED, 15000, "services state (error)");
+    const errorState = await evaluate(
+      cdp,
+      `(() => {
+        const section = document.querySelector('#services');
+        const retry = section ? [...section.querySelectorAll('button')].some((b) => /retry/i.test(b.textContent || '')) : false;
+        return {
+          state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state'),
+          hasRetry: retry,
+          blank: section ? section.textContent.replace(/\\s+/g, ' ').trim().length === 0 : true,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 67 — no cache + no snapshot + API down → designed error state with Retry (never blank)",
+      errorState.state === "error" && errorState.hasRetry === true && errorState.blank === false,
+      JSON.stringify(errorState),
+    );
+    await shotSection("#services", "services-error-light.png", "light");
+    await shotSection("#services", "services-error-dark.png", "dark");
+
+    // --- 15f. Corrupted cache is ignored safely ---------------------------
+    await evaluate(
+      cdp,
+      `(() => { localStorage.setItem('jazari:public-content:v1:services', '{not-json'); return localStorage.getItem('jazari:public-content:v1:services') !== null; })()`,
+    );
+    await cdp.send("Page.navigate", { url: `${BASE}/?corrupt-cache=1` });
+    await waitFor(cdp, `document.readyState === "complete"`, 12000, "home reload (corrupt cache)");
+    await waitFor(cdp, SERVICES_SETTLED, 15000, "services state (corrupt cache)");
+    const corruptState = await evaluate(
+      cdp,
+      `(() => ({
+        state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state'),
+        discarded: localStorage.getItem('jazari:public-content:v1:services') === null,
+      }))()`,
+    );
+    check(
+      "CHECK 68 — corrupted cache JSON is discarded safely (no crash, falls to the designed state)",
+      corruptState.state === "error" && corruptState.discarded === true,
+      JSON.stringify(corruptState),
+    );
+
+    // --- 15g. Designed EMPTY state (API answers 200 with []) --------------
+    await cdp.send("Network.setBlockedURLs", { urls: [] });
+    await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*localhost:5000/api/services*", requestStage: "Request" }] });
+    const emptyBody = Buffer.from(JSON.stringify({ success: true, data: [] })).toString("base64");
+    const onPaused = async (params) => {
+      try {
+        await cdp.send("Fetch.fulfillRequest", {
+          requestId: params.requestId,
+          responseCode: 200,
+          responseHeaders: [
+            { name: "Content-Type", value: "application/json" },
+            // A fulfilled cross-origin response still needs CORS headers, or the
+            // browser rejects it and the page would fall through to the snapshot.
+            { name: "Access-Control-Allow-Origin", value: BASE },
+            { name: "Access-Control-Allow-Credentials", value: "true" },
+          ],
+          body: emptyBody,
+        });
+      } catch {
+        /* the request may already be cancelled */
+      }
+    };
+    cdp.on("Fetch.requestPaused", onPaused);
+    await cdp.send("Page.navigate", { url: `${BASE}/?empty-state=1` });
+    await waitFor(cdp, `document.readyState === "complete"`, 12000, "home reload (empty)");
+    let emptyState = null;
+    try {
+      await waitFor(cdp, `document.querySelector('[data-services-state="empty"]') !== null`, 12000, "services empty state");
+      emptyState = await evaluate(
+        cdp,
+        `(() => {
+          const section = document.querySelector('#services');
+          const el = document.querySelector('[data-services-state="empty"]');
+          return { state: el?.getAttribute('data-services-state') || null, text: el ? el.textContent.replace(/\\s+/g, ' ').trim().slice(0, 140) : '' };
+        })()`,
+      );
+    } catch {
+      try {
+        emptyState = await evaluate(
+          cdp,
+          `(() => ({ state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state') || null, text: '' }))()`,
+        );
+      } catch {
+        emptyState = { state: null, text: "" };
+      }
+    }
+    cdp.off("Fetch.requestPaused", onPaused);
+    await cdp.send("Fetch.disable");
+    check(
+      "CHECK 69 — API 200 with [] → designed EMPTY state, distinct from the error state",
+      emptyState.state === "empty" && /No services published yet/i.test(emptyState.text),
+      JSON.stringify(emptyState),
+    );
+    await shotSection("#services", "services-empty-light.png", "light");
+    await shotSection("#services", "services-empty-dark.png", "dark");
+
+    // --- 15h. Admin information architecture ------------------------------
+    let adminCookie = null;
+    try {
+      const adminEnv = readBackendEnv(); // function-local: never hardcode creds
+      const email = process.env.ADMIN_EMAIL ?? adminEnv.ADMIN_EMAIL;
+      const password = process.env.ADMIN_PASSWORD ?? adminEnv.ADMIN_PASSWORD;
+      const login = await fetch(`${API}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      adminCookie = (login.headers.get("set-cookie") ?? "").split(";")[0] || null;
+    } catch {
+      adminCookie = null;
+    }
+    check("CHECK 70 — admin API login succeeded (prerequisite for the IA checks)", Boolean(adminCookie));
+
+    if (adminCookie) {
+      const [cookieName, cookieValue] = adminCookie.split("=");
+      await cdp.send("Network.setCookie", { name: cookieName, value: cookieValue, url: BASE, path: "/", httpOnly: true });
+      await cdp.send("Page.navigate", { url: `${BASE}/admin/products` });
+      await waitFor(cdp, `document.querySelector('[data-admin-nav-group="content"]') !== null`, 15000, "admin portal");
+      // The browser title is set in an effect after the session resolves.
+      await waitFor(cdp, `document.title.endsWith('- Jazari Admin')`, 8000, "admin browser title");
+      const ia = await evaluate(
+        cdp,
+        `(() => ({
+          // The sidebar renders twice (desktop aside + mobile drawer) — de-dupe.
+          groups: [...new Set([...document.querySelectorAll('[data-admin-nav-group]')].map((g) => g.getAttribute('data-admin-nav-group')))],
+          labels: [...new Set([...document.querySelectorAll('[data-admin-nav-label]')].map((a) => a.getAttribute('data-admin-nav-label')))],
+          header: document.querySelector('.admin-page-header h1')?.textContent?.trim() || '',
+          purpose: document.querySelector('.admin-page-header p')?.textContent?.trim() || '',
+          title: document.title,
+        }))()`,
+      );
+      check(
+        "CHECK 71 — admin sidebar groups are exactly CONTENT / LEADS / SETTINGS",
+        JSON.stringify(ia.groups) === JSON.stringify(["content", "leads", "settings"]),
+        JSON.stringify(ia.groups),
+      );
+      const requiredLabels = ["Overview", "Homepage Logos", "Products", "Product Presets", "Project Requests", "Visitors", "Admins & Access", "My Account"];
+      check(
+        "CHECK 72 — sidebar labels are plain-language (nothing still says Dashboard/Logos/Templates/Submissions/Team/Account)",
+        requiredLabels.every((label) => ia.labels.includes(label)),
+        JSON.stringify(ia.labels),
+      );
+      check(
+        "CHECK 73 — the reusable AdminPageHeader renders a title and a one-line purpose",
+        ia.header.length > 0 && ia.purpose.length > 0,
+        JSON.stringify({ header: ia.header, purpose: ia.purpose }),
+      );
+      check("CHECK 74 — admin browser title follows '<page> - Jazari Admin'", /- Jazari Admin$/.test(ia.title), ia.title);
+
+      await cdp.send("Page.navigate", { url: `${BASE}/admin/dashboard` });
+      await waitFor(cdp, `document.querySelector('[data-admin-quick-guide]') !== null`, 15000, "admin overview guide");
+      const guideState = await evaluate(
+        cdp,
+        `(() => ({ present: Boolean(document.querySelector('[data-admin-quick-guide]')), heading: document.querySelector('[data-admin-quick-guide] h2')?.textContent?.trim() || '' }))()`,
+      );
+      check(
+        "CHECK 75 — Overview shows the 'What each section does' quick guide",
+        guideState.present === true && /section does/i.test(guideState.heading),
+        JSON.stringify(guideState),
+      );
+
+      const adminRoutes = [
+        "/admin/dashboard",
+        "/admin/logos",
+        "/admin/products",
+        "/admin/submissions",
+        "/admin/visitors",
+        "/admin/team",
+        "/admin/account",
+      ];
+      const badRoutes = [];
+      for (const route of adminRoutes) {
+        const response = await fetch(`${BASE}${route}`, { redirect: "manual" });
+        if (response.status !== 200) badRoutes.push({ route, status: response.status });
+      }
+      check(
+        "CHECK 76 — every admin route still resolves at the same path (bookmarks intact)",
+        badRoutes.length === 0,
+        JSON.stringify(badRoutes),
+      );
+
+      // --- Admin screenshots (desktop + mobile drawer, light + dark) -------
+      await setViewport(1366, 900, false);
+      await shotSection("#admin-sidebar", "admin-sidebar-desktop-light.png", "light");
+      await shotSection("#admin-sidebar", "admin-sidebar-desktop-dark.png", "dark");
+      await shotSection(".admin-page-header", "admin-page-headers.png", "light");
+      await setViewport(390, 844, true);
+      await cdp.send("Page.navigate", { url: `${BASE}/admin/dashboard` });
+      await waitFor(cdp, `document.querySelector('[aria-label="Open navigation"]') !== null`, 15000, "admin mobile nav");
+      await evaluate(cdp, `(() => { document.documentElement.classList.remove('dark'); document.querySelector('[aria-label="Open navigation"]').click(); return true; })()`);
+      await sleep(450);
+      await capture("admin-sidebar-mobile-light.png");
+      await evaluate(cdp, `(() => { document.documentElement.classList.add('dark'); return true; })()`);
+      await sleep(300);
+      await capture("admin-sidebar-mobile-dark.png");
+      await evaluate(cdp, `(() => { document.documentElement.classList.remove('dark'); return true; })()`);
+      await setViewport(1366, 900, false);
+    }
+
+    // --- favicon-tab: the largest ICO frame, written as-is (real icon) -----
+    {
+      const favBytes = Buffer.from(await (await fetch(`${BASE}/favicon.ico`)).arrayBuffer());
+      const frames = favBytes.readUInt16LE(4);
+      let largest = { size: 0, len: 0, off: 0 };
+      for (let i = 0; i < frames; i += 1) {
+        const at = 6 + i * 16;
+        const size = favBytes[at] || 256;
+        if (size > largest.size) largest = { size, len: favBytes.readUInt32LE(at + 8), off: favBytes.readUInt32LE(at + 12) };
+      }
+      mkdirSync(SCREENSHOT_DIR, { recursive: true });
+      const file = join(SCREENSHOT_DIR, "favicon-tab.png");
+      writeFileSync(file, favBytes.subarray(largest.off, largest.off + largest.len));
+      console.log(`    · screenshot → ${file} (${largest.size}px ICO frame)`);
+    }
   } finally {
     cdp?.close();
     chrome.kill();

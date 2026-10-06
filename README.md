@@ -126,7 +126,10 @@ Then open **http://localhost:3000** — public site at `/`, admin portal at `/ad
 | `npm run lint` | ESLint (strict react-hooks / next rules) |
 | `npm run audit:contrast` | WCAG AA audit of every text/background design-token pair (exits 1 on a failure) |
 | `npm run trace:logo` | Regenerate `components/services/logoGeometry.ts` from `public/Main Logo.png` (never hand-edit that file) |
-| `node scripts/verify-three.mjs` | Full headless Chrome 3D/a11y/regression harness (**164 checks**; needs a production build on `:3001` + the backend) |
+| `npm run build:icons` | Regenerate the icon set (`app/favicon.ico` 16/32/48, `app/icon.png`, `app/apple-icon.png`, `public/brand/icon-{192,512}.png`) from the owner logo — dependency-free |
+| `npm run snapshot:content` | Refresh `public/content-snapshot.json`, the build-time fallback for public content (never fails a build; never overwrites good data with empty) |
+| `npm run check:secrets` | Scan tracked example/doc files for real-looking secrets (prints `file:line` only, exits 1 on a finding) |
+| `node scripts/verify-three.mjs` | Full headless Chrome 3D/a11y/regression harness (**185 checks**; needs a production build on `:3001` + the backend) |
 | `node scripts/capture-themes.mjs <before\|after>` | Hero/hub/footer screenshots at desktop + mobile in light + dark |
 
 **Backend (`Backend/package.json`)**
@@ -372,3 +375,37 @@ Development commands are unchanged (see §4): `npm run dev` in `Backend/` and `f
   HEAD build and the current build.
 
 Full detail: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §33 · deploy steps: [`DEPLOYMENT.md`](./DEPLOYMENT.md) §15.
+## 14. Services states, real favicon, content resilience & admin clarity (Task H)
+
+- **Why services were missing** — the deployed API answers `GET /api/services` with `HTTP 200` and
+  `data: []` (**EMPTY**, an unseeded database), not an error. Seeding remains an owner action
+  (`DEPLOYMENT.md` §15.2). The services UI now renders clearly different, designed states and marks them
+  `data-services-state="loading|empty|error|loaded"`:
+  - **EMPTY** → “No services published yet” + “Start your project” (no misleading “being updated”).
+  - **ERROR** → “We couldn't load our services” + an explicit connection-problem message + **Retry**.
+- **Real favicon** — `app/favicon.ico` was the stock Next.js triangle and it wins the `<link rel="icon">`
+  race, so the brand PNG never showed. The icon set is now generated from the owner logo by the
+  dependency-free `npm run build:icons` (`app/favicon.ico` 16/32/48 PNG-embedded, `app/icon.png` 32,
+  `app/apple-icon.png` 180, `public/brand/icon-{192,512}.png`) plus a web manifest — **one** system
+  (the `metadata.icons` block was removed).
+- **Content resilience** — `lib/publicContent.ts` is the single loader for `logos`/`products`/`services`,
+  resolving **live API → validated localStorage cache → validated build-time snapshot → designed
+  error**. Everything is schema-validated before it renders; only public resources are ever cached.
+  Public GETs use an 8 s timeout with bounded retry. `npm run snapshot:content` writes
+  `public/content-snapshot.json` and can never fail a build or blank the fallback. A failed product
+  image falls back to a designed monogram.
+- **Admin information architecture** — routes are unchanged; only labels, grouping, titles and
+  descriptions changed. The sidebar is grouped `CONTENT` / `LEADS` / `SETTINGS` (Overview stays on top)
+  and reads *Homepage Logos, Products, Product Presets, Project Requests, Visitors, Admins & Access,
+  My Account*. Every page renders the shared `AdminPageHeader` (title + one-line purpose + “Where this
+  appears”), browser titles read `<page> - Jazari Admin`, and Overview carries a dismissible
+  “What each section does” guide. Permissions are untouched (Team = super-admin only, server-enforced).
+- **Secret hygiene** — a real MongoDB URI was found (and removed) in the tracked `Backend/.env.example`
+  working copy; `HEAD` never contained it. `npm run check:secrets` guards tracked example/doc files and
+  prints `file:line` only. **The owner must rotate the exposed Atlas password.**
+- **Verification** — harness **185 checks** (was 164; CHECKs 56–76 are new: icons/manifest, services
+  states, cache/snapshot/error/empty resilience via CDP offline + interception, and admin IA), contrast
+  **49/49**, backend smoke **144/144**.
+
+Architecture + tuning: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §34 · deploy steps:
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) §15.4–§15.5.

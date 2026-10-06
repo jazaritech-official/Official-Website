@@ -117,10 +117,11 @@ export function TemplatesPanel({ templates, loading, error, onRetry, onChanged }
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="max-w-2xl">
-          <h2 className="text-lg font-semibold">Product type smart defaults</h2>
+          <h2 className="text-lg font-semibold">Product Presets</h2>
           <p className="mt-1 text-sm text-muted">
-            When an admin picks a category while creating a product, these suggestions pre-fill the
-            highlight points. Edit them here — they are never forced on the final product.
+            Default highlight points that pre-fill a new product of that type. When a category is
+            chosen while creating a product, these suggestions fill its highlights — they are never
+            forced on the final product, so you can edit them freely.
           </p>
         </div>
         <Button size="sm" onClick={startCreate} iconLeft={<PlusIcon size={14} />}>
