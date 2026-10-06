@@ -88,6 +88,12 @@ export function Hero() {
     <section id="home" className="relative overflow-hidden pb-14 pt-28 sm:pb-20 sm:pt-32">
       {/* Decorative backdrop */}
       <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10">
+        {/* Aurora / mesh gradient — subtle, CSS-only, transform+opacity */}
+        <div className="hero-aurora">
+          <span className="hero-aurora__blob hero-aurora__blob--a" />
+          <span className="hero-aurora__blob hero-aurora__blob--b" />
+          <span className="hero-aurora__blob hero-aurora__blob--c" />
+        </div>
         <div className="absolute -top-32 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,color-mix(in_srgb,var(--accent)_16%,transparent),transparent_65%)]" />
         <div className="absolute right-[-10%] top-1/3 h-72 w-72 rounded-full bg-[radial-gradient(circle,color-mix(in_srgb,var(--primary)_12%,transparent),transparent_70%)]" />
         <div
@@ -165,7 +171,7 @@ export function Hero() {
                 <div className="flex -space-x-2.5" aria-hidden="true">
                   {[
                     { initials: "AK", tone: "bg-primary" },
-                    { initials: "MR", tone: "bg-accent" },
+                    { initials: "MR", tone: "bg-accent dark:bg-[#2f5f9e]" },
                     { initials: "TS", tone: "bg-[#4a5a8f]" },
                   ].map((avatar) => (
                     <span
@@ -210,6 +216,9 @@ export function Hero() {
           data-scene="fallback"
           className="relative mx-auto flex min-h-[24rem] w-full max-w-md items-center justify-center lg:min-h-[30rem] lg:max-w-none"
         >
+          {/* Light rays behind the mark — strengthen the silhouette without
+              washing it out (CSS only, no continuous blur). */}
+          <div className="hero-rays" aria-hidden="true" />
           <div className="hero-decor" aria-hidden="true">
           {/* Orbit rings */}
           <div className="absolute left-1/2 top-1/2 h-64 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line sm:h-72 sm:w-72" data-parallax="0.03" />

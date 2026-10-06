@@ -14,22 +14,32 @@
   --surface-sunken: #eef2f9;
   --foreground: #212c65; /* Deep Navy */
   --muted: #55637d; /* accessible secondary text */
-  --muted-soft: #7d8aa3;
+  --muted-soft: #616e8b; /* placeholder / decorative glyph text — 5.1 on white */
   --slate: #a7b3c8; /* Official Slate (decorative / on-navy text) */
   --primary: #212c65; /* Deep Navy */
   --primary-hover: #182048;
   --primary-contrast: #ffffff;
-  --accent: #3d76bb; /* Technology Blue */
-  --accent-hover: #3366a6;
+  /* Text-contrast pass: every token that is ever used as *text* on a light
+     surface clears WCAG AA (4.5:1) — including on its own 12% tint. Hue and
+     brand identity are unchanged; only lightness moved. (TUNING) */
+  --accent: #3769a9; /* Technology Blue — 5.6 on white, 4.9 on accent-soft */
+  --accent-hover: #2f5b95;
   --accent-soft: #eaf1fa;
+  --accent-contrast: #ffffff; /* label on a solid accent fill — 5.6 */
   --growth: #95c93d; /* Growth Green — micro accent only */
   --growth-ink: #4b7d14;
-  --success: #3f8f2e;
-  --warning: #a8710f;
-  --danger: #c74343;
+  --success: #347a28; /* 5.3 on white, 4.5 on 12% tint */
+  --warning: #8f5e0a; /* 5.6 on white, 4.7 on 12% tint */
+  --danger: #bd3a3a; /* 4.9 on danger-soft, 5.5 on white */
   --danger-soft: #fdeeee;
   --border: #e4e9f2;
   --border-strong: #cdd6e5;
+  /* CTA definition (TUNING) — the outline CTA must read as a real button on
+     the white canvas; on the dark canvas it stays quiet. */
+  --btn-outline-border: #c2cddf;
+  --btn-outline-bg: #f8fafd;
+  --btn-outline-border-hover: var(--accent);
+  --btn-sheen: rgba(255, 255, 255, 0.14);
   /* Navigation surface — deliberately opaque enough that section content can
      never read through the glass and collide with nav text/logo. (TUNING)
      82-92% surface opacity + 14-18px backdrop blur + hairline border. */
@@ -142,6 +152,9 @@
   --accent: #5d97da;
   --accent-hover: #78aae5;
   --accent-soft: rgba(61, 118, 187, 0.16);
+  /* Dark canvas: the accent is a light blue, so its label must be navy
+     (white on #5d97da is only 3.0:1). */
+  --accent-contrast: #0a0f24;
   --growth: #a8d75c;
   --growth-ink: #b7e072;
   --success: #7ec96a;
@@ -150,6 +163,11 @@
   --danger-soft: rgba(239, 122, 122, 0.14);
   --border: #26305a;
   --border-strong: #35406f;
+  /* The outline CTA stays borderless-looking on the dark canvas. */
+  --btn-outline-border: #35406f;
+  --btn-outline-bg: transparent;
+  --btn-outline-border-hover: var(--accent);
+  --btn-sheen: rgba(255, 255, 255, 0.1);
   --nav-bg: rgba(10, 15, 36, 0.9);
   --nav-border: color-mix(in srgb, #46527f 78%, transparent);
   --nav-shadow: 0 10px 34px -18px rgba(0, 0, 0, 0.7), 0 1px 2px rgba(0, 0, 0, 0.45);
@@ -185,6 +203,7 @@
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-contrast: var(--accent-contrast);
   --color-growth: var(--growth);
   --color-growth-ink: var(--growth-ink);
   --color-success: var(--success);
@@ -341,6 +360,9 @@
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
+    /* Transparent 1px border so every variant shares one box height — a solid
+       CTA and an outline CTA then line up pixel-for-pixel side by side. */
+    border: 1px solid transparent;
     border-radius: var(--radius-pill);
     font-weight: 550;
     font-size: var(--text-sm);
@@ -373,7 +395,9 @@
   .btn-primary {
     background-color: var(--primary);
     color: var(--primary-contrast);
-    box-shadow: 0 10px 26px -14px rgba(var(--shadow-tint), 0.7);
+    box-shadow:
+      inset 0 1px 0 var(--btn-sheen),
+      0 10px 26px -14px rgba(var(--shadow-tint), 0.7);
   }
 
   .btn-primary:hover {
@@ -382,8 +406,10 @@
 
   .btn-accent {
     background-color: var(--accent);
-    color: #ffffff;
-    box-shadow: 0 10px 26px -14px color-mix(in srgb, var(--accent) 80%, transparent);
+    color: var(--accent-contrast);
+    box-shadow:
+      inset 0 1px 0 var(--btn-sheen),
+      0 10px 26px -14px color-mix(in srgb, var(--accent) 80%, transparent);
   }
 
   .btn-accent:hover {
@@ -391,13 +417,13 @@
   }
 
   .btn-outline {
-    background-color: transparent;
+    background-color: var(--btn-outline-bg);
     color: var(--foreground);
-    border: 1px solid var(--border-strong);
+    border-color: var(--btn-outline-border);
   }
 
   .btn-outline:hover {
-    border-color: var(--accent);
+    border-color: var(--btn-outline-border-hover);
     color: var(--accent);
     background-color: var(--accent-soft);
   }
@@ -958,6 +984,106 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Hero atmosphere — subtle animated aurora + light rays behind the composition.
+   CSS only, transform/opacity only (no filters, no layout animation). Disabled
+   for prefers-reduced-motion. Purely decorative (aria-hidden).
+   TUNING: blob sizes, opacity and animation durations live here.
+--------------------------------------------------------------------------- */
+.hero-aurora {
+  position: absolute;
+  inset: -15% -10% 0 -10%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.hero-aurora__blob {
+  position: absolute;
+  border-radius: 999px;
+  opacity: 0.5;
+  will-change: transform, opacity;
+  animation: jt-aurora-drift 24s var(--ease-in-out, ease-in-out) infinite alternate;
+}
+
+.hero-aurora__blob--a {
+  left: 6%;
+  top: 2%;
+  width: 44rem;
+  height: 44rem;
+  background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 68%);
+}
+
+.hero-aurora__blob--b {
+  right: 0;
+  top: 16%;
+  width: 36rem;
+  height: 36rem;
+  animation-delay: -7s;
+  animation-duration: 29s;
+  background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--primary) 20%, transparent), transparent 70%);
+}
+
+.hero-aurora__blob--c {
+  left: 32%;
+  top: 38%;
+  width: 40rem;
+  height: 40rem;
+  animation-delay: -13s;
+  animation-duration: 33s;
+  opacity: 0.34;
+  background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--growth) 16%, transparent), transparent 72%);
+}
+
+@keyframes jt-aurora-drift {
+  from { transform: translate3d(-3%, -2%, 0) scale(1); }
+  to   { transform: translate3d(4%, 3%, 0) scale(1.09); }
+}
+
+/* Light rays behind the mark — conic streaks, static except for opacity. */
+.hero-rays {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 42rem;
+  height: 42rem;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0.45;
+  background: conic-gradient(
+    from 200deg at 50% 50%,
+    transparent 0deg,
+    color-mix(in srgb, var(--accent) 17%, transparent) 26deg,
+    transparent 52deg,
+    transparent 118deg,
+    color-mix(in srgb, var(--primary) 14%, transparent) 150deg,
+    transparent 182deg,
+    transparent 248deg,
+    color-mix(in srgb, var(--accent) 12%, transparent) 284deg,
+    transparent 322deg
+  );
+  mask-image: radial-gradient(circle at 50% 50%, transparent 26%, #000 44%, transparent 74%);
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, transparent 26%, #000 44%, transparent 74%);
+}
+
+[data-scene="webgl"] .hero-rays {
+  opacity: 0.8;
+}
+
+@media (max-width: 640px) {
+  .hero-aurora__blob--c {
+    display: none;
+  }
+  .hero-rays {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-aurora__blob {
+    animation: none;
+  }
+}
+
 /* ============================================================
    7b. CSS 3D CARD DEPTH (services + products)
    ============================================================ */
@@ -1062,6 +1188,40 @@
   color: var(--accent);
 }
 
+/* Section seam — the designed boundary between two bands (hero → products).
+   Decorative and absolutely positioned, so it costs zero layout height; it
+   overlays the section's own `border-t` with a rule that fades to both edges
+   and carries a centre diamond (the blueprint language, not a plain line). */
+.section-seam {
+  position: absolute;
+  inset: -1px 0 auto 0;
+  height: 1px;
+  /* Above the section glow, which is painted later in the DOM. */
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--border-strong) 80%, transparent) 18%,
+    color-mix(in srgb, var(--accent) 65%, transparent) 50%,
+    color-mix(in srgb, var(--border-strong) 80%, transparent) 82%,
+    transparent
+  );
+  opacity: 0.75;
+}
+
+.section-seam::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  background: var(--background);
+}
+
 /* Hairline divider that draws on reveal. */
 .hairline {
   position: relative;
@@ -1086,6 +1246,15 @@
 .reveal.is-visible .hairline,
 html:not(.js-intro) .hairline {
   transform: scaleX(1);
+}
+
+/* Footer surface — a faint top wash separates the footer from the last band
+   without a hard edge (the hairline still carries the actual boundary).
+   TUNING: wash colour/height live here. */
+.site-footer {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 65%, transparent), transparent 220px),
+    var(--background);
 }
 
 /* Tiny crosshair "+" marker. */

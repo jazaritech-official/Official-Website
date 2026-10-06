@@ -79,7 +79,7 @@ export function Logo({
           {variant === "compact" ? <span className="sr-only">Official</span> : null}
         </span>
         {variant === "full" ? (
-          <span className="mt-1 text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-slate">
+          <span className="mt-1 text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-muted">
             Official
           </span>
         ) : null}

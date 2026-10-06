@@ -15,7 +15,7 @@ import type { SceneTheme } from "./types";
 export const BRAND = {
   navy: "#212c65", // Deep Navy — primary anchor
   navyDeep: "#1a2352", // darker navy variant for ribbon depth
-  blue: "#3d76bb", // Technology Blue — primary accent
+  blue: "#3769a9", // Technology Blue — primary accent (matches globals.css --accent)
   blueSoft: "#5d97da", // light-mode accent tint
   blueDeep: "#2f5f9e", // deeper blue variant
   green: "#95c93d", // Growth Green — MICRO accent only

@@ -293,7 +293,7 @@ export function ProductEditor({ product, templates, onClose, onSaved }: ProductE
             <button
               type="button"
               onClick={() => applyTemplate(activeTemplate.type)}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-accent/35 bg-accent-soft px-3 py-1.5 text-xs font-semibold text-accent transition-colors hover:bg-accent hover:text-white"
+              className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-accent/35 bg-accent-soft px-3 py-1.5 text-xs font-semibold text-accent transition-colors hover:bg-accent hover:text-accent-contrast"
             >
               <LightbulbIcon size={13} />
               Fill from “{activeTemplate.type}” template

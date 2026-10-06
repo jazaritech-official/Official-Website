@@ -14,7 +14,17 @@ try {
   // Fall back to the localhost defaults above.
 }
 
+// Same-origin API proxy (production default). When set, the Next server
+// forwards `/api/*` to the backend so the browser only ever talks to
+// https://<frontend>/api — the auth cookie is then first-party and does not
+// depend on cross-site cookie behaviour between two *.vercel.app hosts.
+const backendOrigin = (process.env.BACKEND_ORIGIN ?? "").replace(/\/+$/, "");
+
 const nextConfig: NextConfig = {
+  async rewrites() {
+    if (!backendOrigin) return [];
+    return [{ source: "/api/:path*", destination: `${backendOrigin}/api/:path*` }];
+  },
   images: {
     // Product/logo artwork comes from the API (local dev driver or Cloudinary).
     remotePatterns: [

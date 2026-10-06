@@ -16,6 +16,7 @@
 
 import {
   ACESFilmicToneMapping,
+  Box3,
   Fog,
   Group,
   PerspectiveCamera,
@@ -34,7 +35,7 @@ import { createFpsMonitor, renderConfig, type FpsMonitor } from "./quality";
 import { clamp, damp } from "./helpers/math";
 import { createEnvironment, type SceneEnvironment } from "./environment";
 import { createLighting, type LightingRig } from "./lighting";
-import { createJazariRibbon, type JazariRibbon } from "./createRibbonPieces";
+import { createJazariRibbon, type JazariRibbon } from "./createLogoPieces";
 import { createSupportSystem, type SupportSystem } from "./createTechObjects";
 import { createAnimator, type Animator } from "./animation";
 import { createInteraction, type InteractionHandle } from "./interaction";
@@ -274,6 +275,32 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
   }
 
   rebuildPickTargets();
+
+  /* --- Harness introspection (decorative, deterministic, no secrets) ----
+   * Lets the verification harness confirm the five real logo pieces, the five
+   * support objects, the assembled logo extents and a supports-hidden view of
+   * the logo silhouette without guessing from pixels alone. */
+  const logoBounds = new Box3().setFromObject(ribbon.group);
+  const logoSize = logoBounds.getSize(new Vector3());
+  canvas.dataset.scenePieces = ribbon.pieces
+    .map((piece) => (piece.userData.logoPiece as string | undefined) ?? piece.name)
+    .join(",");
+  canvas.dataset.sceneSupports = String(supports.roots.length);
+  canvas.dataset.sceneLogoSize = `${logoSize.x.toFixed(3)}x${logoSize.y.toFixed(3)}`;
+  Object.assign(canvas, {
+    __jazariDebug: {
+      setSupportsVisible: (visible: boolean): void => {
+        supports.group.visible = visible;
+      },
+      // Freezes idle motion (same path as prefers-reduced-motion) so a
+      // silhouette can be captured upright and deterministically.
+      setReducedMotion: (value: boolean): void => {
+        reduced = value;
+        applyTierBudget();
+      },
+      logoSize: (): { x: number; y: number } => ({ x: logoSize.x, y: logoSize.y }),
+    },
+  });
 
   /* --- The single RAF loop ---------------------------------------------- */
   const frame = (now: number): void => {

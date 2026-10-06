@@ -10,6 +10,7 @@
     "dev:mem": "node scripts/dev-memory.js",
     "start": "node server.js",
     "seed": "node scripts/seed.js",
+    "seed:prod": "node scripts/seed-prod.js",
     "seed:mem": "node scripts/dev-memory.js --seed",
     "seed:mem:once": "node scripts/dev-memory.js --seed-only",
     "smoke": "node scripts/smoke.js",

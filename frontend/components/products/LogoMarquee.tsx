@@ -267,6 +267,8 @@ export function LogoMarquee() {
       style={{ "--showcase-play": rowPlaystate } as CSSProperties}
       data-play={rowPlaystate}
     >
+      {/* Hero → Products seam: designed boundary, decorative, zero layout cost. */}
+      <span className="section-seam" aria-hidden="true" />
       <div className="logo-showcase__glow" aria-hidden="true" />
 
       <div className="container-page relative text-center">

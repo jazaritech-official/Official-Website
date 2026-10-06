@@ -464,6 +464,268 @@ async function main() {
     check("recovery keeps exactly one canvas", afterRestore === 1, `count=${afterRestore}`);
     assertClean("context-loss");
 
+    /* -- TEST 2b: real-logo 3D geometry + silhouette + saturation ----------
+     * The 3D logo is rebuilt from the traced real artwork. This measures its
+     * ASSEMBLED silhouette against the real PNG mask (supports hidden, idle
+     * motion frozen for determinism) and its average saturation against the
+     * source pixels, in LIGHT mode — proving the mark is not washed out. */
+    console.log("\n[3b] Real-logo 3D reconstruction (silhouette IoU + saturation)");
+    resetErrors();
+    await evaluate(cdp, `localStorage.setItem("jazari-theme", "light"); true`);
+    await reload();
+    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 12000, "scene for logo check");
+    await evaluate(cdp, BRING_HERO_INTO_VIEW);
+    await sleep(400);
+    const logoRect = await evaluate(
+      cdp,
+      `(() => {
+        const c = document.querySelector(".hero-scene canvas");
+        if (!c || !c.__jazariDebug) return { error: "no canvas" };
+        c.__jazariDebug.setReducedMotion(true);
+        c.__jazariDebug.setSupportsVisible(false);
+        const hide = (sel) => { const el = document.querySelector(sel); if (el) el.style.visibility = "hidden"; };
+        hide(".hero-card"); hide(".hero-hotspot"); hide(".hero-connector"); hide(".hero-decor"); hide(".hero-rays"); hide(".hero-aurora"); hide(".bg-grid");
+        const r = c.getBoundingClientRect();
+        return { x: Math.round(r.x + window.scrollX), y: Math.round(r.y + window.scrollY), width: Math.round(r.width), height: Math.round(r.height) };
+      })()`,
+    );
+    await sleep(200);
+    const logoScreenshot = logoRect.error
+      ? null
+      : await cdp.send("Page.captureScreenshot", {
+          format: "png",
+          clip: { x: logoRect.x, y: logoRect.y, width: logoRect.width, height: logoRect.height, scale: 1 },
+        });
+    await evaluate(cdp, `window.__logoShot = ${JSON.stringify(logoScreenshot.data)}; true`);
+    const logoScene = await evaluate(
+      cdp,
+      `(async () => {
+        const restore = () => {
+          const c = document.querySelector(".hero-scene canvas");
+          if (c && c.__jazariDebug) { c.__jazariDebug.setSupportsVisible(true); c.__jazariDebug.setReducedMotion(false); }
+          const show = (sel) => { const el = document.querySelector(sel); if (el) el.style.visibility = ""; };
+          show(".hero-card"); show(".hero-hotspot"); show(".hero-connector"); show(".hero-decor"); show(".hero-rays"); show(".hero-aurora"); show(".bg-grid");
+        };
+        try {
+          const pick = ${JSON.stringify(LOGO_CANDIDATES)};
+          const load = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("load")); i.src = src; });
+          let source = null;
+          for (const candidate of pick) { try { source = await load(candidate); break; } catch { } }
+          if (!source) return { error: "source logo not servable" };
+          const shotData = window.__logoShot;
+          if (!shotData) return { error: "no screenshot" };
+          const shot = await load("data:image/png;base64," + shotData);
+          const canvas = document.querySelector(".hero-scene canvas");
+          const read = (img, w, h) => {
+            const cv = document.createElement("canvas");
+            cv.width = w; cv.height = h;
+            const ctx = cv.getContext("2d", { willReadFrequently: true });
+            ctx.clearRect(0, 0, w, h);
+            ctx.drawImage(img, 0, 0, w, h);
+            return ctx.getImageData(0, 0, w, h);
+          };
+          const boxOfAlpha = (px, w, h, thr) => {
+            let minX = w, minY = h, maxX = -1, maxY = -1;
+            for (let y = 0; y < h; y++) { for (let x = 0; x < w; x++) {
+              if (px.data[(y * w + x) * 4 + 3] > thr) {
+                if (x < minX) minX = x; if (x > maxX) maxX = x;
+                if (y < minY) minY = y; if (y > maxY) maxY = y;
+              }
+            } }
+            return { minX, minY, maxX, maxY, ok: maxX - minX > 4 && maxY - minY > 4 };
+          };
+          const boxOfFg = (px, w, h, isFg) => {
+            let minX = w, minY = h, maxX = -1, maxY = -1;
+            for (let y = 0; y < h; y++) { for (let x = 0; x < w; x++) {
+              if (isFg((y * w + x) * 4)) {
+                if (x < minX) minX = x; if (x > maxX) maxX = x;
+                if (y < minY) minY = y; if (y > maxY) maxY = y;
+              }
+            } }
+            return { minX, minY, maxX, maxY, ok: maxX - minX > 4 && maxY - minY > 4 };
+          };
+          const drawCrop = (img, box, N) => {
+            const cv = document.createElement("canvas");
+            cv.width = N; cv.height = N;
+            const ctx = cv.getContext("2d", { willReadFrequently: true });
+            ctx.clearRect(0, 0, N, N);
+            ctx.drawImage(img, box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY, 0, 0, N, N);
+            return ctx.getImageData(0, 0, N, N);
+          };
+          const avgSat = (px, isIn) => {
+            let sum = 0, n = 0;
+            for (let i = 0; i < px.data.length; i += 4) {
+              if (!isIn(i)) continue;
+              const r = px.data[i] / 255, g = px.data[i + 1] / 255, b = px.data[i + 2] / 255;
+              const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+              const l = (mx + mn) / 2;
+              if (l < 0.06 || l > 0.985) continue;
+              sum += mx === mn ? 0 : (mx - mn) / (1 - Math.abs(2 * l - 1));
+              n++;
+            }
+            return n ? sum / n : 0;
+          };
+          const isLogo = (r, g, b) => {
+            const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+            const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            return mx - mn > 48 || lum < 150;
+          };
+          const W = shot.naturalWidth, H = shot.naturalHeight;
+          const renderPx = read(shot, W, H);
+          const isFg = (i) => isLogo(renderPx.data[i], renderPx.data[i + 1], renderPx.data[i + 2]);
+          const renderBox = boxOfFg(renderPx, W, H, isFg);
+          const SrcN = 1024;
+          const sourcePx = read(source, SrcN, SrcN);
+          const sourceBoxN = boxOfAlpha(sourcePx, SrcN, SrcN, 128);
+          const ratio = (source.naturalWidth || 4096) / SrcN;
+          const sourceBox = { minX: sourceBoxN.minX * ratio, minY: sourceBoxN.minY * ratio, maxX: sourceBoxN.maxX * ratio, maxY: sourceBoxN.maxY * ratio, ok: sourceBoxN.ok };
+          let iou = 0, iouTolerant = 0, inter = 0, union = 0;
+          let iouMirrorX = 0, iouMirrorY = 0;
+          let bestIou = 0, bestAngle = 0;
+          let areaA = 0, areaB = 0, quadA = [], centA = [0, 0], centB = [0, 0], profA = [], profB = [];
+          if (renderBox.ok && sourceBox.ok) {
+            const N = 384;
+            const a = drawCrop(source, sourceBox, N).data;
+            const b = drawCrop(shot, renderBox, N).data;
+            const am = new Uint8Array(N * N);
+            const bm = new Uint8Array(N * N);
+            for (let i = 0; i < N * N; i++) {
+              am[i] = a[i * 4 + 3] > 128 ? 1 : 0;
+              bm[i] = isLogo(b[i * 4], b[i * 4 + 1], b[i * 4 + 2]) ? 1 : 0;
+            }
+            const iouOf = (m1, m2) => {
+              let it = 0, un = 0;
+              for (let i = 0; i < m1.length; i++) { if (m1[i] || m2[i]) { un++; if (m1[i] && m2[i]) it++; } }
+              return un ? it / un : 0;
+            };
+            const areaOf = (m) => { let a = 0; for (let i = 0; i < m.length; i++) a += m[i]; return a; };
+            const quadIou = (m1, m2, qx, qy) => {
+              const half = N / 2;
+              let it = 0, un = 0;
+              for (let y = qy * half; y < qy * half + half; y++) {
+                for (let x = qx * half; x < qx * half + half; x++) {
+                  const i = y * N + x;
+                  if (m1[i] || m2[i]) { un++; if (m1[i] && m2[i]) it++; }
+                }
+              }
+              return un ? it / un : 0;
+            };
+            areaA = areaOf(am); areaB = areaOf(bm);
+            quadA = [quadIou(am, bm, 0, 0), quadIou(am, bm, 1, 0), quadIou(am, bm, 0, 1), quadIou(am, bm, 1, 1)];
+            const centroid = (m) => {
+              let sx = 0, sy = 0, n = 0;
+              for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (m[y * N + x]) { sx += x; sy += y; n++; }
+              return n ? [+(sx / n / N).toFixed(3), +(sy / n / N).toFixed(3)] : [0, 0];
+            };
+            centA = centroid(am); centB = centroid(bm);
+            const prof = (m) => {
+              const rows = [];
+              for (let r = 0; r < 8; r++) {
+                const y0 = Math.floor((r * N) / 8), y1 = Math.floor(((r + 1) * N) / 8);
+                let mn = N, mx = -1;
+                for (let y = y0; y < y1; y++) for (let x = 0; x < N; x++) if (m[y * N + x]) { if (x < mn) mn = x; if (x > mx) mx = x; }
+                rows.push(mn === N ? -1 : +(mn / N).toFixed(2));
+              }
+              return rows;
+            };
+            profA = prof(am); profB = prof(bm);
+            iou = iouOf(am, bm);
+            // 2px edge tolerance: a colour-segmented silhouette of a glossy 3D
+            // render can never match the alpha mask pixel-for-pixel, so the
+            // headline IoU dilates both masks by 2px per side (documented).
+            const dilate = (m, r) => {
+              const out = new Uint8Array(m.length);
+              for (let y = 0; y < N; y++) {
+                for (let x = 0; x < N; x++) {
+                  if (!m[y * N + x]) continue;
+                  for (let dy = -r; dy <= r; dy++) {
+                    const yy = y + dy;
+                    if (yy < 0 || yy >= N) continue;
+                    for (let dx = -r; dx <= r; dx++) {
+                      const xx = x + dx;
+                      if (xx >= 0 && xx < N) out[yy * N + xx] = 1;
+                    }
+                  }
+                }
+              }
+              return out;
+            };
+            iouTolerant = iouOf(dilate(am, 2), dilate(bm, 2));
+            // Rotation diagnostic: find the in-plane angle at which the render
+            // mask best matches the source (0 means upright within tolerance).
+            const cx = N / 2, cy = N / 2;
+            for (let deg = -4; deg <= 4.001; deg += 0.5) {
+              const rad = deg * Math.PI / 180, co = Math.cos(rad), si = Math.sin(rad);
+              const rm = new Uint8Array(N * N);
+              for (let y = 0; y < N; y++) {
+                for (let x = 0; x < N; x++) {
+                  const dx = x - cx, dy = y - cy;
+                  const sx = Math.round(cx + dx * co - dy * si);
+                  const sy = Math.round(cy + dx * si + dy * co);
+                  if (sx >= 0 && sx < N && sy >= 0 && sy < N && bm[sy * N + sx]) rm[y * N + x] = 1;
+                }
+              }
+              const v = iouOf(am, rm);
+              if (v > bestIou) { bestIou = v; bestAngle = deg; }
+            }
+            inter = 0; union = 0;
+            const amX = new Uint8Array(N * N);
+            const amY = new Uint8Array(N * N);
+            for (let y = 0; y < N; y++) {
+              for (let x = 0; x < N; x++) {
+                amX[y * N + x] = am[y * N + (N - 1 - x)];
+                amY[y * N + x] = am[(N - 1 - y) * N + x];
+              }
+            }
+            iouMirrorX = iouOf(amX, bm);
+            iouMirrorY = iouOf(amY, bm);
+          }
+          const sourceSmall = read(source, 512, 512);
+          const result = {
+            iou, iouTolerant, iouMirrorX, iouMirrorY, bestIou, bestAngle, areaA, areaB, quadA,
+            centA, centB, profA, profB,
+            renderOk: renderBox.ok, sourceOk: sourceBox.ok,
+            renderBox: [renderBox.minX, renderBox.minY, renderBox.maxX, renderBox.maxY],
+            sourceBox: [Math.round(sourceBox.minX), Math.round(sourceBox.minY), Math.round(sourceBox.maxX), Math.round(sourceBox.maxY)],
+            renderSat: avgSat(renderPx, isFg),
+            sourceSat: avgSat(sourceSmall, (i) => sourceSmall.data[i + 3] > 40),
+            pieces: canvas ? canvas.dataset.scenePieces : null,
+            supports: canvas ? canvas.dataset.sceneSupports : null,
+            logoSize: canvas ? canvas.dataset.sceneLogoSize : null,
+          };
+          return result;
+        } finally {
+          restore();
+        }
+      })()`,
+    );
+    check(
+      "CHECK 2b-1 — 3D logo built from the five real pieces (top,bottom,right,fold,leaf)",
+      logoScene.pieces === "top,bottom,right,fold,leaf",
+      `pieces=${logoScene.pieces}`,
+    );
+    check(
+      "CHECK 2b-2 — five distinct support objects in the scene",
+      logoScene.supports === "5",
+      `supports=${logoScene.supports}`,
+    );
+    check(
+      "CHECK 2b-3 — assembled 3D logo silhouette IoU vs the real logo mask (2px tolerance, >= 0.80)",
+      !logoScene.error && logoScene.iouTolerant >= 0.8,
+      JSON.stringify({ iou: +logoScene.iou.toFixed(3), iou2px: +logoScene.iouTolerant.toFixed(3), areaA: logoScene.areaA, areaB: logoScene.areaB, quads: logoScene.quadA.map((v) => +v.toFixed(2)), centA: logoScene.centA, centB: logoScene.centB, profA: logoScene.profA, profB: logoScene.profB }),
+    );
+    check(
+      "CHECK 2b-4 — light-mode logo saturation not washed out (render >= 0.6 × source)",
+      !logoScene.error && logoScene.sourceSat > 0 && logoScene.renderSat >= 0.6 * logoScene.sourceSat,
+      JSON.stringify({ renderSat: logoScene.renderSat, sourceSat: logoScene.sourceSat, ratio: logoScene.sourceSat ? +(logoScene.renderSat / logoScene.sourceSat).toFixed(3) : 0 }),
+    );
+    check(
+      "CHECK 2b-5 — assembled 3D logo has sane proportions (non-degenerate bbox)",
+      !logoScene.error && typeof logoScene.logoSize === "string" && logoScene.logoSize.split("x").every((v) => Number(v) > 0.5),
+      `logoSize=${logoScene.logoSize}`,
+    );
+    assertClean("real-logo-3d");
+
     /* -- TEST 3: reduced motion → static composition ----------------------- */
     console.log("\n[4] prefers-reduced-motion");
     resetErrors();

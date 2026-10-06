@@ -7,6 +7,7 @@
  */
 
 import {
+  Color,
   MeshPhysicalMaterial,
   MeshStandardMaterial,
   type Material,
@@ -17,32 +18,37 @@ export type TierMaterial = MeshPhysicalMaterial | MeshStandardMaterial;
 export type MaterialTier = "high" | "medium" | "low";
 
 /**
- * Ribbon-diamond material: molded premium plastic with a clearcoat layer.
- * No transmission (the logo objects must stay solid, not glassy).
+ * Real-logo material: full-body GLOSSY plastic with the artwork's gradients
+ * baked into per-vertex colours (`vertexColors`), so the light-blue caps, the
+ * deep navy folds and the green leaf survive in 3D instead of being flattened
+ * to one pastel tint. `emissive` is a low mid-gradient tint used purely for
+ * hover feedback (raised by the engine, never by the material itself).
+ *
+ * Base `color` stays white so the vertex colours are shown at full strength.
  */
-export function createRibbonMaterial(color: string, tier: MaterialTier): TierMaterial {
+export function createLogoMaterial(emissive: Color, tier: MaterialTier): TierMaterial {
   if (tier === "low") {
     const material = new MeshStandardMaterial({
-      color,
+      vertexColors: true,
       roughness: 0.34,
-      metalness: 0.28,
-      emissive: color,
-      emissiveIntensity: 0,
+      metalness: 0.22,
+      emissive,
+      emissiveIntensity: 0.05,
     });
-    material.userData.baseEmissive = 0;
+    material.userData.baseEmissive = 0.05;
     return material;
   }
   const material = new MeshPhysicalMaterial({
-    color,
+    vertexColors: true,
     roughness: 0.3,
-    metalness: 0.24,
+    metalness: 0.2,
     clearcoat: 1,
-    clearcoatRoughness: 0.24,
-    emissive: color,
-    emissiveIntensity: 0,
-    // Gentle sheen-free surface: highlights come from the environment + key.
+    clearcoatRoughness: 0.22,
+    emissive,
+    emissiveIntensity: 0.05,
+    // Glossy but never glassy: highlights come from the environment + key light.
   });
-  material.userData.baseEmissive = 0;
+  material.userData.baseEmissive = 0.05;
   return material;
 }
 

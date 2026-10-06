@@ -10,7 +10,7 @@
  */
 
 import type { Group, PerspectiveCamera } from "three";
-import type { JazariRibbon } from "./createRibbonPieces";
+import type { JazariRibbon } from "./createLogoPieces";
 import type { SupportSystem } from "./createTechObjects";
 import type { ScenePhase } from "./types";
 import { clamp, damp, easeOutCubic, lerp } from "./helpers/math";

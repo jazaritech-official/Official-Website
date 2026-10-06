@@ -24,7 +24,7 @@ export function Footer() {
   const year = new Date().getFullYear();
 
   return (
-    <footer className="relative z-[1] border-t border-line bg-background">
+    <footer className="site-footer relative z-[1] border-t border-line">
       <span aria-hidden="true" className="grid-crosshair hidden lg:block" style={{ left: "calc(50% - 5px)", top: -6 }} />
       <hr aria-hidden="true" className="hairline" />
       <div className="container-page py-14">

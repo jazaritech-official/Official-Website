@@ -459,7 +459,7 @@ export function StartProjectForm() {
                               <span className="text-sm font-semibold text-foreground">{service.title}</span>
                               <span
                                 className={`flex size-5 items-center justify-center rounded-full transition-colors ${
-                                  selected ? "bg-accent text-white" : "bg-surface text-transparent"
+                                  selected ? "bg-accent text-accent-contrast" : "bg-surface text-transparent"
                                 }`}
                                 aria-hidden="true"
                               >

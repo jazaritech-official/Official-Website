@@ -614,6 +614,107 @@ console.log("[smoke] 10. super admin + team management");
   check("seed preserved the configured password", relogin.status === 200);
 }
 
+console.log("[smoke] 10b. production seed (seed:prod) safety + idempotency");
+{
+  const PROD_EMAIL = "smoke.prod@example.com";
+  const PROD_PASSWORD = "SmokeProd!2026";
+  const RESET_PASSWORD = "SmokeProd!2027";
+  const PROD_NAME = "Smoke Prod Admin";
+  const prodEnv = (extra = {}) => ({
+    MONGODB_URI: uri,
+    ADMIN_EMAIL: PROD_EMAIL,
+    ADMIN_PASSWORD: PROD_PASSWORD,
+    ADMIN_NAME: PROD_NAME,
+    CONFIRM_PRODUCTION_SEED: "true",
+    ...extra,
+  });
+
+  // The guard must refuse before connecting or writing anything.
+  const refused = await runScript(["scripts/seed-prod.js"], {
+    MONGODB_URI: uri,
+    ADMIN_EMAIL: PROD_EMAIL,
+    ADMIN_PASSWORD: PROD_PASSWORD,
+    ADMIN_NAME: PROD_NAME,
+    CONFIRM_PRODUCTION_SEED: "",
+  });
+  check("seed:prod refuses without CONFIRM_PRODUCTION_SEED", refused !== 0, `exit=${refused}`);
+
+  // Password policy is enforced before the database is touched.
+  const weak = await runScript(["scripts/seed-prod.js"], prodEnv({ ADMIN_PASSWORD: "weak" }));
+  check("seed:prod rejects a password that violates the policy", weak !== 0, `exit=${weak}`);
+
+  // Missing ADMIN_NAME is rejected.
+  const noName = await runScript(["scripts/seed-prod.js"], prodEnv({ ADMIN_NAME: "" }));
+  check("seed:prod requires ADMIN_NAME", noName !== 0, `exit=${noName}`);
+
+  const firstRun = await runScript(["scripts/seed-prod.js"], prodEnv());
+  check("seed:prod runs with explicit confirmation", firstRun === 0, `exit=${firstRun}`);
+
+  const team1 = await json("/admin/team", { cookie });
+  const prodAdmin = team1.body?.data?.admins?.find((a) => a.email === PROD_EMAIL);
+  check("seed:prod created the configured admin", Boolean(prodAdmin));
+  check("seed:prod promoted the admin to super_admin", prodAdmin?.role === "super_admin", prodAdmin?.role);
+  check("seed:prod admin is active", prodAdmin?.isActive === true);
+
+  const beforeServices = (await json("/services")).body?.data?.length;
+  const beforeTemplates = (await json("/admin/product-type-templates", { cookie })).body?.data?.length;
+
+  const secondRun = await runScript(["scripts/seed-prod.js"], prodEnv());
+  check("seed:prod is idempotent (repeat run succeeds)", secondRun === 0, `exit=${secondRun}`);
+
+  const team2 = await json("/admin/team", { cookie });
+  check(
+    "seed:prod does not duplicate the admin",
+    team2.body?.data?.admins?.filter((a) => a.email === PROD_EMAIL).length === 1,
+  );
+  const afterServices = (await json("/services")).body?.data?.length;
+  const afterTemplates = (await json("/admin/product-type-templates", { cookie })).body?.data?.length;
+  check("seed:prod keeps the canonical 14 services", beforeServices === 14 && afterServices === 14, `${beforeServices}→${afterServices}`);
+  check("seed:prod keeps the canonical 8 templates", beforeTemplates === 8 && afterTemplates === 8, `${beforeTemplates}→${afterTemplates}`);
+
+  const preserved = await json("/auth/login", { method: "POST", body: { email: PROD_EMAIL, password: PROD_PASSWORD } });
+  check("seed:prod preserved the existing password by default", preserved.status === 200, `status=${preserved.status}`);
+
+  const resetRun = await runScript(
+    ["scripts/seed-prod.js"],
+    prodEnv({ SEED_RESET_ADMIN_PASSWORD: "true", ADMIN_PASSWORD: RESET_PASSWORD }),
+  );
+  check("seed:prod supports opt-in password reset", resetRun === 0, `exit=${resetRun}`);
+  const resetLogin = await json("/auth/login", { method: "POST", body: { email: PROD_EMAIL, password: RESET_PASSWORD } });
+  check("reset password signs in", resetLogin.status === 200, `status=${resetLogin.status}`);
+  const oldLogin = await json("/auth/login", { method: "POST", body: { email: PROD_EMAIL, password: PROD_PASSWORD } });
+  check("previous password rejected after opt-in reset", oldLogin.status === 401, `status=${oldLogin.status}`);
+
+  // Demo admin deactivation (never deleted).
+  const DEMO_PASSWORD = "SmokeDemo!2026";
+  const demoCreated = await json("/admin/team", {
+    method: "POST",
+    cookie,
+    body: { email: "demo.smoke@example.com", name: "Demo Smoke", role: "admin", password: DEMO_PASSWORD },
+  });
+  check("demo admin created for the deactivation test", demoCreated.status === 201);
+  const demoRun = await runScript(
+    ["scripts/seed-prod.js"],
+    prodEnv({ DEMO_ADMIN_EMAIL: "demo.smoke@example.com" }),
+  );
+  check("seed:prod accepts DEMO_ADMIN_EMAIL", demoRun === 0, `exit=${demoRun}`);
+  const team3 = await json("/admin/team", { cookie });
+  const demoAdmin = team3.body?.data?.admins?.find((a) => a.email === "demo.smoke@example.com");
+  check("seed:prod deactivated the demo admin", demoAdmin?.isActive === false, `isActive=${demoAdmin?.isActive}`);
+
+  // hubSlot / hubLabel survive the production seed.
+  const services = await json("/services");
+  check(
+    "seeded services expose hubSlot and hubLabel",
+    services.body.data.every((s) => "hubSlot" in s && "hubLabel" in s),
+  );
+  const featured = services.body.data.filter((s) => Number.isInteger(s.hubSlot));
+  check(
+    "5 hub services with unique slots 0..4 after prod seed",
+    featured.length === 5 && new Set(featured.map((s) => s.hubSlot)).size === 5,
+  );
+}
+
 console.log("[smoke] 11. logout");
 {
   const out = await json("/auth/logout", { method: "POST", cookie });

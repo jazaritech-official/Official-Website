@@ -36,7 +36,16 @@ import type {
   VisitorTrackResult,
 } from "@/types/api";
 
+// Two supported modes:
+//  Mode 1 (production default) — NEXT_PUBLIC_API_URL is empty or "/api": the
+//    client talks to the SAME origin at /api, and the Next server proxies to
+//    BACKEND_ORIGIN via the rewrite in next.config.ts. Keeps the auth cookie
+//    first-party.
+//  Mode 2 (local development) — an absolute URL such as
+//    http://localhost:5000/api is used directly, preserving the previous
+//    direct frontend→backend workflow.
 const RAW_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
+const BASE = RAW_BASE || "/api";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -69,20 +78,25 @@ function messageForStatus(status: number): string {
 type Query = Record<string, string | number | boolean | undefined | null>;
 
 function buildUrl(path: string, query?: Query): string {
-  if (!RAW_BASE) {
-    throw new ApiError("The API location is not configured (NEXT_PUBLIC_API_URL).", {
-      code: "CONFIG_MISSING",
-    });
-  }
-
-  const url = new URL(`${RAW_BASE}${path.startsWith("/") ? path : `/${path}`}`);
+  const combined = `${BASE}${path.startsWith("/") ? path : `/${path}`}`;
+  const params = new URLSearchParams();
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value === undefined || value === null || value === "") continue;
-      url.searchParams.set(key, String(value));
+      params.set(key, String(value));
     }
   }
-  return url.toString();
+  const search = params.toString();
+
+  // Absolute base (local development) → normalized URL object.
+  if (/^https?:\/\//i.test(combined)) {
+    const url = new URL(combined);
+    if (search) url.search = search;
+    return url.toString();
+  }
+  // Relative base (same-origin proxy) → keep it relative so the browser uses
+  // the current origin.
+  return search ? `${combined}?${search}` : combined;
 }
 
 interface RequestOptions {
@@ -156,10 +170,6 @@ export interface UploadOptions {
 
 export function requestWithProgress<T>(path: string, body: unknown, options: UploadOptions = {}): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    if (!RAW_BASE) {
-      reject(new ApiError("The API location is not configured (NEXT_PUBLIC_API_URL).", { code: "CONFIG_MISSING" }));
-      return;
-    }
     if (options.signal?.aborted) {
       reject(new ApiError("Upload cancelled.", { code: "ABORTED" }));
       return;

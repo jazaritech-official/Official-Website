@@ -11,6 +11,32 @@ import { EyeIcon, EyeOffIcon, ShieldIcon } from "@/components/icons";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
+const CREDENTIALS_ERROR = "Email or password is incorrect.";
+const SERVICE_ERROR = "We couldn't reach the authentication service right now. Please try again.";
+
+/**
+ * Status-aware login messaging.
+ *
+ *  - 401 (and 403, the deactivated-account case the backend returns AFTER valid
+ *    credentials) always maps to the generic credential message — never
+ *    reveals whether the account exists.
+ *  - The authentication service being unreachable or unhealthy (503
+ *    DATABASE_UNAVAILABLE, any 5xx, or a network failure) must NEVER look like
+ *    invalid credentials.
+ *  - 429 gets its own rate-limit message.
+ */
+function loginErrorMessage(cause: unknown): string {
+  if (cause instanceof ApiError) {
+    if (cause.status === 401) return CREDENTIALS_ERROR;
+    if (cause.status === 403) return cause.message || "This account has been deactivated.";
+    if (cause.status === 429) return "Too many sign-in attempts. Please wait a few minutes and try again.";
+    if (cause.status >= 500 || cause.code === "DATABASE_UNAVAILABLE") return SERVICE_ERROR;
+    if (cause.status === 0 || cause.code === "NETWORK_ERROR") return SERVICE_ERROR;
+    return cause.message || SERVICE_ERROR;
+  }
+  return SERVICE_ERROR;
+}
+
 export default function AdminLoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -55,10 +81,9 @@ export default function AdminLoginPage() {
       await api.auth.login(email.trim(), password);
       router.replace("/admin/dashboard");
     } catch (cause) {
-      // Generic message only — never reveals whether the account exists.
-      setFormError(
-        cause instanceof ApiError ? cause.message : "Unable to sign in right now. Please try again.",
-      );
+      // Distinguish credential failures from service/network failures — never
+      // reveals whether the account exists.
+      setFormError(loginErrorMessage(cause));
       submittingRef.current = false;
       setSubmitting(false);
     }

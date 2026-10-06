@@ -124,6 +124,10 @@ Then open **http://localhost:3000** — public site at `/`, admin portal at `/ad
 | `npm run build` | Production build + TypeScript check |
 | `npm run start` | Serve the production build |
 | `npm run lint` | ESLint (strict react-hooks / next rules) |
+| `npm run audit:contrast` | WCAG AA audit of every text/background design-token pair (exits 1 on a failure) |
+| `npm run trace:logo` | Regenerate `components/services/logoGeometry.ts` from `public/Main Logo.png` (never hand-edit that file) |
+| `node scripts/verify-three.mjs` | Full headless Chrome 3D/a11y/regression harness (**164 checks**; needs a production build on `:3001` + the backend) |
+| `node scripts/capture-themes.mjs <before\|after>` | Hero/hub/footer screenshots at desktop + mobile in light + dark |
 
 **Backend (`Backend/package.json`)**
 
@@ -133,7 +137,8 @@ Then open **http://localhost:3000** — public site at `/`, admin portal at `/ad
 | `npm run dev:mem` | API + in-memory MongoDB (no local Mongo needed) |
 | `npm start` | Production entry (`node server.js`) |
 | `npm run seed` / `npm run seed:mem` / `npm run seed:mem:once` | Seed admin, templates, services, sample products |
-| `npm run smoke` | Full end-to-end API test (real HTTP + in-memory Mongo, **124 assertions**) |
+| `npm run seed:prod` | **Guarded** production seed — refuses unless `CONFIRM_PRODUCTION_SEED=true` (see `DEPLOYMENT.md` §15) |
+| `npm run smoke` | Full end-to-end API test (real HTTP + in-memory Mongo, **144 assertions**) |
 | `npm run lint` | ESLint 10 flat config |
 | `npm run build` | Syntax check across all backend files |
 
@@ -209,6 +214,12 @@ Full tables: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §8–§12.
 2. Paste Cloudinary credentials — the storage driver switches automatically; local fallback is
    disabled outside development.
 3. Point `NEXT_PUBLIC_API_URL` at the deployed API and `CLIENT_ORIGIN` at the deployed site.
+
+   **Preferred: same-origin API proxy.** Set `NEXT_PUBLIC_API_URL` to an empty value (or `/api`) and
+   set `BACKEND_ORIGIN` on the **frontend** project instead. `frontend/next.config.ts` then rewrites
+   `/api/:path*` to `${BACKEND_ORIGIN}/api/:path*`, so the browser only ever talks to the frontend
+   origin. That keeps the admin session cookie first-party (`SameSite=Lax` is sent normally) and
+   removes cross-site CORS/preflight concerns. `lib/api.ts` supports both modes.
 4. Build: `frontend: npm run build && npm start` · `Backend: npm start` (use a process manager).
 5. **Backend on Vercel** — `Backend/vercel.json` sets the Express framework preset, so Vercel bundles
    the existing `Backend/server.js` app as one function and routes every request to it (all `/api/*`
@@ -239,14 +250,21 @@ fallback. It is a progressive enhancement:
 - **Tuning**: colors (`theme.ts` `BRAND`/`PALETTES`), object counts (`quality.ts`), pixel ratio
   (same file), scene composition (`engine.ts` + builders), animation speeds (animation constants).
   Live tier is visible as `data-quality` on the canvas element.
+- **Real-logo geometry**: the hero mark is rebuilt from the **traced brand artwork**, not a hand-drawn
+  proxy. `components/three/createLogoPieces.ts` parses one `<path>` per `LOGO_PIECES` entry with
+  `SVGLoader`, extrudes it, and bakes the artwork's own gradients into a per-vertex colour attribute, so
+  the WebGL mark matches the 2D logo instead of approximating it (harness `CHECK 2b` measures the
+  rendered silhouette against the source PNG).
 - **Verify** (headless Chrome harness, no extra dependencies):
   ```bash
   cd frontend && npm run build && npx next start -p 3001   # terminal A
-  node scripts/verify-three.mjs                            # 121 checks
-  NO_WEBGL=1 node scripts/verify-three.mjs                 # 9 fallback checks
+  node scripts/verify-three.mjs                            # 164 checks
+  NO_WEBGL=1 node scripts/verify-three.mjs                 # fallback checks
   ```
   Requires the backend running (the harness seeds two test logos via the admin API).
-- **Troubleshooting WebGL fallback**: if the hero shows rings/tiles instead of the 3D diamond, the
+  **Restart the backend first** — its shared rate limiter (300 req / 15 min) can trip mid-run and
+  surface as spurious API failures.
+- **Troubleshooting WebGL fallback**: if the hero shows rings/tiles instead of the 3D mark, the
   scene is on its static fallback — check `data-scene` on the hero container (`fallback` = WebGL
   unavailable/context lost/chunk failed, all silent by design), check `data-quality` on the canvas,
   and confirm the browser supports WebGL2. No errors are thrown; content is never blocked.
@@ -325,3 +343,32 @@ Full architecture + tuning guide: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §28.
 Architecture + tuning: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §29–§32.
 
 Development commands are unchanged (see §4): `npm run dev` in `Backend/` and `frontend/`.
+## 13. Real-logo 3D hero, production auth & WCAG pass (Task G)
+
+- **Real-logo 3D hero** — the WebGL mark is no longer a hand-drawn proxy. `components/three/createLogoPieces.ts`
+  parses the five traced `<path>`s with `SVGLoader`, extrudes them, and **bakes the artwork's own
+  gradients into a per-vertex colour attribute**, so the 3D mark and the 2D logo share one silhouette
+  and one palette. `createLogoMaterial()` (vertex colours + clearcoat) replaced the procedural ribbon
+  material. The harness measures the rendered silhouette against `public/Main Logo.png` and requires a
+  2 px-tolerant IoU ≥ 0.80 (measured 0.814) plus a light-mode saturation ratio ≥ 0.6 (measured 0.757).
+- **Hero atmosphere** — CSS-only `.hero-aurora` blobs and a masked `.hero-rays` streak behind the
+  composition. Transform/opacity only, no filters, fully disabled under `prefers-reduced-motion`, and
+  down-tuned on small screens.
+- **Light-mode polish** — every button shares one box height (transparent 1px border on `.btn`), the
+  outline CTA gets a visible edge on white (`--btn-outline-*` tokens), a designed `.section-seam` marks
+  the hero → products boundary, and the footer carries a faint surface wash.
+- **WCAG AA contrast audit** — `npm run audit:contrast` parses the `:root` / `.dark` token blocks and
+  verifies every text-on-background pair the UI renders (including tinted chips). It drove real fixes
+  (light `--accent`/`--success`/`--warning`/`--danger`/`--muted-soft`, the logo tagline, and white-on-accent
+  in dark mode via a new `--accent-contrast` token). **49/49 pairs pass at ≥ 4.5:1.**
+- **Production admin auth** — the deployed login failed because production Atlas had **no admin
+  account** (never seeded), not because the auth code was broken. Two things shipped: a **guarded,
+  idempotent production seed** (`npm run seed:prod`, refuses without `CONFIRM_PRODUCTION_SEED=true`,
+  never overwrites the password unless asked), and a **same-origin `/api` proxy** (`BACKEND_ORIGIN`) so
+  the admin cookie is first-party and survives the deploy topology. Login errors are now status-aware:
+  a 503/network failure reports a *service* problem instead of "wrong password".
+- **Verification** — frontend harness **164/164**, contrast **49/49**, backend smoke **144/144**.
+  Before/after screenshots (`test-output/screenshots/{before,after}-*`) were captured against a real
+  HEAD build and the current build.
+
+Full detail: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §33 · deploy steps: [`DEPLOYMENT.md`](./DEPLOYMENT.md) §15.

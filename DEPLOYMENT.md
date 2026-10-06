@@ -377,8 +377,10 @@ Freebuff did not rename any Vercel project.
 
 ## 14. Verification performed for this document
 
-- `Backend`: `npm run lint` ✅, `npm run build` ✅ (46 files), `NODE_ENV=test npm run smoke` ✅ (124/124).
-- `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅ (12 routes).
+- `Backend`: `npm run lint` ✅, `npm run build` ✅ (46 files), `NODE_ENV=test npm run smoke` ✅ (144/144,
+  the extra 20 assertions covering `seed:prod` safety and idempotency — see §15).
+- `frontend`: `npm run lint` ✅ (0 problems), `npm run build` ✅ (14 routes),
+  `npm run audit:contrast` ✅ (49/49 token pairs ≥ 4.5:1), `node scripts/verify-three.mjs` ✅ (164/164).
 - **`vercel.json` schema-validated** against Vercel's official schema
   (`https://openapi.vercel.sh/vercel.json`, which sets `additionalProperties: false`): all three keys
   are valid — `$schema`, `framework: "express"` (present in the framework enum) and `fluid: true`
@@ -404,3 +406,126 @@ authenticated here — run `vercel login`, then Option B above), the live Hobby 
 Lighthouse, Firefox and Safari. Two owner-side prerequisites for a working production API: a
 `JWT_SECRET` of **≥ 32 characters** (production config refuses shorter values — the local dev `.env`
 one is intentionally short) and an Atlas network-access rule that includes Vercel's egress IPs (§11).
+---
+
+## 15. Production admin login — seeding & troubleshooting (Task G)
+
+### 15.1 Root cause (measured, not assumed)
+
+The deployed admin login returned `401 UNAUTHORIZED`. A read-only probe against the deployed
+database reported:
+
+```
+DATABASE_CONNECTED=true   DATABASE_NAME=OfficialWebsite
+COUNT_ADMINS=0            COUNT_SERVICES=0      COUNT_PRODUCTS=0
+COUNT_PRODUCTTYPETEMPLATES=0                    COUNT_SUBMISSIONS=0
+ADMIN_EXISTS=false
+HEALTH_STATUS=200   HEALTH_DATABASE=disconnected   HEALTH_ENV=production
+LOGIN_STATUS=401    LOGIN_ERROR_CODE=UNAUTHORIZED  LOGIN_COOKIE_ATTRIBUTES=[]
+```
+
+**The production database was never seeded.** Every collection was empty (only `visitors` had rows),
+so `POST /api/auth/login` had no account to match and `GET /api/services` returned 0 items. The auth
+code, hashing and cookie configuration were not the fault.
+
+Two things were therefore shipped:
+
+1. a **guarded, idempotent production seed** (§15.2), and
+2. a **same-origin `/api` proxy** so the admin cookie is first-party (§15.3).
+
+> `HEALTH_DATABASE=disconnected` on a cold Vercel instance is **expected**, not an outage: the
+> MongoDB connection is intentionally lazy and only established on the first DB-backed request
+> (`Backend/middleware/ensureDb.js`). `/api/health` is served before that guard.
+
+### 15.2 Run the production seed (one time)
+
+`scripts/seed-prod.js` **refuses to run** — exit 1, no DB connection, no writes — unless
+`CONFIRM_PRODUCTION_SEED=true` is present. It validates `ADMIN_PASSWORD` against the project policy
+(8–200 chars, upper + lower + digit) **before** connecting, prints the target **database name only**
+(never the host or credentials), and is idempotent: re-running preserves the existing password unless
+`SEED_RESET_ADMIN_PASSWORD=true`, and it will never create a second admin.
+
+> The script reads these variables from the **process environment only** — it does not load
+> `Backend/.env`. That is deliberate (no accidental production writes from a stray local config), so
+> supply `MONGODB_URI` in the shell for this one command. Nothing is written to disk, and no secret
+> is echoed.
+
+**Windows CMD**
+
+```bat
+cd /d "D:\Jazari Tech Official\Website\Backend"
+set "CONFIRM_PRODUCTION_SEED=true"
+set "MONGODB_URI=<paste the production Atlas connection string>"
+set "ADMIN_EMAIL=<owner email>"
+set "ADMIN_PASSWORD=<strong password: 8-200 chars, upper + lower + digit>"
+set "ADMIN_NAME=<display name>"
+npm run seed:prod
+
+rem then clear them from this shell:
+set "MONGODB_URI="
+set "ADMIN_PASSWORD="
+set "CONFIRM_PRODUCTION_SEED="
+```
+
+**PowerShell**
+
+```powershell
+cd "D:\Jazari Tech Official\Website\Backend"
+$env:CONFIRM_PRODUCTION_SEED = "true"
+$env:MONGODB_URI      = "<paste the production Atlas connection string>"
+$env:ADMIN_EMAIL      = "<owner email>"
+$env:ADMIN_PASSWORD   = "<strong password: 8-200 chars, upper + lower + digit>"
+$env:ADMIN_NAME       = "<display name>"
+npm run seed:prod
+
+Remove-Item Env:MONGODB_URI, Env:ADMIN_PASSWORD, Env:CONFIRM_PRODUCTION_SEED
+```
+
+Expected tail on success (it prints the **database name** and counts, nothing else):
+
+```
+[seed:prod] target database: OfficialWebsite
+[seed:prod] done.
+  admin created: true
+  templates:     8
+  services:      14
+  products:      0
+```
+
+Optional flags: `SEED_RESET_ADMIN_PASSWORD=true` (rotate an existing admin's password),
+`SEED_SAMPLE_CONTENT=true` (demo products — **off by default in production**),
+`DEMO_ADMIN_EMAIL=<email>` (deactivate a legacy/demo account).
+
+### 15.3 Make the admin cookie first-party (same-origin proxy)
+
+If the deployed frontend and API live on **different** `*.vercel.app` hosts, a `SameSite=Lax` cookie is
+not sent on the cross-site XHR and an admin is bounced back to `/admin/login` after a successful
+sign-in. Fix it by proxying the API through the frontend origin — no cookie-attribute weakening
+required:
+
+| Where | Variable | Value |
+|-------|----------|-------|
+| `frontend` (Vercel project) | `NEXT_PUBLIC_API_URL` | *(empty)* or `/api` |
+| `frontend` (Vercel project) | `BACKEND_ORIGIN` | `https://<your-backend>.vercel.app` |
+
+`frontend/next.config.ts` then rewrites `/api/:path*` → `${BACKEND_ORIGIN}/api/:path*` server-side, so
+the browser only ever talks to the frontend origin. Leave `BACKEND_ORIGIN` unset for a plain local run
+(local dev keeps using `NEXT_PUBLIC_API_URL=http://localhost:5000/api`). Redeploy the frontend after
+changing these.
+
+### 15.4 Troubleshooting table
+
+| # | Symptom | Likely cause | Fix |
+|---|---------|--------------|-----|
+| 1 | Login shows **“Email or password is incorrect.”** | Wrong credentials, **or** the database has no admin account at all | Run the production seed (§15.2), then retry. Verify `/api/services` returns 14 items. |
+| 2 | Login shows **“We couldn't reach the authentication service right now.”** | 5xx / `DATABASE_UNAVAILABLE` / network — Atlas unreachable, or env missing | Check the response in DevTools and `GET /api/health`; confirm `MONGODB_URI` is set on the backend project and the Atlas allow-list includes Vercel (§11). |
+| 3 | Login *succeeds* but the next page bounces back to `/admin/login` | Cross-site admin cookie (`SameSite=Lax`) is not sent because the frontend and API are on different hosts | Set the same-origin proxy (§15.3): `BACKEND_ORIGIN` on the frontend, `NEXT_PUBLIC_API_URL` empty/relative, then redeploy. |
+| 4 | `/api/services` returns `200` with **0 items** | Database unseeded | Run the production seed (§15.2). |
+| 5 | `/api/health` reports `database:"disconnected"` on a fresh instance | Expected — the connection is lazy | Issue any DB-backed request; the connection is established on first use. |
+| 6 | `npm run seed:prod` exits 1 with **REFUSED** | `CONFIRM_PRODUCTION_SEED` is not set | Set it to `true` for that single run (§15.2). This is the safety guard working. |
+| 7 | `npm run seed:prod` prints **missing MONGODB_URI** even though `Backend/.env` has it | The script reads the **process environment only** and does not load `.env` (by design) | Provide `MONGODB_URI` in the same shell command (§15.2). |
+| 8 | `503 DATABASE_UNAVAILABLE` after ~10 s on any DB route | Atlas network access does not include Vercel's egress IPs | Add `0.0.0.0/0` (or the Vercel egress range) under Atlas → Network Access; see §11. |
+
+**Security notes.** Never commit a connection string or the admin password; never paste them into a
+ticket or screenshot. `seed:prod` prints the database **name** and counts only — verify a run by
+reading those, not by echoing the environment.
