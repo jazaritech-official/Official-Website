@@ -270,6 +270,10 @@ public domain — do not rely on a domain the company does not own.
 | `VISITOR_RATE_LIMIT_MAX` | no | Visitor tracking |
 | `SENSITIVE_RATE_LIMIT_MAX` | no | Team + password operations |
 | `VISITOR_DEDUPE_HOURS` | no | Visitor dedupe window |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | for push | Web Push key pair (`npx web-push generate-vapid-keys`) |
+| `VAPID_SUBJECT` | no | Contact for the push service (default `mailto:hello@jazaritech.com`) |
+| `PUSH_RATE_LIMIT_MAX` | no | Subscribe/unsubscribe beacons per window |
+| `PUSH_MAX_FAILURES` | no | Consecutive failures before a device is deactivated |
 
 ### `frontend` (Vercel → Project → Settings → Environment Variables)
 
@@ -560,3 +564,84 @@ reading those, not by echoing the environment.
     `COOKIE_SAMESITE`, `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`.
   - `frontend`: `NEXT_PUBLIC_API_URL` / `BACKEND_ORIGIN` (same-origin proxy, §15.3), `NEXT_PUBLIC_SITE_URL`.
   - Optional snapshot base for CI: `SNAPSHOT_API_BASE`.
+### 15.6 Admin session cookie — required production setup (Task I)
+
+**Symptom that this fixes:** signing in returns `200`, then every subsequent admin request is `401`
+(`{"success":false,"error":{"code":"UNAUTHORIZED","message":"Please sign in to continue."}}`).
+
+**Measured root cause.** The browser called the API **cross-site**. `POST /api/auth/login` returned
+`Set-Cookie` on the *API* origin, and that cookie is **host-only** (no `Domain` attribute), so the
+browser stored it for the API host and never sent it back when the page (a different site) called
+`/api/auth/me`. The backend then took its correct *no-token* branch and returned the generic
+`UNAUTHORIZED` body — which hid the real reason. Permission rules were never at fault, and no seed had
+to be re-run.
+
+**Ordered actions:**
+
+| # | Where | Do this |
+|---|-------|---------|
+| 1 | Frontend (Vercel) | Set `BACKEND_ORIGIN=https://<backend-host>` so `/api/:path*` is proxied |
+| 2 | Frontend (Vercel) | Set `NEXT_PUBLIC_API_URL` to **empty** (or `/api`) and redeploy |
+| 3 | Backend (Vercel) | Keep `COOKIE_SAMESITE=lax` + `COOKIE_SECURE=true` (`lax` is correct once the proxy is on) |
+| 4 | Backend (Vercel) | Confirm `NODE_ENV=production` so `Secure` and the cookie-name default apply |
+
+**Guard rails already in the code (no action needed):**
+
+- `frontend/lib/api.ts` pins `BASE` to `/api` whenever the proxy is configured, so a stale absolute
+  `NEXT_PUBLIC_API_URL` can no longer win.
+- `frontend/next.config.ts` adds the rewrite and prints a **build-time warning** when a production
+  bundle would use an absolute cross-site URL with the proxy off. It never fails the build and never
+  prints credentials.
+- `Backend/utils/authCookie.js` is the single options object for set/refresh/clear: name from
+  `JWT_COOKIE_NAME` (default `jazari_admin`), `HttpOnly` always, `Secure` from `COOKIE_SECURE`,
+  `SameSite` from `COOKIE_SAMESITE`, `Path=/`, **never** a `Domain`, `maxAge` in seconds.
+- `Backend/config/env.js` refuses `SameSite=None` without `Secure` (it replaces it with `Secure: true`)
+  and warns instead of crashing.
+- `frontend/app/admin/login/page.tsx` calls `GET /api/auth/me` **before** redirecting and shows a
+  non-blaming message if the browser did not keep the session.
+
+**Verify after deploy:** sign in at `/admin/login`, then reload `/admin/dashboard` — you must stay
+signed in. In DevTools → Application → Cookies, the session cookie must be listed under the
+**frontend** origin (that is the point of the proxy).
+
+**Also required for Task I content:** run `npm run seed:prod` once so the new
+`Service.shortDescription` / `Service.highlights` copy reaches production (the services cards fall back
+gracefully without it, but the designed one-line copy only appears after the seed).
+
+### 15.7 Web Push notifications — required production setup (Task J)
+
+**What the feature needs:** the browser shows an opt-in card 10 s after arrival, stores a per-device
+push subscription, and the admin `/admin/notifications` page can send messages to every subscribed
+device.
+
+**Ordered actions:**
+
+| # | Where | Do this |
+|---|-------|---------|
+| 1 | Your machine | `cd Backend && npx web-push generate-vapid-keys` |
+| 2 | Backend (Vercel) | Add `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` and redeploy |
+| 3 | Backend (Vercel) | (Optional) tune `PUSH_RATE_LIMIT_MAX` (default `60`) and `PUSH_MAX_FAILURES` (default `5`) |
+| 4 | — | Nothing to add on the frontend: the VAPID key is fetched from `GET /api/push/public-key` at runtime, never baked into the bundle |
+
+**Guard rails (no action needed):**
+
+- Missing or half-configured keys are **non-fatal**. The API still stores subscriptions; sending
+  returns `503 SERVICE_UNAVAILABLE` with a plain message, and the public site simply does not offer the
+  opt-in card. A warning is logged at startup instead of exiting.
+- Keys are validated at startup with `web-push.setVapidDetails`; an invalid pair disables sending and
+  logs one line (the values are never printed).
+- `frontend/public/sw.js` never caches or intercepts fetches — it only displays notifications and opens
+  the tapped link, and re-subscribes if the browser rotates the subscription.
+- Delivery runs with bounded concurrency (20), prunes endpoints the push service reports gone
+  (`404`/`410`) and records targeted/sent/failed/removed on every notification.
+- **HTTPS is mandatory** for Web Push — it works on `localhost` for testing, and on the Vercel domain
+  in production. Nothing extra is needed on Vercel.
+
+**Verify after deploy:**
+
+1. Open the site in a normal (not incognito) window, wait ~10 s, allow notifications when asked.
+2. `/admin/notifications` → **This device** should read “Notifications are on for this device” and
+   **Subscribed devices** should be at least 1.
+3. Compose a message (or pick a service to prefill it) → **Send now** → the device receives it and the
+   history row reports the delivered count.
+4. If a send fails with `503`, the keys from step 2 are missing — add them and redeploy.

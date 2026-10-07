@@ -9,7 +9,7 @@ import { api } from "@/lib/api";
 import { Skeleton } from "@/components/ui/Spinner";
 import { iconRegistry, InfoIcon, type IconName } from "@/components/icons";
 import type { Service } from "@/types/api";
-import type { SceneStatus } from "./types";
+import type { EngineHandle, SceneStatus } from "./types";
 
 /**
  * Lazily loaded renderer. `ssr: false` + `dynamic()` keeps `three` out of the
@@ -57,6 +57,31 @@ export function HeroScene({ hostRef }: HeroSceneProps) {
   const cardRef = useRef<HTMLDivElement | null>(null);
   /** True once the engine drives the hotspot (projected coordinates). */
   const drivenRef = useRef(false);
+  /** Live engine handle — the shell binds shatter triggers on the visual column. */
+  const engineRef = useRef<EngineHandle | null>(null);
+  const bindEngine = useCallback((engine: EngineHandle | null) => {
+    engineRef.current = engine;
+  }, []);
+
+  /* --- Shatter triggers on the visual column (NOT pointer-events: none) --- */
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const onEnter = (): void => engineRef.current?.setPointerInside(true);
+    const onLeave = (): void => engineRef.current?.setPointerInside(false);
+    const onUp = (event: PointerEvent): void => {
+      // Touch tap toggles; mouse clicks are left to the links/cards.
+      if (event.pointerType !== "mouse") engineRef.current?.tap();
+    };
+    host.addEventListener("pointerenter", onEnter);
+    host.addEventListener("pointerleave", onLeave);
+    host.addEventListener("pointerup", onUp);
+    return () => {
+      host.removeEventListener("pointerenter", onEnter);
+      host.removeEventListener("pointerleave", onLeave);
+      host.removeEventListener("pointerup", onUp);
+    };
+  }, [hostRef]);
 
   /* --- Overlay placement: hotspot + connector, container pixels ---------- */
   const place = useCallback((x: number, y: number, visible: boolean) => {
@@ -126,7 +151,13 @@ export function HeroScene({ hostRef }: HeroSceneProps) {
     <>
       {/* WebGL layer — decorative, transparent, never blocks pointers */}
       <div ref={layerRef} className="hero-scene absolute inset-0" aria-hidden="true">
-        <SceneCanvas theme={resolved} reducedMotion={reducedMotion} onStatus={handleStatus} onAnchor={onAnchor} />
+        <SceneCanvas
+          theme={resolved}
+          reducedMotion={reducedMotion}
+          onStatus={handleStatus}
+          onAnchor={onAnchor}
+          onEngine={bindEngine}
+        />
       </div>
 
       {/* Connector: hotspot → glass card (SVG follows every frame) */}

@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { body } from "express-validator";
 import { validate } from "../middleware/validate.js";
-import { submissionLimiter, visitorLimiter } from "../middleware/rateLimiter.js";
+import { pushLimiter, submissionLimiter, visitorLimiter } from "../middleware/rateLimiter.js";
 import { listPublicLogos } from "../controllers/logoController.js";
 import { listPublicProducts } from "../controllers/productController.js";
 import { listPublicServices } from "../controllers/serviceController.js";
 import { createSubmission } from "../controllers/submissionController.js";
 import { trackVisitor } from "../controllers/visitorController.js";
+import { getPushKey, subscribe, unsubscribe } from "../controllers/pushController.js";
 
 const publicRouter = Router();
 
@@ -55,5 +56,31 @@ const visitorRules = [
 ];
 
 publicRouter.post("/visitor-track", visitorLimiter, visitorRules, trackVisitor);
+
+// --- Push notifications (Web Push) ----------------------------------------
+// The public key is safe to expose; the subscribe/unsubscribe beacons are
+// rate-limited but otherwise public (they store no personal data).
+publicRouter.get("/push/public-key", getPushKey);
+
+const subscriptionRules = [
+  body("endpoint")
+    .isString()
+    .trim()
+    .isLength({ min: 10, max: 1000 })
+    .matches(/^https:\/\//)
+    .withMessage("A valid push endpoint is required."),
+  body("keys.p256dh").isString().trim().isLength({ min: 10, max: 400 }).withMessage("A valid p256dh key is required."),
+  body("keys.auth").isString().trim().isLength({ min: 6, max: 400 }).withMessage("A valid auth key is required."),
+  body("page").optional({ values: "falsy" }).trim().isLength({ max: 500 }),
+  validate,
+];
+
+publicRouter.post("/push/subscribe", pushLimiter, subscriptionRules, subscribe);
+publicRouter.post(
+  "/push/unsubscribe",
+  pushLimiter,
+  [body("endpoint").isString().trim().isLength({ min: 10, max: 1000 }), validate],
+  unsubscribe,
+);
 
 export default publicRouter;

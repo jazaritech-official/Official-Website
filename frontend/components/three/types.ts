@@ -17,6 +17,18 @@ export type SceneStatus = "loading" | "ready" | "fallback";
 export type ScenePhase = "initializing" | "assembling" | "idle";
 
 /**
+ * Hero shatter state machine (additive to the assembly phase).
+ * `assembled` = the solid logo is whole; `shattering`/`reassembling` are the
+ * transitions; `floating` = fully exploded neon shards. */
+export type ShatterState = "assembled" | "shattering" | "floating" | "reassembling";
+
+/** Live shatter telemetry written to `canvas.dataset` for the harness. */
+export interface ShatterDebug {
+  state: ShatterState;
+  shards: number;
+}
+
+/**
  * Hotspot sink — projected anchor position in container-relative CSS pixels.
  * Called from the render loop; implementations must write straight to the DOM
  * (refs) and never trigger React renders.
@@ -54,4 +66,18 @@ export interface EngineHandle {
   dispose(): void;
   /** The rendered canvas (context-loss listeners attach here). */
   readonly canvas: HTMLCanvasElement;
+
+  /* --- Hero shatter inputs (all no-ops under reduced motion) ------------- */
+  /** Fine pointer entered/left the hero visual column. */
+  setPointerInside(value: boolean): void;
+  /** Hero is at least ~50% in the viewport. */
+  setHeroInView(value: boolean): void;
+  /** Document visibility — hidden tabs never start an idle shatter. */
+  setPageVisible(value: boolean): void;
+  /** Any pointer/scroll/key input — resets the idle dwell timer. */
+  noteActivity(): void;
+  /** Touch tap on the visual column — toggles shatter. */
+  tap(): void;
+  /** Debug/test hook: force a state (null releases the override). */
+  forceShatterState(state: ShatterState | null): void;
 }

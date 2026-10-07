@@ -28,7 +28,13 @@ import {
   type MeshStandardMaterial,
   type Object3D,
 } from "three";
-import type { EngineHandle, EngineOptions, QualityTier, SceneTheme } from "./types";
+import type {
+  EngineHandle,
+  EngineOptions,
+  QualityTier,
+  SceneTheme,
+  ShatterState,
+} from "./types";
 import { disposeObject } from "./helpers/disposeScene";
 import { PALETTES, readPageBackground } from "./theme";
 import { createFpsMonitor, renderConfig, type FpsMonitor } from "./quality";
@@ -38,6 +44,8 @@ import { createLighting, type LightingRig } from "./lighting";
 import { createJazariRibbon, type JazariRibbon } from "./createLogoPieces";
 import { createSupportSystem, type SupportSystem } from "./createTechObjects";
 import { createAnimator, type Animator } from "./animation";
+import { createShatterField, type ShatterField } from "./shatter";
+import { createShatterController } from "./shatterState";
 import { createInteraction, type InteractionHandle } from "./interaction";
 import { projectToContainerPx, type ScreenPoint } from "./helpers/projection";
 
@@ -63,10 +71,19 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
 
   /* --- Scroll (hero range only — never a global 3D scroll loop) ---------- */
   const SCROLL_RANGE_PX = 600; // TUNING: scroll distance over which the hero reacts
+  const SHATTER_SCROLL_RELEASE_PX = 40; // a small scroll closes an open shatter
   const onScroll = (): void => {
     scrollOffset = clamp(window.scrollY, 0, SCROLL_RANGE_PX) / SCROLL_RANGE_PX;
+    if (window.scrollY > SHATTER_SCROLL_RELEASE_PX) shatterController.scroll(elapsed);
+    else shatterController.noteActivity(elapsed);
   };
   window.addEventListener("scroll", onScroll, { passive: true });
+
+  /* --- Idle-dwell activity: any pointer or key input resets the timer ----- */
+  const onActivity = (): void => shatterController.noteActivity(elapsed);
+  window.addEventListener("pointermove", onActivity, { passive: true });
+  window.addEventListener("keydown", onActivity);
+  window.addEventListener("wheel", onActivity, { passive: true });
 
   /* --- Renderer ---------------------------------------------------------- */
   const renderer = new WebGLRenderer({
@@ -104,12 +121,41 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
   const ribbon: JazariRibbon = createJazariRibbon(tier);
   const supports: SupportSystem = createSupportSystem(tier, PALETTES[themeState]);
 
+  // Neon shatter field (additive state — the solid logo is untouched).
+  const glowFor = (next: SceneTheme): number => (next === "dark" ? 1.3 : 0.8);
+  const shatter: ShatterField = createShatterField(config.shardCount, ribbon.scale, glowFor(themeState));
+  ribbon.group.add(shatter.group);
+
+  // Solid-piece cross-fade targets (transparent only while a shatter is open).
+  const pieceMaterials = ribbon.pieces.map((piece) => piece.material as MeshStandardMaterial);
+  let solidOpacity = 1;
+  const applySolidFade = (opacity: number): void => {
+    const clampedOpacity = opacity < 0 ? 0 : opacity > 1 ? 1 : opacity;
+    if (Math.abs(clampedOpacity - solidOpacity) < 0.004) return;
+    solidOpacity = clampedOpacity;
+    const fading = clampedOpacity < 0.999;
+    for (const material of pieceMaterials) {
+      if (material.transparent !== fading) material.transparent = fading;
+      material.opacity = clampedOpacity;
+    }
+  };
+
   const composition = new Group(); // scroll + primary parallax shift this unit
   composition.add(ribbon.group, supports.group);
   scene.add(composition);
 
   const animator: Animator = createAnimator({ ribbon, supports, composition, camera });
   const interaction: InteractionHandle = createInteraction(container);
+
+  /* --- Shatter inputs + state machine ----------------------------------- */
+  const shatterController = createShatterController();
+  shatterController.setReducedMotion(reducedMotion);
+  let pointerInside = false;
+  let heroInView = true;
+  let pageVisible = typeof document === "undefined" || document.visibilityState !== "hidden";
+  let lastExplodeAttr = "";
+  canvas.dataset.explode = "assembled";
+  canvas.dataset.shards = String(shatter.count);
 
   const applyEnvironmentIntensity = (): void => {
     environment.applyIntensity(
@@ -156,6 +202,7 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
     renderer.toneMappingExposure = palette.exposure;
     lighting.apply(palette);
     supports.applyTheme(palette);
+    shatter.setGlow(glowFor(next));
     applyEnvironmentIntensity();
   };
 
@@ -172,6 +219,8 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, config.pixelRatioCap));
     applyEnvironmentIntensity();
     applyTierBudget(); // object counts + hover/parallax budgets
+    shatter.setBudget(config.shardCount); // downgrade draws fewer shards
+    canvas.dataset.shards = String(Math.min(config.shardCount, shatter.count));
     hoverAmounts.clear(); // stale keys would target now-hidden roots
     rebuildPickTargets(); // visible-object set changed
     resize();
@@ -224,6 +273,8 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
 
     for (const source of sources) {
       source.traverse((child) => {
+        // The shatter field is decorative — never a hover target.
+        if (child.userData.noPick) return;
         // Meshes and line segments are raycastable; points/groups are not picks.
         const target = child as Object3D & { isMesh?: boolean; isLine?: boolean };
         if (!target.isMesh && !target.isLine) return;
@@ -299,6 +350,23 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
         applyTierBudget();
       },
       logoSize: (): { x: number; y: number } => ({ x: logoSize.x, y: logoSize.y }),
+      // Test hook: force a shatter state (null releases the override).
+      forceShatter: (state: ShatterState | null): void => {
+        if (reduced) return; // reduced motion never shatters
+        shatterController.force(state);
+      },
+      shatterState: (): ShatterState => shatterController.state,
+      shardCount: (): number => shatter.count,
+      // Test/tuning hook: restart the idle-dwell timer without freezing motion.
+      noteActivity: (): void => shatterController.noteActivity(elapsed),
+      shatter: () => ({
+        ...shatterController.snapshot(elapsed),
+        heroInView,
+        pageVisible,
+        pointerInside,
+        running,
+        elapsed,
+      }),
     },
   });
 
@@ -307,7 +375,10 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
     if (!running) return;
     rafId = requestAnimationFrame(frame);
 
-    const dt = Math.min((now - lastTime) / 1000, 0.1); // clamp tab-switch spikes
+    // Clamp BOTH ends: the first RAF timestamp can predate the engine's creation
+    // clock, and a negative delta would rewind `elapsed` (shifting every phase and
+    // silently delaying the idle-dwell trigger).
+    const dt = Math.min(Math.max((now - lastTime) / 1000, 0), 0.1);
     lastTime = now;
     elapsed += dt;
     fpsMonitor.sample(dt);
@@ -322,6 +393,19 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
       pointerX: interaction.pointer.x,
       pointerY: interaction.pointer.y,
     });
+
+    // 1b) Shatter state machine + GPU uniform hand-off.
+    shatterController.update({ dt, time: elapsed, reduced, pointerInside, heroInView, pageVisible });
+    const shatterProgress = shatterController.progress;
+    shatter.setProgress(shatterProgress);
+    shatter.setTime(elapsed);
+    // Solid pieces cross-fade out over the first ~150 ms and back in on the way
+    // home, so the hand-off between solid mark and shards is seamless.
+    applySolidFade(1 - clamp(shatterProgress / 0.22, 0, 1));
+    if (shatterController.state !== lastExplodeAttr) {
+      lastExplodeAttr = shatterController.state;
+      canvas.dataset.explode = lastExplodeAttr;
+    }
 
     // 2) Render (also refreshes world matrices).
     renderer.render(scene, camera);
@@ -365,9 +449,13 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
     disposed = true;
     pause();
     window.removeEventListener("scroll", onScroll);
+    window.removeEventListener("pointermove", onActivity);
+    window.removeEventListener("keydown", onActivity);
+    window.removeEventListener("wheel", onActivity);
     interaction.dispose();
     fpsMonitor.dispose();
     hoverAmounts.clear();
+    shatter.dispose();
     ribbon.dispose();
     supports.dispose();
     lighting.dispose();
@@ -387,7 +475,26 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
     setTheme: applyTheme,
     setReducedMotion: (value: boolean) => {
       reduced = value;
+      shatterController.setReducedMotion(value);
       applyTierBudget();
+    },
+    setPointerInside: (value: boolean) => {
+      pointerInside = value;
+    },
+    setHeroInView: (value: boolean) => {
+      heroInView = value;
+    },
+    setPageVisible: (value: boolean) => {
+      pageVisible = value;
+    },
+    noteActivity: () => shatterController.noteActivity(elapsed),
+    tap: () => {
+      if (reduced) return; // reduced motion never shatters
+      shatterController.tap(elapsed);
+    },
+    forceShatterState: (state: ShatterState | null) => {
+      if (reduced && state !== null) return;
+      shatterController.force(state);
     },
     resize,
     dispose,

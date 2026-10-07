@@ -13,6 +13,12 @@ interface SceneCanvasProps {
   onStatus?: (status: SceneStatus) => void;
   /** Hotspot projection sink (container pixels) — DOM writes only, no renders. */
   onAnchor?: AnchorUpdate;
+  /**
+   * Receives the engine so the hero shell can bind DOM-level shatter triggers
+   * (pointer enter/leave/tap on the visual column, which is NOT
+   * `pointer-events: none`). Called with `null` on teardown.
+   */
+  onEngine?: (engine: EngineHandle | null) => void;
 }
 
 /**
@@ -24,15 +30,15 @@ interface SceneCanvasProps {
  * The component itself is loaded through `next/dynamic` (`ssr: false`) from
  * `HeroScene`, so none of this — nor `three` — reaches the initial bundle.
  */
-export function SceneCanvas({ theme, reducedMotion, onStatus, onAnchor }: SceneCanvasProps) {
+export function SceneCanvas({ theme, reducedMotion, onStatus, onAnchor, onEngine }: SceneCanvasProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<EngineHandle | null>(null);
 
   // Keep the latest callbacks/settings reachable from long-lived engine
   // callbacks without re-running the init effect (same pattern as useApiData).
-  const propsRef = useRef({ theme, reducedMotion, onStatus, onAnchor });
+  const propsRef = useRef({ theme, reducedMotion, onStatus, onAnchor, onEngine });
   useEffect(() => {
-    propsRef.current = { theme, reducedMotion, onStatus, onAnchor };
+    propsRef.current = { theme, reducedMotion, onStatus, onAnchor, onEngine };
   });
 
   /* --- Init / teardown (runs once; Strict Mode safe) --------------------- */
@@ -75,6 +81,7 @@ export function SceneCanvas({ theme, reducedMotion, onStatus, onAnchor }: SceneC
     }
 
     engineRef.current = engine;
+    propsRef.current.onEngine?.(engine);
     engine.start();
 
     /* --- WebGL context loss: pause + fallback, restore: controlled resume - */
@@ -101,19 +108,23 @@ export function SceneCanvas({ theme, reducedMotion, onStatus, onAnchor }: SceneC
     /* --- Pause when the tab is hidden ------------------------------------ */
     let isNearViewport = true;
     const onVisibility = (): void => {
-      if (document.visibilityState === "hidden") engine?.pause();
+      const visible = document.visibilityState !== "hidden";
+      engine?.setPageVisible(visible);
+      if (!visible) engine?.pause();
       else if (isNearViewport) engine?.resume();
     };
     document.addEventListener("visibilitychange", onVisibility);
 
-    /* --- Pause when the hero scrolls away -------------------------------- */
+    /* --- Pause when the hero scrolls away; track the idle-dwell gate ------ */
     const intersectionObserver = new IntersectionObserver(
       ([entry]) => {
         isNearViewport = entry?.isIntersecting ?? true;
+        // Idle shatter only when the hero is at least ~50% in view.
+        engine?.setHeroInView((entry?.intersectionRatio ?? 1) >= 0.5);
         if (isNearViewport && document.visibilityState === "visible") engine?.resume();
         else engine?.pause();
       },
-      { rootMargin: "120px" },
+      { rootMargin: "120px", threshold: [0, 0.5, 1] },
     );
     intersectionObserver.observe(host);
 
@@ -127,6 +138,7 @@ export function SceneCanvas({ theme, reducedMotion, onStatus, onAnchor }: SceneC
       document.removeEventListener("visibilitychange", onVisibility);
       canvas.removeEventListener("webglcontextlost", onContextLost);
       canvas.removeEventListener("webglcontextrestored", onContextRestored);
+      propsRef.current.onEngine?.(null);
       engine?.dispose();
       engineRef.current = null;
     };

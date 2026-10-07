@@ -1,5 +1,14 @@
 "use client";
 
+import {
+  useMemo,
+  useState,
+  type CSSProperties,
+  type FocusEvent,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { api } from "@/lib/api";
 import { useApiData } from "@/hooks/useApiData";
 import { useTilt } from "@/hooks/useTilt";
@@ -11,29 +20,136 @@ import { Button } from "@/components/ui/Button";
 import { ArrowUpRightIcon, iconRegistry, InfoIcon, LayersIcon, RefreshIcon, type IconName } from "@/components/icons";
 import type { Service } from "@/types/api";
 
-function ServiceCard({ service }: { service: Service }) {
+/** Seamless wave: two full periods across the 1200-unit viewBox (period 600). */
+const WAVE_PATH =
+  "M 0 30 Q 150 6 300 30 T 600 30 T 900 30 T 1200 30 L 1200 60 L 0 60 Z";
+
+/**
+ * Resting summary line. Uses the backend's `shortDescription` when present;
+ * otherwise the first clause/sentence of `description`, cut at a word boundary.
+ * The frontend never invents copy.
+ */
+function restingLine(service: Service): string {
+  const provided = (service.shortDescription ?? "").trim();
+  if (provided) return provided;
+  const firstSentence = service.description.split(/(?<=[.!?])\s/)[0] ?? service.description;
+  const clause = firstSentence.split(/[,;:\u2014\u2013]/)[0] ?? firstSentence;
+  const trimmed = clause.trim();
+  if (trimmed.length <= 92) return trimmed;
+  const cut = trimmed.slice(0, 92);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${lastSpace > 40 ? cut.slice(0, lastSpace) : cut}\u2026`;
+}
+
+function ServiceCard({ service, index }: { service: Service; index: number }) {
   const Icon = iconRegistry[service.icon as IconName] ?? InfoIcon;
   const tiltRef = useTilt<HTMLElement>();
+  const [filled, setFilled] = useState(false);
+
+  const shortText = useMemo(() => restingLine(service), [service]);
+  const chips = useMemo(() => (service.highlights ?? []).slice(0, 3), [service.highlights]);
+  // Per-card gradient rotation — deterministic, all brand-derived.
+  const fillAngle = 138 + (index % 5) * 11;
+
+  const onPointerEnter = (event: ReactPointerEvent<HTMLElement>): void => {
+    if (event.pointerType === "mouse") setFilled(true);
+  };
+  const onPointerLeave = (event: ReactPointerEvent<HTMLElement>): void => {
+    // Touch keeps its explicitly toggled state.
+    if (event.pointerType === "mouse") setFilled(false);
+  };
+  const onBlur = (event: FocusEvent<HTMLElement>): void => {
+    const next = event.relatedTarget as Node | null;
+    if (!next || !event.currentTarget.contains(next)) setFilled(false);
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
+    if (event.key === "Escape") setFilled(false);
+  };
+  const onToggle = (event: ReactMouseEvent<HTMLButtonElement>): void => {
+    // Touch taps and keyboard activation toggle; mouse clicks rely on hover.
+    const coarse = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
+    if (coarse || event.detail === 0) setFilled((value) => !value);
+  };
 
   return (
     <article
       id={`service-${service.slug}`}
       ref={tiltRef}
-      className="card card-hover card-ticks tilt-card group relative flex h-full flex-col gap-4 p-6"
+      data-service-card={service.slug}
+      data-filled={filled ? "" : undefined}
+      className="card card-hover card-ticks tilt-card service-card flex h-full flex-col"
+      style={{ "--service-fill-angle": `${fillAngle}deg` } as CSSProperties}
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+      onFocus={() => setFilled(true)}
+      onBlur={onBlur}
+      onKeyDown={onKeyDown}
     >
-      <span className="icon-interactive tilt-depth inline-flex size-11 items-center justify-center rounded-xl bg-accent-soft text-accent">
-        <Icon size={21} animated="pulse" />
-      </span>
-
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="text-base font-semibold leading-snug">{service.title}</h3>
-        <ArrowUpRightIcon
-          size={16}
-          className="mt-1 shrink-0 text-muted opacity-0 transition-all duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-accent group-hover:opacity-100"
-        />
+      {/* Rising liquid + two wave crests + the 2px Growth Green crest line. */}
+      <div className="service-card__liquid" aria-hidden="true">
+        <svg
+          className="service-card__wave service-card__wave--a"
+          viewBox="0 0 1200 60"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d={WAVE_PATH} />
+        </svg>
+        <svg
+          className="service-card__wave service-card__wave--b"
+          viewBox="0 0 1200 60"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d={WAVE_PATH} />
+        </svg>
+        <span className="service-card__crest" />
       </div>
 
-      <p className="text-sm leading-relaxed text-muted">{service.description}</p>
+      <div className="service-card__body">
+        <span className="service-card__icon icon-interactive tilt-depth inline-flex size-11 items-center justify-center rounded-xl bg-accent-soft text-accent">
+          <Icon size={21} animated="pulse" />
+        </span>
+
+        <h3 className="service-card__title text-base font-semibold leading-snug">{service.title}</h3>
+
+        <p className="service-card__short text-sm leading-relaxed text-muted">{shortText}</p>
+
+        {chips.length > 0 && (
+          <ul className="service-card__chips flex flex-wrap gap-1.5">
+            {chips.map((chip) => (
+              <li
+                key={chip}
+                className="service-card__chip rounded-full border border-line px-2.5 py-0.5 text-[0.7rem] font-medium text-muted"
+              >
+                {chip}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <button
+          type="button"
+          className="service-card__toggle"
+          aria-expanded={filled}
+          aria-controls={`service-${service.slug}-details`}
+          onClick={onToggle}
+        >
+          {filled ? "Hide details" : "View details"}
+          <ArrowUpRightIcon size={13} />
+        </button>
+      </div>
+
+      {/* Full description + CTA — ALWAYS in the DOM, revealed on fill. */}
+      <div className="service-card__details" id={`service-${service.slug}-details`}>
+        <p className="service-card__desc text-muted">{service.description}</p>
+        <a className="service-card__cta" href="#start">
+          Start a project
+          <ArrowUpRightIcon size={13} />
+        </a>
+      </div>
     </article>
   );
 }
@@ -123,7 +239,7 @@ export function ServicesGrid() {
           <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3" data-services-state="loaded">
             {services.map((service, index) => (
               <Reveal key={service._id} delay={(index % 3) * 80} className="h-full">
-                <ServiceCard service={service} />
+                <ServiceCard service={service} index={index} />
               </Reveal>
             ))}
           </div>

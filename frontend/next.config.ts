@@ -20,7 +20,54 @@ try {
 // depend on cross-site cookie behaviour between two *.vercel.app hosts.
 const backendOrigin = (process.env.BACKEND_ORIGIN ?? "").replace(/\/+$/, "");
 
+/**
+ * Build-time misconfiguration guard (warning only — never fails the build).
+ *
+ * `NEXT_PUBLIC_API_URL` is inlined into the browser bundle at build time, so a
+ * value left over from another environment survives an env change unless the
+ * app is rebuilt. If production is built with an absolute cross-site API URL
+ * while the same-origin proxy is off, the browser calls the backend on a
+ * different site and the auth cookie becomes a third-party cookie — stored on
+ * login but not sent afterwards, which presents as "login works, then every
+ * request is 401". Surfaced here so it is impossible to miss, and only host
+ * names are ever printed (never a URL with credentials).
+ */
+function warnOnCookieUnsafeApiUrl() {
+  if (process.env.NODE_ENV !== "production") return;
+  if (backendOrigin) return; // Same-origin proxy active → cookie is first-party.
+  const raw = (process.env.NEXT_PUBLIC_API_URL ?? "").trim();
+  if (!raw || !/^https?:\/\//i.test(raw)) return; // Relative "/api" → same origin.
+  let apiHost: string;
+  let siteHost = "";
+  try {
+    apiHost = new URL(raw).host;
+  } catch {
+    return;
+  }
+  try {
+    siteHost = new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "").host;
+  } catch {
+    siteHost = "";
+  }
+  if (siteHost && apiHost === siteHost) return;
+  console.warn(
+    `[jazari] Auth-cookie risk: NEXT_PUBLIC_API_URL is an absolute cross-site API URL (host: ${apiHost}) ` +
+      "and BACKEND_ORIGIN (the same-origin /api proxy) is not set. Production should set " +
+      "BACKEND_ORIGIN to the backend origin and NEXT_PUBLIC_API_URL to /api, then rebuild.",
+  );
+}
+
+warnOnCookieUnsafeApiUrl();
+
 const nextConfig: NextConfig = {
+  // Exposed to the browser bundle so the API client can prefer the same-origin
+  // proxy whenever it is configured. This makes the correct (first-party
+  // cookie) configuration the default even if a stale absolute
+  // NEXT_PUBLIC_API_URL is left over in the environment — the exact failure
+  // mode behind "login succeeds then every request is 401".
+  env: {
+    NEXT_PUBLIC_API_PROXY: backendOrigin ? "1" : "",
+  },
   async rewrites() {
     if (!backendOrigin) return [];
     return [{ source: "/api/:path*", destination: `${backendOrigin}/api/:path*` }];

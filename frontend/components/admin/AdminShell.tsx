@@ -9,6 +9,7 @@ import { Logo } from "@/components/brand/Logo";
 import { Spinner } from "@/components/ui/Spinner";
 import {
   AnalyticsIcon,
+  BellIcon,
   CloseIcon,
   CopyIcon,
   GearIcon,
@@ -63,6 +64,11 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    id: "engagement",
+    label: "Engagement",
+    items: [{ href: "/admin/notifications", label: "Notifications", icon: BellIcon }],
+  },
+  {
     id: "settings",
     label: "Settings",
     items: [
@@ -78,6 +84,7 @@ const TITLES: Record<string, string> = {
   "/admin/products": "Products",
   "/admin/submissions": "Project Requests",
   "/admin/visitors": "Visitors",
+  "/admin/notifications": "Notifications",
   "/admin/team": "Admins & Access",
   "/admin/account": "My Account",
 };

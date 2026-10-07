@@ -43,6 +43,13 @@ export const visitorLimiter = buildLimiter({
   message: "Too many tracking events. Please try again later.",
 });
 
+// Push subscription register/unregister beacons.
+export const pushLimiter = buildLimiter({
+  windowMs: env.rateLimits.generalWindowMs,
+  max: env.rateLimits.pushMax,
+  message: "Too many notification requests. Please try again later.",
+});
+
 // Team management and password changes — sensitive write operations.
 export const sensitiveLimiter = buildLimiter({
   windowMs: env.rateLimits.generalWindowMs,

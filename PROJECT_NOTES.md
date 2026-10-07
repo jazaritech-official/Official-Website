@@ -2103,3 +2103,310 @@ designed EMPTY state); only a total absence of usable data throws, producing the
   ideally a backend "site settings" source.
 - Optional extras not implemented: `Cache-Control: public, s-maxage=60, stale-while-revalidate=86400`
   on the three public GETs, and a full `/admin/services` CRUD manager (see the final report).
+---
+
+## 2026-10-06 — Task I (session cookie, hero shatter, SEO, hub wiring, service cards, navbar occlusion)
+
+### 35.1 Task I.1 — root cause of "login 200, then every request 401"
+
+**Hypothesis H1 confirmed: the browser was talking to the API cross-site, so the
+`SameSite=Lax` admin cookie was never sent back.**
+
+Evidence (attribute names and booleans only — no cookie values, no secrets):
+
+- `POST /api/auth/login` → `200`; the response `Set-Cookie` on the **API origin** carried
+  `HttpOnly`, `Path=/`, `SameSite=Lax`, `Secure=(prod)`, **no `Domain`** — i.e. the cookie was
+  written as a *host-only* cookie for the API host (`jazaritech-backend.vercel.app`).
+- Every later `GET /api/auth/me` from page origin `jazaritech.vercel.app` was a **cross-site**
+  request (`Origin` ≠ `Host`), so the browser withheld the host-only `SameSite=Lax` cookie.
+  `middleware/auth.js` then hit its *no token* branch and returned the single generic body
+  `{ code: "UNAUTHORIZED", message: "Please sign in to continue." }` — which is why the symptom
+  looked like a password/seed problem. **It never was; no seed was re-run.**
+- `lib/api.ts` derived `BASE = NEXT_PUBLIC_API_URL || "/api"`. `NEXT_PUBLIC_*` is inlined at build
+  time, so a stale absolute value in the deployed bundle kept the browser on the cross-site path even
+  if the env var was later corrected without a rebuild.
+- H2 was **ruled out** locally (a throwaway two-origin script showed the attributes above are
+  correct and the cookie is stored under the API host), H3 was confirmed only as the *messenger*
+  (the generic 401 body hides which branch fired), H4 was ruled out (the Next rewrite forwards
+  `Set-Cookie` intact when active).
+
+**Fix (the correct configuration is now the default path).**
+
+- `frontend/lib/api.ts`: when a same-origin proxy is configured (`BACKEND_ORIGIN`), the browser
+  origin wins — `BASE = "/api"` even if a stale absolute `NEXT_PUBLIC_API_URL` is inlined.
+- `frontend/next.config.ts`: `/api/:path*` → `${BACKEND_ORIGIN}/api/:path*` rewrite (§15.3), plus a
+  **build-time warning** when the production bundle would call an absolute cross-site API origin while
+  the proxy is off. Warning only — it never fails the build and never prints URL credentials.
+- Result: the browser only ever talks to the frontend origin, so the admin cookie is host-only on the
+  frontend origin, `HttpOnly`, `Secure` in production, `SameSite=Lax`, `Path=/`, no `Domain`.
+
+### 35.2 Cookie helper contract — `Backend/utils/authCookie.js` (new)
+
+One options object now feeds **set, refresh (password change) and clear**, so the name, `Path`,
+`SameSite`, `Secure`, `HttpOnly` and `maxAge` can never drift apart again:
+
+| Concern | Source |
+|---------|--------|
+| name | `env.cookieName` (default `jazari_admin`) |
+| `HttpOnly` | always `true` |
+| `Secure` | `env.cookieSecure` (default: true in production) |
+| `SameSite` | `env.cookieSameSite` (default `lax`) |
+| `Path` | always `/` |
+| `Domain` | never set (host-only by design) |
+| `maxAge` | seconds, from the JWT expiry — one unit, one place |
+| `clear` | same object, `maxAge: 0` — no divergent copy |
+
+`Backend/config/env.js` additionally refuses the invalid combination
+`SameSite=None` **without** `Secure` (a browser silently drops that cookie), replacing it with
+`Secure: true`, and logs one line. Permission rules (`requireAuth`, `requireRole("super_admin")`, the
+per-request DB re-check, self-protection and the last-super-admin rule) are **untouched**.
+
+### 35.3 Frontend login UX — verify before redirect
+
+`app/admin/login/page.tsx` now calls `api.auth.me()` **after** the login 200 and **before** navigating.
+If `me` returns 401 it shows a non-blaming message — *"Signed in, but your browser did not keep the
+session. Check that cookies are allowed for this site, then try again."* — plus a console hint, instead
+of bouncing silently or rendering raw JSON. The admin shell's cold-visit guard `me` still routes to
+`/admin/login` on 401 with no user-visible error, and the login path awaits the session commit before
+navigating (removing the cookie-commit/guard race). Task G's status-aware error mapping is preserved.
+
+### 35.4 Task I.2 — hero shatter (additive state, real-logo mark untouched)
+
+- **State machine** — `components/three/shatterState.ts` (pure logic, no Three.js, no DOM):
+  `assembled → shattering → floating → reassembling → assembled` driven by one `uProgress` uniform with
+  damping/easing, no hard cuts. `TUNING`: `SHATTER_DURATION 0.75 s`, `REASSEMBLE_DURATION 0.85 s`,
+  `IDLE_DWELL 3 s`, `MAX_HOLD 8 s`, `SHATTER_COOLDOWN 10 s`.
+- **Triggers** (any one): fine-pointer hover on the hero visual column; idle dwell (hero ≥ 50% in view,
+  tab visible, no pointer/scroll/key input for ~3 s); touch tap toggles. **Release**: pointer leave,
+  a scroll past 40 px, the 8 s max hold, or an explicit tap/Escape — then a ~10 s cool-down prevents an
+  idle shatter from looping.
+- **Rendering** — `components/three/shatter.ts`: one `InstancedMesh` of an ≤ 8-triangle shard with
+  per-instance baked attributes (origin, gradient colour sampled from that piece's real gradient, piece
+  index, outward direction, delay, spin axis/rate, scale), all motion computed in the vertex shader from
+  `uProgress`/`uTime` — **zero per-frame CPU allocation**. Shards tile the silhouette at progress 0
+  (≈ 1.25 × cell) and the solid extruded pieces cross-fade out over the first ~150 ms
+  (`applySolidFade`), so the hand-off is seamless. Neon = boosted emissive brand blues + a fresnel rim,
+  with **Growth Green only on the leaf shards**, plus one cheap additive halo layer. No
+  `three/examples/jsm` bloom pass was needed, so **no extra chunk was added**.
+- **Tier budgets** — `quality.ts`: HIGH 1000 / MEDIUM 500 / LOW 200 / reduced-motion & static 0. The
+  FPS monitor's downgrade calls `setBudget()` and draws fewer shards (`data-shards` follows).
+- **Test hooks** — `canvas.dataset.explode = assembled|shattering|floating|reassembling`,
+  `canvas.dataset.shards = <count>`, `window.__jazariDebug.forceShatter(state|null)`,
+  `__jazariDebug.shatterState()`, `__jazariDebug.noteActivity()` (restart the idle timer) and
+  `__jazariDebug.shatter()` (diagnostic snapshot: state, progress, reason, idleFor, cooldownFor,
+  heroInView, pageVisible, pointerInside, running).
+- **Fixed along the way:** the RAF delta is now clamped at **both** ends. The first RAF timestamp can
+  predate the engine's creation clock, and one negative delta used to rewind `elapsed` (shifting every
+  phase and silently delaying the idle dwell by the same amount).
+- Reduced motion never shatters; `NO_WEBGL` behaviour is unchanged; context loss restores the assembled
+  state with one canvas; `disposeScene` frees the shard geometry/material/attributes.
+
+### 35.5 Task I.3 — Google site verification + SEO
+
+- Root `app/layout.tsx` sets `verification: { google: "9sxNHd4zcWdftckBBUCKxc3hiD-qxOpxn03uZXvHChM" }`,
+  which the Metadata API renders as `<meta name="google-site-verification" content="…">` **exactly
+  once** in the server-rendered `<head>` (verified without JS). The token is a public identifier.
+- SEO strengthened without inventing facts: precise title/description, `alternates.canonical`, Open
+  Graph + Twitter (derived from `NEXT_PUBLIC_SITE_URL`), an `Organization` JSON-LD built from real
+  values only (name, URL, the real `/brand/logo-main.png`, and **no `sameAs`** — no profile URLs exist
+  in the repo or footer), one `h1`, sitemap and robots intact, `/admin` still `noindex`.
+
+### 35.6 Task I.4 — Services Hub: living connectors
+
+Geometry, cards, routing, two-way highlight, explode and the mobile spine are **unchanged**. Only the
+wiring layer came alive (`components/services/ServicesHub.tsx` + `globals.css`):
+
+- Per connector: a faint base hairline, a **flowing gradient overlay** (`stroke-dasharray` +
+  animated `stroke-dashoffset`, a per-connector `linearGradient` with `gradientUnits="userSpaceOnUse"`
+  built from Deep Navy → Technology Blue → a light blue tint, each with its own phase/direction), and
+  **2 travelling packets** on the real path (10 total, cap 15) with staggered speed/delay.
+- Growth Green stays a micro-accent: packet heads and node dots only. Ripple rings pulse at sockets and
+  anchors when a packet arrives; hovering/focusing a card speeds up *its* connector and dims the rest;
+  the exploded state increases flow.
+- Tokens `--hub-wire-*` in `globals.css` (light + dark), so dark mode is brighter but brand-derived.
+  Only `stroke-dashoffset`, `transform` and `opacity` animate; the layer is gated by `.is-inview` and
+  tab visibility; under reduced motion the gradients stay static with **no packets and no pulses**;
+  connectors stay hidden on mobile; 0 horizontal overflow at all six widths.
+
+### 35.7 Task I.5 — Services cards: water-fill redesign (+ optional backend fields)
+
+- **Backend (source of truth).** `Service` gained two **optional, backward-compatible** fields:
+  `shortDescription` (trimmed, ≤ 90 chars) and `highlights` (≤ 3 strings, ≤ 24 chars each), validated in
+  the model and exposed by `GET /api/services`. All 14 services are seeded with professional copy by the
+  idempotent `seed-core.js` upserts; old records stay valid. Typed in `frontend/types/api.ts`.
+- **Card.** Resting: white surface, rounded-2xl, icon tile, title, ONE ~70–90-char line and up to 3 tag
+  chips — details hidden. Hover / focus-within / tap raise a **liquid layer** (`translateY(100% → 0)`,
+  600–800 ms spring-soft — a transform, never `height`) built from two ~200 %-wide SVG wave paths looping
+  at different speeds/opacities over a Deep Navy → Technology Blue gradient; a 2 px Growth Green crest is
+  the only green. On fill the title/text turn white and the full description + "Start a project" fade up.
+  The per-card gradient angle rotates deterministically (`--service-fill-angle`), so the grid reads as
+  crafted rather than uniform. Reveal, `tilt-card` depth, corner ticks and `id="service-{slug}"` +
+  `:target` all still work.
+- **A11y.** The full description is always in the DOM (visually hidden cleanly at rest, no clipped
+  text/ellipsis). A real `<button>` toggles the fill with `aria-expanded`/`aria-controls`; Escape closes;
+  focus-within fills; `focus-visible` rings stay visible; touch never depends on hover; reduced motion
+  shows the filled state statically with no wave; with JS off every text block is visible.
+- **Fallback.** If `shortDescription` is absent the frontend cuts the first sentence/clause of
+  `description` at a word boundary — it never invents copy. `publicContent.ts` validation and the
+  snapshot accept the new optional fields, so **`CACHE_VERSION` did not need a bump** and old caches
+  stay valid.
+
+### 35.8 Task I.6 — navbar bleed-through, real fix
+
+Real cause: `.glass` was only `rgba(…, 0.88)` (light) / `0.9` (dark) and its occlusion depended entirely
+on `backdrop-filter`, which is silently dropped when an ancestor becomes a backdrop root (an active
+animation/transform/filter — exactly what the intro animation creates). With 12 % transmission, a large
+bold heading underneath stayed legible as a grey ghost.
+
+Fix: a dedicated inner occlusion layer `.jt-nav__scrim` (absolute, `inset: 0`, `z-index: 0`, own blur)
+sits under the nav content (`relative z-[1]`), raising effective opacity to ≈ 95 % light / ≈ 96.6 % dark
+**independently of the backdrop filter** — the glass look is kept, the bleed is gone. Additionally
+`section[id], h1[id], h2[id], h3[id], article[id] { scroll-margin-top: 6rem }` keeps anchor jumps from
+parking a heading under the fixed bar (`#product-presets` keeps its own 5.5 rem).
+
+### 35.9 Task I — testing notes
+
+- `frontend/scripts/verify-three.mjs` extended (never weakened) with suites **[17] hero shatter**,
+  **[18] SEO + Google verification**, **[19] hub wiring**, **[20] service cards**, **[21] navbar
+  occlusion**, and the session block in **[15b]**: CHECKs **77–112b**.
+  Session checks read the admin credentials from the environment at runtime and print nothing;
+  if they are unavailable the checks report **SKIPPED**, never passed.
+- `Backend/scripts/smoke.js` extended with cookie-attribute assertions (attribute names/booleans only)
+  and "login → me with the cookie → 200; me without a cookie → 401 generic", plus the new optional
+  service fields and their limits. No existing assertion was loosened.
+- `frontend/scripts/audit-contrast.mjs` gained every new text-on-fill pair (white on the lightest
+  gradient stop and the chip/short-text pairs) — the audit stays green.
+- Harness caveat: restart the dev backend before a full run **and** raise `RATE_LIMIT_MAX` when running
+  the enlarged suite (the default 300/15 min is smaller than one full pass now). This is an environment
+  ceiling, not a weakened assertion — no check asserts rate limiting.
+
+### 35.10 Task I — known limitations / owner actions
+
+- **NOT VERIFIED here:** Lighthouse, Firefox, Safari, the real Vercel deployment, Google Search Console
+  verification, and production login (only the local production-shaped build was exercised).
+- Owner must, in order: set `BACKEND_ORIGIN` on the frontend project and make `NEXT_PUBLIC_API_URL`
+  empty/`/api`; redeploy the frontend (**a rebuild is required** — `NEXT_PUBLIC_*` is inlined); set
+  `CLIENT_ORIGIN` (exact frontend origin), `COOKIE_SECURE=true`, `COOKIE_SAMESITE=lax` on the backend;
+  clear site data for the frontend domain once and sign in again; re-run the idempotent
+  `npm run seed:prod` so the new `shortDescription`/`highlights` copy reaches production; then click
+  **Verify** in Search Console and submit `/sitemap.xml`. If the old `.env.example` ever held a real
+  URI, confirm the Atlas password was rotated.
+## 36. 2026-10-07 — Task J: Web Push notifications (visitor opt-in + admin composer)
+
+### 36.1 Goal
+
+Real browser notifications, built entirely in-repo: a visitor is offered an opt-in card ~10 s after
+arrival, and the owner can send messages from the admin panel — including composing *from* one of the
+site's services, because the backend is the single source of truth for services.
+
+### 36.2 Why `web-push` and not a SaaS
+
+Web Push is a browser standard: the browser talks to *its own* push service (FCM/Mozilla/Apple) and our
+server only signs a payload with a VAPID key pair. That means **no third-party account, no per-message
+cost and no vendor SDK** — the only addition is the `web-push` package on the backend (it supplies the
+VAPID/JWT signing and payload encryption). One new dependency, zero new services.
+
+### 36.3 Backend
+
+- **`services/pushService.js`** — the ONLY module that touches `web-push`. `setVapidDetails` runs once at
+  module load; when the keys are absent (or rejected) `isPushEnabled()` is false and callers return a
+  clean `503` instead of throwing. Also exports `buildPayload` (the JSON the service worker receives),
+  `deliver` (one subscription → `{ok, gone, statusCode}`, where `gone` is `404`/`410`), and
+  `mapWithConcurrency` (bounded parallelism).
+- **`models/PushSubscription.js`** — one row per device `endpoint` (unique). Stores the client's
+  `keys.p256dh`/`keys.auth`, a user agent, the page it was enabled from, `isActive`, `failureCount` and
+  `lastSeenAt`. Re-subscribing the same endpoint refreshes the row (idempotent upsert).
+- **`models/Notification.js`** — the admin-composed message (`title` ≤ 80, `body` ≤ 200, optional
+  `url`/`icon`/`tag`/`serviceSlug`, `createdBy`/`createdByName`) plus its delivery `stats`
+  (`targeted`/`sent`/`failed`/`removed`), `status` (`draft`|`sent`|`failed`), `error` and `sentAt`.
+- **`controllers/pushController.js`** (public) — `GET /api/push/public-key` returns the VAPID
+  application server key and a `configured` flag (the frontend only offers the prompt when it is true);
+  `POST /api/push/subscribe` stores/refreshes a device; `POST /api/push/unsubscribe` forgets one.
+  Subscribing deliberately works even without VAPID keys, so the audience can build up before the owner
+  configures them.
+- **`controllers/notificationController.js`** (admin) — list, stats, create (optionally sending
+  immediately), send (optionally to a single `endpoint`, which is how the admin tests one device) and
+  delete. `dispatch()` delivers with concurrency 20, **deletes** endpoints reported gone, **counts**
+  transient failures and deactivates a device at `PUSH_MAX_FAILURES` (default 5), then writes the real
+  numbers back onto the notification. A send always resolves to `sent` or `failed` — never a stuck draft.
+- **`config/env.js`** — new `push` block (`publicKey`, `privateKey`, `subject`, `enabled`, `maxFailures`)
+  and a `pushMax` rate limit. A half-configured key pair is a **warning, not a crash**: a broken push
+  setup must never take the API down.
+- **`middleware/rateLimiter.js`** — `pushLimiter` guards the subscribe/unsubscribe beacons
+  (`PUSH_RATE_LIMIT_MAX`, default 60).
+- **`utils/errors.js`** — added `ApiError.serviceUnavailable()` (503 `SERVICE_UNAVAILABLE`), the honest
+  answer when the server has no VAPID keys.
+
+### 36.4 Frontend
+
+- **`public/sw.js`** — a deliberately minimal service worker. It shows the pushed notification, opens the
+  tapped link (focusing an existing tab when possible) and re-subscribes on
+  `pushsubscriptionchange`. It does **not** cache or intercept fetches, so it can never serve stale
+  content, and it is not an offline app shell.
+- **`lib/push.ts`** — all `navigator`/`Notification`/`PushManager` access lives here (SSR-safe, one place
+  to reason about). The VAPID key is fetched from the API rather than baked into the bundle, so the key
+  is never duplicated into the build; `localStorage` keys record “dismissed” and “enabled”.
+- **`hooks/usePushNotifications.ts`** — capability state (`supported`/`permission`/`subscribed`) plus
+  `enable`/`disable`/`dismiss`. The initial capability read happens inside an async task so no state is
+  set synchronously in an effect body (React's `set-state-in-effect` lint rule).
+- **`components/notifications/NotificationPrompt.tsx`** — the premium opt-in card, shown **10 s after
+  arrival** and only when: the browser supports push, permission is still `default`, the visitor has not
+  dismissed it, the server is configured, and the tab is visible (the timer is paused while hidden). It
+  reuses the shared `Modal` (focus trap, Escape, scroll lock, focus restore) and derives its visibility
+  from state instead of syncing it in an effect. “Not now” persists the dismissal; closing with X or
+  Escape only closes it for this visit. Mounted on the public page next to `VisitTracker`.
+- **Admin `/admin/notifications`** (`components/admin/NotificationsManager.tsx`) — audience + delivery
+  stat cards, a “This device” enable/disable toggle, a composer with a **service reference** select
+  (choosing a service prefills an editable title/message/link from real data — never invented copy), the
+  200-character counter, “Send now” / “Save draft”, and the delivery history with per-row
+  targeted/delivered/failed numbers, resend and delete. Added to the sidebar as a new **Engagement**
+  group (new `BellIcon`/`BellOffIcon`/`SendIcon`).
+
+### 36.5 Styling
+
+`.push-prompt*` is a new unlayered block in `globals.css` (unlayered rules win over the layered `.card`
+component, which is how the card gets a gradient banner): a navy→accent gradient with the blueprint grid
+mask, a warm Growth-Green glow, a glass bell tile, the success/benefit list, actions and fine print.
+Everything derives from existing tokens, so light and dark stay one system, and the bell animation is
+disabled under `prefers-reduced-motion`.
+
+### 36.6 Verification (measured)
+
+| Check | Result |
+|---|---|
+| Frontend `npm run lint` / `npx tsc --noEmit` | 0 problems / 0 errors |
+| Frontend `npm run build` | 16 routes |
+| `npm run audit:contrast` | 51/51 |
+| Harness `node scripts/verify-three.mjs` | **237/237** (10 new checks, 146 `CHECK` literals) |
+| Harness `NO_WEBGL=1 …` | 9/9 |
+| Backend `npm run lint` / `npm run build` | clean / 54 files |
+| Backend `NODE_ENV=test npm run smoke` | **178/178** (+18 push assertions) |
+
+New harness checks: `CHECK 113–116b` (admin page renders, service reference prefills, draft saves and
+deletes) and `CHECK 117–120b` (key exposed, card not immediate, appears ~10 s in as a labelled dialog,
+“Not now” remembered, never re-asked). Live end-to-end was additionally driven in real Chrome: a device
+subscribed (`https://fcm.googleapis.com/...`) and an admin send produced an actual notification on that
+device.
+
+**Two real bugs were found and fixed while verifying, not worked around:**
+
+1. The contrast audit rejected the benefit check glyph — `--growth-ink` on a 22 % Growth tint is
+   **4.29:1** (below AA). The tint was reduced to 12 % so the glyph passes; the audit entry documents
+   that the prompt shares the token pair.
+2. The full-viewport opt-in dialog can cover the navbar, which made the Task I navbar-occlusion
+   `CHECK 110/111` baseline vacuous (the “without the bar” capture could not be distinguished from the
+   “with the bar” one). Fixed at the cause: the harness now dismisses the prompt for suites that are not
+   about it, and establishes the baseline by hiding the pill with `!important` and **confirming** the
+   computed `visibility` (retrying) before capturing — recorded in the check output as
+   `baselineDiagnostics`.
+
+### 36.7 Gotchas for future work
+
+- **Adding a full-viewport overlay to the public page affects unrelated suites.** Any new dialog shown
+  automatically must either be dismissed for other suites or the harness must be explicit about it.
+- The harness now sets `localStorage["jazari-push-dismissed"]="1"` right after the first navigation;
+  the push suite clears it again.
+- **`write_file` REPLACES a whole file.** Appending a section to a long doc must be done by writing a
+  temp file and `cat temp >> target` (as done here), never by “writing the tail”.
+- VAPID keys live only in `Backend/.env` (gitignored) locally and in the Vercel env in production; the
+  `.env.example` holds placeholders.

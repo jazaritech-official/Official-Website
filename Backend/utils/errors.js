@@ -38,6 +38,10 @@ export class ApiError extends Error {
     return new ApiError(409, "CONFLICT", message);
   }
 
+  static serviceUnavailable(message = "This feature is not available right now.") {
+    return new ApiError(503, "SERVICE_UNAVAILABLE", message);
+  }
+
   static tooMany(message = "Too many requests. Please try again shortly.") {
     return new ApiError(429, "RATE_LIMITED", message);
   }

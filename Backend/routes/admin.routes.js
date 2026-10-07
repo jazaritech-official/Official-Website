@@ -38,6 +38,13 @@ import {
 } from "../controllers/submissionController.js";
 import { listVisitors } from "../controllers/visitorController.js";
 import { getDashboardStats } from "../controllers/dashboardController.js";
+import {
+  listNotifications,
+  getNotificationStats,
+  createNotification,
+  sendNotification,
+  deleteNotification,
+} from "../controllers/notificationController.js";
 
 const adminRouter = Router();
 
@@ -199,5 +206,30 @@ adminRouter.get(
   ],
   listVisitors,
 );
+
+// --- Push notifications ----------------------------------------------------
+// `stats` is declared before `/:id` so the literal path is never swallowed.
+adminRouter.get("/notifications/stats", getNotificationStats);
+adminRouter.get("/notifications", listNotifications);
+adminRouter.post(
+  "/notifications",
+  [
+    body("title").trim().isLength({ min: 2, max: 80 }).withMessage("A title of 2–80 characters is required."),
+    body("body").trim().isLength({ min: 2, max: 200 }).withMessage("A message of 2–200 characters is required."),
+    body("url").optional({ values: "falsy" }).trim().isLength({ max: 500 }),
+    body("icon").optional({ values: "falsy" }).trim().isLength({ max: 500 }),
+    body("tag").optional({ values: "falsy" }).trim().isLength({ max: 60 }),
+    body("serviceSlug").optional({ values: "falsy" }).trim().isLength({ max: 80 }),
+    body("send").optional().isBoolean().toBoolean(),
+    validate,
+  ],
+  createNotification,
+);
+adminRouter.post(
+  "/notifications/:id/send",
+  [param("id").isMongoId().withMessage("Invalid identifier."), body("endpoint").optional({ values: "falsy" }).trim().isLength({ max: 1000 }), validate],
+  sendNotification,
+);
+adminRouter.delete("/notifications/:id", idRules, deleteNotification);
 
 export default adminRouter;

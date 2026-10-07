@@ -13,6 +13,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 const CREDENTIALS_ERROR = "Email or password is incorrect.";
 const SERVICE_ERROR = "We couldn't reach the authentication service right now. Please try again.";
+// Shown when credentials are accepted but the session cookie did not stick.
+const SESSION_COOKIE_ERROR =
+  "Signed in, but your browser did not keep the session. Check that cookies are allowed for this site, then try again.";
 
 /**
  * Status-aware login messaging.
@@ -79,6 +82,31 @@ export default function AdminLoginPage() {
 
     try {
       await api.auth.login(email.trim(), password);
+
+      // Confirm the session cookie was actually stored before navigating. If the
+      // cookie is dropped (cross-site API, blocked third-party cookies, a proxy
+      // that strips Set-Cookie), redirecting here would just bounce the user
+      // back to this page with a confusing error, so we verify first.
+      try {
+        await api.auth.me();
+      } catch (verifyCause) {
+        submittingRef.current = false;
+        setSubmitting(false);
+        setFormError(
+          verifyCause instanceof ApiError && verifyCause.status === 401
+            ? SESSION_COOKIE_ERROR
+            : loginErrorMessage(verifyCause),
+        );
+        if (verifyCause instanceof ApiError && verifyCause.status === 401) {
+          // Diagnostic hint only — no secrets, no token contents.
+          console.warn(
+            "[jazari] Login returned 200 but /auth/me returned 401: the session cookie was not stored or not sent. " +
+              "Serve the app same-origin with the /api proxy (BACKEND_ORIGIN), and allow cookies for this site.",
+          );
+        }
+        return;
+      }
+
       router.replace("/admin/dashboard");
     } catch (cause) {
       // Distinguish credential failures from service/network failures — never

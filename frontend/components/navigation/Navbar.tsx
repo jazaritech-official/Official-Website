@@ -94,16 +94,20 @@ export function Navbar() {
             scrolled ? "px-3 py-2 shadow-[var(--shadow-card)]" : "px-4 py-3 sm:px-5 sm:py-3.5",
           ].join(" ")}
         >
+          {/* Occlusion layer — keeps page text from reading through the bar
+              even when `backdrop-filter` is unavailable. */}
+          <span aria-hidden="true" className="jt-nav__scrim" />
+
           <Link
             href="#home"
             aria-label="Jazari Tech — home"
-            className="shrink-0 rounded-full"
+            className="relative z-[1] shrink-0 rounded-full"
             onClick={() => setOpen(false)}
           >
             <Logo variant="compact" sizes="72px" priority className="jt-logo h-7 sm:h-8" />
           </Link>
 
-          <nav aria-label="Primary" className="hidden items-center gap-1 lg:flex">
+          <nav aria-label="Primary" className="relative z-[1] hidden items-center gap-1 lg:flex">
             {LINKS.map((link) => (
               <a
                 key={link.href}
@@ -115,7 +119,7 @@ export function Navbar() {
             ))}
           </nav>
 
-          <div className="flex items-center gap-2">
+          <div className="relative z-[1] flex items-center gap-2">
             <ThemeToggle className="hidden sm:inline-flex" />
             <Link href="#start" className="hidden sm:block">
               <Button size="sm" iconRight={<ArrowRightIcon size={15} />}>

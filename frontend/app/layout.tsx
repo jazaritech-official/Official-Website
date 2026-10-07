@@ -24,8 +24,14 @@ export const metadata: Metadata = {
     template: "%s — Jazari Tech Official",
   },
   description:
-    "Jazari Tech builds software platforms, e-commerce, AI solutions, cloud infrastructure and digital products that help businesses scale with confidence.",
+    "Jazari Tech designs, builds and operates software platforms, e-commerce, AI and cloud systems for businesses that need reliable engineering from prototype to production scale.",
   applicationName: SITE_NAME,
+  // Google Search Console ownership token. This is a PUBLIC identifier (it is
+  // rendered into the HTML head by design), never a secret. Rendered exactly
+  // once as <meta name="google-site-verification" content="..." />.
+  verification: {
+    google: "9sxNHd4zcWdftckBBUCKxc3hiD-qxOpxn03uZXvHChM",
+  },
   authors: [{ name: SITE_NAME }],
   keywords: [
     "Jazari Tech",
@@ -90,6 +96,23 @@ export const viewport: Viewport = {
  * is only enabled when JavaScript is available AND motion is allowed. Without
  * JS (or under prefers-reduced-motion) all content renders fully visible.
  */
+/**
+ * Organization structured data. Only facts that actually exist in the repo:
+ * the name, the canonical site URL and the real logo asset. `sameAs` is
+ * intentionally omitted — the footer social links are still documented
+ * placeholders (generic platform homepages), so claiming them as official
+ * profiles would be inventing data. Add `sameAs` once the real profiles exist.
+ */
+const organizationJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  name: SITE_NAME,
+  url: SITE_URL,
+  logo: `${SITE_URL}/brand/logo-main.png`,
+  description:
+    "Jazari Tech designs, builds and operates software platforms, e-commerce, AI and cloud systems for businesses that need reliable engineering from prototype to production scale.",
+};
+
 const themeInitScript = `(function(){try{var t=localStorage.getItem("jazari-theme");var d=t==="dark"||((!t||t==="system")&&window.matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.classList.toggle("dark",d);document.documentElement.style.colorScheme=d?"dark":"light";document.documentElement.classList.add("js");if(!window.matchMedia("(prefers-reduced-motion: reduce)").matches){document.documentElement.classList.add("js-intro");}}catch(e){}})();`;
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -101,6 +124,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <script
+          type="application/ld+json"
+          // Server-rendered, static facts only — no user data, no secrets.
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd) }}
+        />
       </head>
       <body className="min-h-full flex flex-col">{children}</body>
     </html>

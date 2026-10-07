@@ -59,6 +59,9 @@ function ratio(fg, bg) {
 /** Flatten `fg` at `alpha` over opaque `bg` (tinted chips/badges). */
 const tint = (fg, bg, alpha) => fg.map((v, i) => v * alpha + bg[i] * (1 - alpha));
 
+/** `color-mix`: blend `a` (weight `wA`) with `b` (weight `1 - wA`). */
+const mix = (a, b, wA) => a.map((v, i) => v * wA + b[i] * (1 - wA));
+
 /* ------------------------------------------------------------------ parsing */
 
 /** Extract a `{ ... }` block that starts at `selector` (brace-matched). */
@@ -127,6 +130,8 @@ const PAIRS = [
   ["danger", "background"],
   ["danger", "danger-soft"],
   ["growth-ink", "background"],
+  // Growth tint used by the benefit check glyph in the notification opt-in
+  // prompt as well as the status chips.
   ["growth-ink", "growth", 0.12],
 ];
 
@@ -135,6 +140,15 @@ const SOLID_PAIRS = [
   ["primary-contrast", "primary"],
   ["accent-contrast", "accent"],
 ];
+
+/**
+ * The lightest services-card fill stop, mirroring `--service-fill-c`:
+ * light = accent 92% + white; dark = accent 70% + the navy page background.
+ */
+const FILL_LIGHTEST = {
+  light: { base: "white", weight: 0.92 },
+  dark: { base: "background", weight: 0.7 },
+};
 
 /**
  * Documented-decorative tokens — never rendered as text, so exempt from AA.
@@ -187,6 +201,26 @@ for (const [theme, tokens] of Object.entries(THEMES)) {
     const bg = tokens[bgToken];
     if (!fg || !bg) continue;
     push(theme, fgToken, bgToken, fg, bg, AA_NORMAL);
+  }
+
+  /*
+   * Services-card water-fill: white copy sits on the brand gradient. The
+   * LIGHTEST stop (`--service-fill-c`, a color-mix in globals.css) is the
+   * worst case, so it is measured here with the same blend the stylesheet uses.
+   */
+  const fillSpec = FILL_LIGHTEST[theme];
+  const accent = tokens.accent;
+  const fillBase = tokens[fillSpec.base];
+  if (accent && fillBase) {
+    const lightest = mix(accent, fillBase, fillSpec.weight);
+    push(
+      theme,
+      "service-fill-contrast",
+      `service-fill-c (accent ${Math.round(fillSpec.weight * 100)}% + ${fillSpec.base})`,
+      tokens.white,
+      lightest,
+      AA_NORMAL,
+    );
   }
 }
 

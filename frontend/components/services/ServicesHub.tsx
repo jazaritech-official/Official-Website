@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useApiData } from "@/hooks/useApiData";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
@@ -83,6 +83,7 @@ export function ServicesHub() {
   const reducedMotion = useReducedMotion();
 
   const hubRef = useRef<HTMLDivElement>(null);
+  const wiresRef = useRef<SVGSVGElement | null>(null);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<LogoPieceId | null>(null);
 
@@ -109,21 +110,48 @@ export function ServicesHub() {
     }));
   }, [data]);
 
-  /* Off-screen pause — set as an attribute so no React render is triggered. */
-  const setHubRef = useCallback((node: HTMLDivElement | null) => {
-    hubRef.current = node;
-    if (!node || typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        node.classList.toggle("is-inview", Boolean(entry?.isIntersecting));
-      },
-      { rootMargin: "140px" },
-    );
-    observer.observe(node);
-    // The observer disconnects when the node is replaced.
-    return () => observer.disconnect();
+  /**
+   * SMIL (`animateMotion`) is not a CSS animation, so pausing the packets needs
+   * the SVG's own animation clock. Called only when the hub is in view AND the
+   * tab is visible — the same gate the CSS flow/ripple animations use.
+   */
+  const setWiresRunning = useCallback((running: boolean) => {
+    const svg = wiresRef.current;
+    if (!svg || typeof svg.pauseAnimations !== "function") return;
+    if (running) svg.unpauseAnimations();
+    else svg.pauseAnimations();
   }, []);
+
+  /* Off-screen pause — set as an attribute so no React render is triggered. */
+  const setHubRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      hubRef.current = node;
+      if (!node || typeof IntersectionObserver === "undefined") return;
+      const observer = new IntersectionObserver(
+        (entries) => {
+          const entry = entries[0];
+          const inView = Boolean(entry?.isIntersecting);
+          node.classList.toggle("is-inview", inView);
+          setWiresRunning(inView && document.visibilityState !== "hidden");
+        },
+        { rootMargin: "140px" },
+      );
+      observer.observe(node);
+      // The observer disconnects when the node is replaced.
+      return () => observer.disconnect();
+    },
+    [setWiresRunning],
+  );
+
+  /* Hidden tab → pause the packet clock; visible → resume if still in view. */
+  useEffect(() => {
+    const onVisibility = (): void => {
+      if (document.visibilityState === "hidden") setWiresRunning(false);
+      else setWiresRunning(Boolean(hubRef.current?.classList.contains("is-inview")));
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [setWiresRunning]);
 
   const onFocus = useCallback(() => setOpen(true), []);
   const onBlur = useCallback((event: React.FocusEvent<HTMLDivElement>) => {
@@ -199,21 +227,98 @@ export function ServicesHub() {
           >
             {/* Circuit traces: logo piece → anchor node → orthogonal route → card socket. */}
             <svg
+              ref={wiresRef}
               className="hub__wires"
               viewBox={`0 0 ${HUB_DESIGN.width} ${HUB_DESIGN.height}`}
               preserveAspectRatio="none"
               aria-hidden="true"
               focusable="false"
             >
-              {wireSlots.map((card) => (
-                <path
-                  key={card.piece}
-                  className={`hub-wire${active === card.piece ? " is-lit" : ""}`}
-                  data-hub-connector={card.piece}
-                  d={wirePath(card.piece)}
-                  vectorEffect="non-scaling-stroke"
-                />
-              ))}
+              <defs>
+                {wireSlots.map((card) => {
+                  // Per-connector gradient along its own axis (multi-colour board).
+                  const pts = HUB_PIECES[card.piece].wire;
+                  const start = pts[0];
+                  const end = pts[pts.length - 1];
+                  return (
+                    <linearGradient
+                      key={`${card.piece}-grad`}
+                      id={`hub-wire-grad-${card.piece}`}
+                      gradientUnits="userSpaceOnUse"
+                      x1={start.x}
+                      y1={start.y}
+                      x2={end.x}
+                      y2={end.y}
+                    >
+                      <stop offset="0" stopColor="var(--hub-wire-a)" />
+                      <stop offset="0.55" stopColor="var(--hub-wire-b)" />
+                      <stop offset="1" stopColor="var(--hub-wire-c)" />
+                    </linearGradient>
+                  );
+                })}
+              </defs>
+
+              {wireSlots.map((card, index) => {
+                const lit = active === card.piece;
+                const pts = HUB_PIECES[card.piece].wire;
+                const start = pts[0];
+                const end = pts[pts.length - 1];
+                const dir = index % 2 === 1 ? "reverse" : "forward";
+                return (
+                  <g key={`${card.piece}-wire`} data-hub-wire-group={card.piece}>
+                    {/* Faint base hairline (never moves). */}
+                    <path
+                      className="hub-wire--base"
+                      data-hub-connector-base={card.piece}
+                      d={wirePath(card.piece)}
+                      fill="none"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    {/* Flowing gradient overlay — this is the element every
+                        existing hub check reads (`data-hub-connector`). */}
+                    <path
+                      className={`hub-wire hub-wire--flow hub-wire--grad-${card.piece}${lit ? " is-lit" : ""}`}
+                      data-hub-connector={card.piece}
+                      data-dir={dir}
+                      d={wirePath(card.piece)}
+                      vectorEffect="non-scaling-stroke"
+                      style={{ "--hub-wire-phase": `${(-index * 0.7).toFixed(2)}s` } as React.CSSProperties}
+                    />
+                    {/* Ripple rings at the socket and the anchor node. */}
+                    <circle
+                      className="hub-wire__ripple"
+                      cx={end.x}
+                      cy={end.y}
+                      r="3.4"
+                      style={{ "--hub-wire-phase": `${(-index * 0.9).toFixed(2)}s` } as React.CSSProperties}
+                    />
+                    <circle
+                      className="hub-wire__ripple"
+                      cx={start.x}
+                      cy={start.y}
+                      r="3.4"
+                      style={{ "--hub-wire-phase": `${(-index * 0.9 - 0.6).toFixed(2)}s` } as React.CSSProperties}
+                    />
+                    {/* Travelling packet heads (2 per connector, 10 total). */}
+                    {!reducedMotion &&
+                      [0, 1].map((packetIndex) => (
+                        <circle
+                          key={`${card.piece}-packet-${packetIndex}`}
+                          className="hub-wire__packet"
+                          data-hub-packet={card.piece}
+                          r="2.6"
+                        >
+                          <animateMotion
+                            dur={`${(2.6 + index * 0.4).toFixed(2)}s`}
+                            begin={`${(-index * 0.5 - packetIndex * 1.5).toFixed(2)}s`}
+                            repeatCount="indefinite"
+                            path={wirePath(card.piece)}
+                          />
+                        </circle>
+                      ))}
+                  </g>
+                );
+              })}
               {wireSlots.map((card) => {
                 const anchor = HUB_PIECES[card.piece].anchor;
                 return (

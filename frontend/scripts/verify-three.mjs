@@ -27,6 +27,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { inflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,6 +44,21 @@ const LOGO_CANDIDATES = ["Real Logo.png", "Main Logo.png"]
   .map((name) => "/" + encodeURI(name));
 
 const BASE = process.argv[2] ?? "http://localhost:3001";
+
+/**
+ * URLs the harness must block to simulate an unreachable API.
+ *
+ * The browser reaches the API either directly (an absolute
+ * NEXT_PUBLIC_API_URL, the local-development build) or through the frontend's
+ * same-origin /api proxy (the production-shaped build). Both are blocked so the
+ * offline / snapshot / error checks behave identically in either configuration.
+ * Blocking the proxy URL is inert when the proxy is not active.
+ */
+const API_BLOCK_URLS = ["*localhost:5000*", "*127.0.0.1:5000*", `${BASE}/api/*`];
+const SERVICE_FETCH_PATTERNS = [
+  { urlPattern: "*localhost:5000/api/services*", requestStage: "Request" },
+  { urlPattern: `${BASE}/api/services*`, requestStage: "Request" },
+];
 const NO_WEBGL = process.env.NO_WEBGL === "1"; // fallback-verification mode
 const CHROME =
   process.env.CHROME_PATH ?? "C:/Program Files/Google/Chrome/Application/chrome.exe";
@@ -197,6 +213,89 @@ async function evaluate(cdp, expression) {
     throw new Error(`evaluate failed: ${exceptionDetails.text ?? "unknown"}`);
   }
   return result.value;
+}
+
+/**
+ * Minimal PNG decoder for Chrome screenshots (8-bit, non-interlaced, RGB/RGBA).
+ * Used by the navbar pixel check — no image dependency is added to the project.
+ */
+function decodePng(buffer) {
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idat = [];
+  while (offset + 8 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString("ascii", offset + 4, offset + 8);
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+    } else if (type === "IDAT") {
+      idat.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+    offset += 12 + length;
+  }
+  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : 0;
+  if (!channels || bitDepth !== 8) throw new Error("unsupported PNG for the pixel check");
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const out = Buffer.alloc(height * stride);
+  let pos = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[pos];
+    pos += 1;
+    const line = raw.subarray(pos, pos + stride);
+    pos += stride;
+    const cur = out.subarray(y * stride, (y + 1) * stride);
+    const prev = y > 0 ? out.subarray((y - 1) * stride, y * stride) : null;
+    for (let x = 0; x < stride; x += 1) {
+      const a = x >= channels ? cur[x - channels] : 0;
+      const b = prev ? prev[x] : 0;
+      const c = prev && x >= channels ? prev[x - channels] : 0;
+      let value = line[x];
+      if (filter === 1) value += a;
+      else if (filter === 2) value += b;
+      else if (filter === 3) value += (a + b) >> 1;
+      else if (filter === 4) {
+        const p = a + b - c;
+        const pa = Math.abs(p - a);
+        const pb = Math.abs(p - b);
+        const pc = Math.abs(p - c);
+        value += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      }
+      cur[x] = value & 0xff;
+    }
+  }
+  return { width, height, channels, data: out };
+}
+
+/** Mean + standard deviation of pixel luminance (0-255) in a screenshot. */
+function lumaStats(png) {
+  const { width, height, channels, data } = decodePng(png);
+  const values = new Float64Array(width * height);
+  let sum = 0;
+  for (let i = 0; i < width * height; i += 1) {
+    const at = i * channels;
+    const luma = 0.2126 * data[at] + 0.7152 * data[at + 1] + 0.0722 * data[at + 2];
+    values[i] = luma;
+    sum += luma;
+  }
+  const mean = sum / values.length;
+  let variance = 0;
+  for (let i = 0; i < values.length; i += 1) variance += (values[i] - mean) ** 2;
+  return { mean, std: Math.sqrt(variance / values.length) };
+}
+
+async function captureClipStats(cdp, clip) {
+  const { data } = await cdp.send("Page.captureScreenshot", { format: "png", clip, captureBeyondViewport: false });
+  return lumaStats(Buffer.from(data, "base64"));
 }
 
 async function waitFor(cdp, expression, timeoutMs = 8000, label = "condition") {
@@ -381,6 +480,12 @@ async function main() {
       12000,
       "scene=webgl",
     );
+
+    // The public notification opt-in prompt is a full-viewport dialog that
+    // opens ~10s after arrival. Every suite other than the dedicated push one
+    // must not be disturbed by it, so it is dismissed for the rest of the run
+    // (the push suite clears this flag again when it needs the real behaviour).
+    await evaluate(cdp, `(() => { try { localStorage.setItem("jazari-push-dismissed", "1"); } catch {} return true; })()`);
     const home = await evaluate(
       cdp,
       `(() => ({
@@ -2625,7 +2730,7 @@ async function main() {
 
     // --- 15c. Cache fallback: block the API, reload -----------------------
     await cdp.send("Network.enable");
-    await cdp.send("Network.setBlockedURLs", { urls: ["*localhost:5000*", "*127.0.0.1:5000*"] });
+    await cdp.send("Network.setBlockedURLs", { urls: API_BLOCK_URLS });
     await cdp.send("Page.navigate", { url: `${BASE}/?cache-fallback=1` });
     await waitFor(cdp, `document.readyState === "complete"`, 12000, "home reload (api blocked)");
     await waitFor(cdp, SERVICES_SETTLED, 15000, "services state (api blocked)");
@@ -2669,7 +2774,7 @@ async function main() {
     );
 
     // --- 15e. Designed ERROR: block API + snapshot ------------------------
-    await cdp.send("Network.setBlockedURLs", { urls: ["*localhost:5000*", "*127.0.0.1:5000*", "*content-snapshot.json*"] });
+    await cdp.send("Network.setBlockedURLs", { urls: [...API_BLOCK_URLS, "*content-snapshot.json*"] });
     await cdp.send("Page.navigate", { url: `${BASE}/?error-state=1` });
     await waitFor(cdp, `document.readyState === "complete"`, 12000, "home reload (error)");
     await waitFor(cdp, SERVICES_SETTLED, 15000, "services state (error)");
@@ -2716,7 +2821,7 @@ async function main() {
 
     // --- 15g. Designed EMPTY state (API answers 200 with []) --------------
     await cdp.send("Network.setBlockedURLs", { urls: [] });
-    await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*localhost:5000/api/services*", requestStage: "Request" }] });
+    await cdp.send("Fetch.enable", { patterns: SERVICE_FETCH_PATTERNS });
     const emptyBody = Buffer.from(JSON.stringify({ success: true, data: [] })).toString("base64");
     const onPaused = async (params) => {
       try {
@@ -2806,8 +2911,8 @@ async function main() {
         }))()`,
       );
       check(
-        "CHECK 71 — admin sidebar groups are exactly CONTENT / LEADS / SETTINGS",
-        JSON.stringify(ia.groups) === JSON.stringify(["content", "leads", "settings"]),
+        "CHECK 71 — admin sidebar groups are exactly CONTENT / LEADS / ENGAGEMENT / SETTINGS",
+        JSON.stringify(ia.groups) === JSON.stringify(["content", "leads", "engagement", "settings"]),
         JSON.stringify(ia.groups),
       );
       const requiredLabels = ["Overview", "Homepage Logos", "Products", "Product Presets", "Project Requests", "Visitors", "Admins & Access", "My Account"];
@@ -2841,6 +2946,7 @@ async function main() {
         "/admin/products",
         "/admin/submissions",
         "/admin/visitors",
+        "/admin/notifications",
         "/admin/team",
         "/admin/account",
       ];
@@ -2853,6 +2959,87 @@ async function main() {
         "CHECK 76 — every admin route still resolves at the same path (bookmarks intact)",
         badRoutes.length === 0,
         JSON.stringify(badRoutes),
+      );
+
+      // --- Push notifications admin page (Task J) --------------------------
+      await cdp.send("Page.navigate", { url: `${BASE}/admin/notifications` });
+      await waitFor(cdp, `document.getElementById("push-service") !== null`, 15000, "admin notifications");
+      const pushPage = await evaluate(
+        cdp,
+        `({
+          heading: document.querySelector(".admin-page-header h1")?.textContent?.trim() || "",
+          hasStats: /subscribed devices/i.test(document.body.innerText),
+          hasComposer: Boolean(document.getElementById("push-title") && document.getElementById("push-body")),
+          navLink: Boolean(document.querySelector('a[href="/admin/notifications"]')),
+        })`,
+      );
+      check(
+        "CHECK 113 — the Notifications page renders its header, composer, stats and sidebar link",
+        pushPage.heading === "Notifications" && pushPage.hasStats && pushPage.hasComposer && pushPage.navLink,
+        JSON.stringify(pushPage),
+      );
+
+      const serviceOptions = await evaluate(cdp, `document.getElementById("push-service")?.options.length ?? 0`);
+      check(
+        "CHECK 114 — the composer can reference the real services (Task I data)",
+        serviceOptions >= 15,
+        `${serviceOptions} options`,
+      );
+
+      await evaluate(
+        cdp,
+        `(() => {
+          const select = document.getElementById("push-service");
+          const target = [...select.options].find((o) => o.value);
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
+          setter.call(select, target.value);
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+          return true;
+        })()`,
+      );
+      await sleep(400);
+      const prefilled = await evaluate(
+        cdp,
+        `({ title: document.getElementById("push-title").value, body: document.getElementById("push-body").value })`,
+      );
+      check(
+        "CHECK 115 — choosing a service prefills an editable title and message",
+        prefilled.title.length >= 2 && prefilled.body.length >= 2,
+        JSON.stringify(prefilled).slice(0, 140),
+      );
+
+      await evaluate(
+        cdp,
+        `(() => { const b = [...document.querySelectorAll("button")].find((x) => x.textContent.trim() === "Save draft"); if (b) b.click(); return Boolean(b); })()`,
+      );
+      await sleep(2400);
+      const draftState = await evaluate(
+        cdp,
+        `({
+          noticed: Boolean(document.querySelector('[role="status"]')),
+          inHistory: [...document.querySelectorAll("li")].some((li) => li.textContent.includes("Draft")),
+        })`,
+      );
+      check(
+        "CHECK 116 — a draft saves and appears in the delivery history",
+        draftState.noticed && draftState.inHistory,
+        JSON.stringify(draftState),
+      );
+
+      // Clean up through the UI (delete → confirm).
+      await evaluate(
+        cdp,
+        `(() => { const d = [...document.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") || "").startsWith("Delete")); if (d) d.click(); return Boolean(d); })()`,
+      );
+      await sleep(500);
+      await evaluate(
+        cdp,
+        `(() => { const b = [...document.querySelectorAll("button")].find((x) => x.textContent.trim() === "Delete notification"); if (b) b.click(); return Boolean(b); })()`,
+      );
+      await sleep(1600);
+      check(
+        "CHECK 116b — deleting from the UI removes the row",
+        (await evaluate(cdp, `![...document.querySelectorAll("li")].some((li) => li.textContent.includes("Draft"))`)) === true,
       );
 
       // --- Admin screenshots (desktop + mobile drawer, light + dark) -------
@@ -2872,6 +3059,884 @@ async function main() {
       await evaluate(cdp, `(() => { document.documentElement.classList.remove('dark'); return true; })()`);
       await setViewport(1366, 900, false);
     }
+
+    // --- 16. Task I — admin session survives the real browser cookie flow ---
+    // This is the check that would have caught the live "login 200 then every
+    // request 401" bug: it drives a REAL browser through the same-origin
+    // /api proxy, so the session cookie must be stored and re-sent by Chrome.
+    // Credentials are read from the environment at runtime and never printed.
+    {
+      const sessionEnv = readBackendEnv();
+      const email = process.env.ADMIN_EMAIL ?? sessionEnv.ADMIN_EMAIL;
+      const password = process.env.ADMIN_PASSWORD ?? sessionEnv.ADMIN_PASSWORD;
+
+      // The same-origin proxy is baked into the build (BACKEND_ORIGIN). Without
+      // it the browser would talk to the backend cross-site and the cookie
+      // would be third-party — the exact production misconfiguration.
+      let proxyActive = false;
+      try {
+        proxyActive = (await fetch(`${BASE}/api/health`)).ok;
+      } catch {
+        proxyActive = false;
+      }
+
+      if (!email || !password) {
+        console.log(
+          "  ⚠ SKIPPED (Task I session flow): ADMIN_EMAIL/ADMIN_PASSWORD unavailable — NOT counted as a pass",
+        );
+      } else if (!proxyActive) {
+        console.log(
+          "  ⚠ SKIPPED (Task I session flow): /api proxy not active in this build (set BACKEND_ORIGIN at build time) — NOT counted as a pass",
+        );
+      } else {
+        await setViewport(1366, 900, false);
+        await cdp.send("Page.navigate", { url: `${BASE}/admin/login` });
+        await waitFor(cdp, `document.querySelector('#admin-email') !== null`, 15000, "admin login form");
+
+        const creds = JSON.stringify({ email, password });
+        const loginStatus = await evaluate(
+          cdp,
+          `(async () => {
+            const res = await fetch('/api/auth/login', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              credentials: 'include', body: ${JSON.stringify(creds)},
+            });
+            return res.status;
+          })()`,
+        );
+        const me = await evaluate(
+          cdp,
+          `(async () => {
+            const res = await fetch('/api/auth/me', { credentials: 'include' });
+            const body = await res.json().catch(() => null);
+            return { status: res.status, hasAdmin: Boolean(body?.data?.admin?.email) };
+          })()`,
+        );
+        check(
+          "CHECK 77 — same-origin login → session cookie stored and resent: /api/auth/me is 200",
+          loginStatus === 200 && me.status === 200 && me.hasAdmin === true,
+          `login=${loginStatus} me=${me.status}`,
+        );
+
+        // The portal must render with the real cookie (not an injected one).
+        await cdp.send("Page.navigate", { url: `${BASE}/admin/dashboard` });
+        let portalOk = true;
+        try {
+          await waitFor(cdp, `document.querySelector('[data-admin-quick-guide]') !== null`, 15000, "dashboard via cookie");
+        } catch {
+          portalOk = false;
+        }
+        check("CHECK 78 — dashboard renders from the real session cookie", portalOk === true);
+
+        // A full reload must keep the session (the cookie is persistent).
+        let reloadOk = true;
+        try {
+          await cdp.send("Page.reload");
+          await waitFor(cdp, `document.querySelector('[data-admin-quick-guide]') !== null`, 15000, "dashboard after reload");
+        } catch {
+          reloadOk = false;
+        }
+        check("CHECK 79 — reload keeps the session (no bounce to /admin/login)", reloadOk === true);
+
+        // Logout must clear it, and the next protected call must be a 401.
+        const afterLogout = await evaluate(
+          cdp,
+          `(async () => {
+            await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+            const res = await fetch('/api/auth/me', { credentials: 'include' });
+            return res.status;
+          })()`,
+        );
+        check("CHECK 80 — logout clears the session: /api/auth/me is 401 again", afterLogout === 401, `me=${afterLogout}`);
+      }
+    }
+
+    // --- 18. Task I — SEO + Google site verification (HTTP, no JS) ---------
+    console.log("\n[18] SEO + Google site verification");
+    const seoHtml = await (await fetch(`${BASE}/`)).text();
+    const VERIFY_TOKEN = "9sxNHd4zcWdftckBBUCKxc3hiD-qxOpxn03uZXvHChM";
+    const verifyMatches = [...seoHtml.matchAll(/<meta[^>]*name="google-site-verification"[^>]*>/g)];
+    check(
+      "CHECK 90 — home HTML has the Google verification meta exactly once, exact token",
+      verifyMatches.length === 1 && verifyMatches[0][0].includes(`content="${VERIFY_TOKEN}"`),
+      `count=${verifyMatches.length}`,
+    );
+    check(
+      "CHECK 91 — canonical link is present in the server-rendered head",
+      /<link[^>]*rel="canonical"[^>]*href="[^"]+"/.test(seoHtml),
+    );
+    check(
+      "CHECK 92 — Open Graph + Twitter card metadata present (no JS)",
+      /property="og:title"/.test(seoHtml) && /name="twitter:card"/.test(seoHtml),
+    );
+    const ldMatch = seoHtml.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
+    let orgOk = false;
+    let orgDetail = "missing";
+    if (ldMatch) {
+      try {
+        const data = JSON.parse(ldMatch[1]);
+        orgOk =
+          data["@type"] === "Organization" &&
+          typeof data.url === "string" &&
+          /^https?:\/\//.test(data.url) &&
+          /\/brand\/logo-main\.png$/.test(data.logo || "") &&
+          !("sameAs" in data);
+        orgDetail = JSON.stringify({ type: data["@type"], url: data.url, logo: data.logo, sameAs: data.sameAs ?? null });
+      } catch {
+        orgDetail = "invalid JSON";
+      }
+    }
+    check(
+      "CHECK 93 — Organization JSON-LD: name/url/real logo, no invented sameAs",
+      orgOk,
+      orgDetail,
+    );
+    const h1Count = (seoHtml.match(/<h1[\s>]/g) || []).length;
+    check("CHECK 94 — the homepage renders exactly one <h1>", h1Count === 1, `h1=${h1Count}`);
+    const adminSeoHtml = await (await fetch(`${BASE}/admin/login`)).text();
+    const adminRobots = adminSeoHtml.match(/<meta[^>]*name="robots"[^>]*>/);
+    check(
+      "CHECK 95 — /admin remains noindex",
+      Boolean(adminRobots && /noindex/.test(adminRobots[0])),
+      adminRobots ? adminRobots[0] : "no robots meta",
+    );
+
+    // --- 17. Task I — hero shatter (instanced neon shards) -----------------
+    console.log("\n[17] Hero shatter — instanced neon shards");
+    resetErrors();
+    await setViewport(1440, 900, false);
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+    await cdp.send("Page.navigate", { url: `${BASE}/?shatter=1` });
+    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero scene for shatter");
+    await evaluate(cdp, BRING_HERO_INTO_VIEW);
+    await sleep(700);
+
+    const SHARD_STATE = `(() => {
+      const c = document.querySelector("[data-scene] canvas");
+      return c ? { quality: c.dataset.quality || null, shards: Number(c.dataset.shards || 0), explode: c.dataset.explode || null } : null;
+    })()`;
+    const TIER_BUDGET = { high: 1000, medium: 500, low: 200 };
+    // The idle-dwell trigger is ~3 s of no input, so restart the timer before the
+    // assembled baseline (the spec's own "about 3 s" is what we assert elsewhere).
+    await evaluate(cdp, `(() => { document.querySelector("[data-scene] canvas")?.__jazariDebug?.noteActivity?.(); return true; })()`);
+    const shardInfo = await evaluate(cdp, SHARD_STATE);
+    check(
+      "CHECK 81 — shard count matches the tier budget (1000/500/200), starts assembled",
+      shardInfo && shardInfo.shards === TIER_BUDGET[shardInfo.quality] && shardInfo.explode === "assembled",
+      JSON.stringify(shardInfo),
+    );
+    await evaluate(cdp, `(() => { document.querySelector("[data-scene] canvas")?.__jazariDebug?.noteActivity?.(); return true; })()`);
+    await shotSection("[data-scene]", "hero-shatter-assembled-light.png", "light");
+    await evaluate(cdp, `(() => { document.querySelector("[data-scene] canvas")?.__jazariDebug?.noteActivity?.(); return true; })()`);
+    await shotSection("[data-scene]", "hero-shatter-assembled-dark.png", "dark");
+    await evaluate(cdp, `(() => { document.documentElement.classList.remove('dark'); return true; })()`);
+    await sleep(200);
+
+    const column = await evaluate(
+      cdp,
+      `(() => {
+        const el = document.querySelector("[data-scene]");
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width * 0.5), y: Math.round(r.y + r.height * 0.5) };
+      })()`,
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: column.x, y: column.y });
+    let hoverState = null;
+    try {
+      hoverState = await waitFor(
+        cdp,
+        `(() => { const c = document.querySelector("[data-scene] canvas"); return c && c.dataset.explode !== "assembled" ? c.dataset.explode : ""; })()`,
+        4000,
+        "hover shatter",
+      );
+    } catch {
+      hoverState = null;
+    }
+    check("CHECK 82 — hovering the visual column starts the shatter", hoverState === "shattering" || hoverState === "floating", String(hoverState));
+    await sleep(900);
+    const floating = await evaluate(cdp, `document.querySelector("[data-scene] canvas")?.dataset.explode || null`);
+    check("CHECK 83 — the shatter progresses on to floating", floating === "floating", String(floating));
+
+    const ctaHit = await evaluate(
+      cdp,
+      `(() => {
+        const link = [...document.querySelectorAll("a")].find((a) => /start your project/i.test(a.textContent || ""));
+        if (!link) return { ok: false, reason: "cta missing" };
+        const r = link.getBoundingClientRect();
+        const el = document.elementFromPoint(Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2));
+        return { ok: Boolean(el && (link === el || link.contains(el))), tag: el ? el.tagName : null };
+      })()`,
+    );
+    check("CHECK 84 — headline CTA stays hit-testable during the shatter", ctaHit.ok === true, JSON.stringify(ctaHit));
+    await shotSection("[data-scene]", "hero-shatter-floating-light.png", "light");
+    await shotSection("[data-scene]", "hero-shatter-floating-dark.png", "dark");
+    await evaluate(cdp, `(() => { document.documentElement.classList.remove('dark'); return true; })()`);
+    await sleep(200);
+
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+    let afterLeave = null;
+    try {
+      afterLeave = await waitFor(
+        cdp,
+        `(() => { const c = document.querySelector("[data-scene] canvas"); return c && c.dataset.explode === "assembled" ? "assembled" : ""; })()`,
+        5000,
+        "reassemble on leave",
+      );
+    } catch {
+      afterLeave = null;
+    }
+    check("CHECK 85 — pointer leave reassembles the mark", afterLeave === "assembled", String(afterLeave));
+
+    await evaluate(
+      cdp,
+      `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("floating")`,
+    );
+    await sleep(300); // the dataset is written by the RAF loop, not synchronously
+    const forced = await evaluate(cdp, `document.querySelector("[data-scene] canvas").dataset.explode`);
+    await evaluate(cdp, `(() => { window.scrollTo(0, 320); return true; })()`);
+    let afterScroll = null;
+    try {
+      afterScroll = await waitFor(
+        cdp,
+        `(() => { const c = document.querySelector("[data-scene] canvas"); return c && c.dataset.explode === "assembled" ? "assembled" : ""; })()`,
+        5000,
+        "reassemble on scroll",
+      );
+    } catch {
+      afterScroll = null;
+    }
+    check(
+      "CHECK 86 — the debug hook forces a state, and a scroll reassembles",
+      forced === "floating" && afterScroll === "assembled",
+      `${forced} → ${afterScroll}`,
+    );
+    await evaluate(cdp, `(() => { window.scrollTo(0, 0); return true; })()`);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+    await sleep(3600);
+    const idleState = await evaluate(
+      cdp,
+      `(() => {
+        const c = document.querySelector("[data-scene] canvas");
+        return { explode: c?.dataset.explode || null, snap: c?.__jazariDebug?.shatter?.() ?? null };
+      })()`,
+    );
+    check(
+      "CHECK 87 — idle dwell (~3 s, no input, hero in view) starts the shatter",
+      idleState.explode === "shattering" ||
+        idleState.explode === "floating" ||
+        idleState.explode === "reassembling",
+      JSON.stringify(idleState),
+    );
+
+    // Reset, then force an assembled state before the reduced-motion pass.
+    await evaluate(cdp, `(() => { window.scrollTo(0, 0); return true; })()`);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await cdp.send("Page.navigate", { url: `${BASE}/?shatter-rm=1` });
+    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (reduced motion)");
+    await evaluate(cdp, BRING_HERO_INTO_VIEW);
+    await sleep(800);
+    const rmColumn = await evaluate(
+      cdp,
+      `(() => {
+        const el = document.querySelector("[data-scene]");
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width * 0.5), y: Math.round(r.y + r.height * 0.5) };
+      })()`,
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: rmColumn.x, y: rmColumn.y });
+    await sleep(1200);
+    const rmState = await evaluate(cdp, `document.querySelector("[data-scene] canvas")?.dataset.explode || null`);
+    const rmForce = await evaluate(
+      cdp,
+      `(() => { const c = document.querySelector("[data-scene] canvas"); c.__jazariDebug.forceShatter("floating"); return c.dataset.explode; })()`,
+    );
+    check(
+      "CHECK 88 — reduced motion never shatters (hover and forced hook both inert)",
+      rmState === "assembled" && rmForce === "assembled",
+      `hover=${rmState} forced=${rmForce}`,
+    );
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+
+    await cdp.send("Page.navigate", { url: `${BASE}/?shatter-cycles=1` });
+    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (cycles)");
+    await evaluate(cdp, BRING_HERO_INTO_VIEW);
+    await sleep(500);
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("floating")`);
+      await sleep(320);
+      await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("assembled")`);
+      await sleep(320);
+    }
+    const canvasCount = await evaluate(cdp, `document.querySelectorAll("[data-scene] canvas").length`);
+    check("CHECK 89 — exactly one canvas after 3 shatter cycles (no leaks)", canvasCount === 1, String(canvasCount));
+    assertClean("hero-shatter");
+
+    // --- 19. Task I — Services hub: animated wiring ------------------------
+    console.log("\n[19] Services hub — animated wiring");
+    resetErrors();
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+    await gotoHub("light", 1440, 900);
+    await sleep(500);
+
+    // Packet count + the colours driving the flow.
+    const hubWireLayer = await evaluate(
+      cdp,
+      `(() => {
+        const packets = [...document.querySelectorAll("#hub [data-hub-packet]")];
+        const flows = [...document.querySelectorAll("#hub .hub-wire--flow")];
+        const stops = [...document.querySelectorAll('#hub linearGradient[id^="hub-wire-grad-"] stop')].map((s) => getComputedStyle(s).stopColor);
+        const packet = packets[0] ? getComputedStyle(packets[0]).fill : null;
+        return {
+          packets: packets.length,
+          flows: flows.length,
+          bases: document.querySelectorAll("#hub [data-hub-connector-base]").length,
+          stops: [...new Set(stops)].slice(0, 8),
+          packet,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 96 — 2 packets per connector (10 total, cap 15) + a base and a flow per connector",
+      hubWireLayer.packets === 10 && hubWireLayer.flows === 5 && hubWireLayer.bases === 5,
+      JSON.stringify({ packets: hubWireLayer.packets, flows: hubWireLayer.flows, bases: hubWireLayer.bases }),
+    );
+    check(
+      "CHECK 97 — connector gradients are brand-derived blues and packet heads stay Growth Green",
+      hubWireLayer.stops.length >= 3 &&
+        hubWireLayer.stops.every((c) => /^(rgb|color)/.test(c)) &&
+        /^rgb\(149, 201, 61\)$/.test(hubWireLayer.packet || ""),
+      JSON.stringify({ stops: hubWireLayer.stops, packet: hubWireLayer.packet }),
+    );
+
+    // Packets move along their own connector path.
+    const hubPacketProbe = `(() => {
+      const svg = document.querySelector("#hub .hub__wires");
+      if (!svg) return null;
+      const inv = svg.getScreenCTM().inverse();
+      const path = document.querySelector('#hub [data-hub-connector="leaf"]');
+      const packets = [...document.querySelectorAll('#hub [data-hub-packet="leaf"]')];
+      const toUser = (el) => { const b = el.getBoundingClientRect(); return new DOMPoint(b.x + b.width / 2, b.y + b.height / 2).matrixTransform(inv); };
+      const samples = [];
+      for (let i = 0; i <= 40; i += 1) { const p = path.getPointAtLength(path.getTotalLength() * i / 40); samples.push(p); }
+      return packets.map((el) => {
+        const u = toUser(el);
+        let best = Infinity;
+        for (const s of samples) best = Math.min(best, Math.hypot(s.x - u.x, s.y - u.y));
+        return { x: u.x, y: u.y, dist: +best.toFixed(2) };
+      });
+    })()`;
+    const hwPack1 = await evaluate(cdp, hubPacketProbe);
+    await sleep(600);
+    const hwPack2 = await evaluate(cdp, hubPacketProbe);
+    const hwMoved = hwPack1 && hwPack2 && hwPack1.map((a, i) => Math.hypot(a.x - hwPack2[i].x, a.y - hwPack2[i].y));
+    const hwOnPath = hwPack1 && hwPack1.every((p) => p.dist <= 8);
+    check(
+      "CHECK 98 — packets travel along the real connector path (on-path + moving)",
+      Boolean(hwOnPath && hwMoved && hwMoved.some((d) => d > 2)),
+      JSON.stringify({ onPath: hwOnPath, moved: hwMoved && hwMoved.map((d) => +d.toFixed(2)) }),
+    );
+
+    // Hovering a card speeds up only its own connector.
+    const hubWireCardBox = await evaluate(
+      cdp,
+      `(() => {
+        const a = document.querySelector('#hub-service-list a[data-hub-card="leaf"]');
+        const r = a.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+      })()`,
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: hubWireCardBox.x, y: hubWireCardBox.y });
+    await sleep(500);
+    const hubFlowSpeeds = await evaluate(
+      cdp,
+      `(() => {
+        const read = (piece) => { const el = document.querySelector('#hub [data-hub-connector="' + piece + '"]'); return el ? getComputedStyle(el).animationDuration : null; };
+        return { leaf: read("leaf"), top: read("top"), righthand: read("right") };
+      })()`,
+    );
+    check(
+      "CHECK 99 — hover speeds up only the relevant connector",
+      hubFlowSpeeds.leaf === "1.5s" && hubFlowSpeeds.top !== "1.5s" && hubFlowSpeeds.righthand !== "1.5s",
+      JSON.stringify(hubFlowSpeeds),
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+    await sleep(300);
+
+    // Off-screen: the flow is paused.
+    await evaluate(cdp, `(() => { window.scrollTo(0, 0); document.documentElement.classList.remove('dark'); return true; })()`);
+    await sleep(600);
+    const hubWireOffscreen = await evaluate(
+      cdp,
+      `(() => {
+        const hubEl = document.querySelector("#hub");
+        const flow = document.querySelector("#hub .hub-wire--flow");
+        return { inView: hubEl.classList.contains("is-inview"), play: flow ? getComputedStyle(flow).animationPlayState : null };
+      })()`,
+    );
+    check(
+      "CHECK 100 — connector animation is paused while the hub is off-screen",
+      hubWireOffscreen.inView === false && hubWireOffscreen.play === "paused",
+      JSON.stringify(hubWireOffscreen),
+    );
+
+    // Reduced motion: static gradient lines, no packets.
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await gotoHub("light", 1440, 900);
+    await sleep(400);
+    const hubRMWires = await evaluate(
+      cdp,
+      `(() => {
+        const flow = document.querySelector("#hub .hub-wire--flow");
+        const cs = flow ? getComputedStyle(flow) : null;
+        return { packets: document.querySelectorAll("#hub [data-hub-packet]").length, animation: cs ? cs.animationName : null, opacity: cs ? +cs.opacity : 0 };
+      })()`,
+    );
+    check(
+      "CHECK 101 — reduced motion: no packets, static gradient lines stay visible",
+      hubRMWires.packets === 0 && hubRMWires.animation === "none" && hubRMWires.opacity >= 0.5,
+      JSON.stringify(hubRMWires),
+    );
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+
+    // Overflow at all six reference widths.
+    const hubWireOverflow = [];
+    for (const w of [1920, 1440, 1366, 1024, 768, 390]) {
+      await setViewport(w, w < 640 ? 844 : 900, w < 640);
+      await setThemeThenReload("light");
+      hubWireOverflow.push(await evaluate(cdp, `({ w: window.innerWidth, o: document.documentElement.scrollWidth - window.innerWidth })`));
+    }
+    check(
+      "CHECK 102 — no horizontal overflow at 1920/1440/1366/1024/768/390",
+      hubWireOverflow.every((entry) => entry.o <= 0),
+      JSON.stringify(hubWireOverflow),
+    );
+    await setViewport(1366, 900, false);
+    await gotoHub("light", 1440, 900);
+    await shotSection("#hub", "hub-wiring-light.png", "light");
+    await shotSection("#hub", "hub-wiring-dark.png", "dark");
+    assertClean("hub-wiring");
+
+    // --- 20. Task I — Services cards: water-fill redesign ------------------
+    console.log("\n[20] Services cards — water-fill redesign");
+    resetErrors();
+    await setViewport(1440, 900, false);
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+    await cdp.send("Page.navigate", { url: `${BASE}/?services-redesign=1` });
+    await waitFor(cdp, SERVICES_SETTLED, 15000, "services settled");
+    await evaluate(cdp, `(() => { const c = document.querySelector("#services article[data-service-card]"); if (c) c.scrollIntoView({ block: "center", behavior: "instant" }); return true; })()`);
+    await sleep(500);
+
+    const restCard = await evaluate(
+      cdp,
+      `(() => {
+        const card = document.querySelector("#services article[data-service-card]");
+        const details = card.querySelector(".service-card__details");
+        const short = card.querySelector(".service-card__short");
+        return {
+          slug: card.dataset.serviceCard,
+          id: card.id,
+          detailsOpacity: +getComputedStyle(details).opacity,
+          descLength: card.querySelector(".service-card__desc").textContent.trim().length,
+          shortVisible: +getComputedStyle(short).opacity > 0.9,
+          chips: card.querySelectorAll(".service-card__chip").length,
+          height: card.offsetHeight,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 103 — at rest the details are hidden, the short line/chips show, the full description stays in the DOM",
+      restCard.detailsOpacity < 0.05 && restCard.shortVisible && restCard.chips <= 3 && restCard.descLength >= 20,
+      JSON.stringify(restCard),
+    );
+
+    const svcCardPoint = await evaluate(
+      cdp,
+      `(() => { const r = document.querySelector("#services article[data-service-card]").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 40) }; })()`,
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: svcCardPoint.x, y: svcCardPoint.y });
+    await sleep(950);
+    const hoverCard = await evaluate(
+      cdp,
+      `(() => {
+        const card = document.querySelector("#services article[data-service-card]");
+        return {
+          liquid: getComputedStyle(card.querySelector(".service-card__liquid")).transform,
+          detailsOpacity: +getComputedStyle(card.querySelector(".service-card__details")).opacity,
+          title: getComputedStyle(card.querySelector(".service-card__title")).color,
+          height: card.offsetHeight,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 104 — hover raises the liquid with transform (not height) and fades the description up in white",
+      /matrix\(1, 0, 0, 1, 0, 0\)/.test(hoverCard.liquid) &&
+        hoverCard.detailsOpacity > 0.9 &&
+        hoverCard.height === restCard.height &&
+        /rgba?\(255,\s*255,\s*255/.test(hoverCard.title),
+      JSON.stringify({ liquid: hoverCard.liquid, details: hoverCard.detailsOpacity, title: hoverCard.title, height: hoverCard.height, restHeight: restCard.height }),
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+    await sleep(300);
+
+    const cardStyles = `(() => {
+      const card = document.querySelector("#services article[data-service-card]");
+      return {
+        detailsOpacity: +getComputedStyle(card.querySelector(".service-card__details")).opacity,
+        liquid: getComputedStyle(card.querySelector(".service-card__liquid")).transform,
+        filled: card.hasAttribute("data-filled"),
+      };
+    })()`;
+    await evaluate(cdp, `(() => { document.querySelector("#services article[data-service-card]").querySelector(".service-card__toggle").focus(); return true; })()`);
+    await sleep(950); // the liquid transition is 600-800 ms
+    const focusCard = await evaluate(cdp, cardStyles);
+    check(
+      "CHECK 105 — keyboard focus-within fills the card too",
+      focusCard.detailsOpacity > 0.9 && /matrix\(1, 0, 0, 1, 0, 0\)/.test(focusCard.liquid),
+      JSON.stringify(focusCard),
+    );
+
+    const toggleBefore = await evaluate(
+      cdp,
+      `(() => {
+        const btn = document.querySelector("#services article[data-service-card] .service-card__toggle");
+        return btn.getAttribute("aria-expanded");
+      })()`,
+    );
+    await evaluate(
+      cdp,
+      `(() => { document.querySelector("#services article[data-service-card] .service-card__toggle").click(); return true; })()`,
+    );
+    await sleep(300); // React commits state on the next microtask/render
+    const toggleAfter = await evaluate(
+      cdp,
+      `(() => {
+        const card = document.querySelector("#services article[data-service-card]");
+        const btn = card.querySelector(".service-card__toggle");
+        return { after: btn.getAttribute("aria-expanded"), text: btn.textContent.trim(), filled: card.hasAttribute("data-filled") };
+      })()`,
+    );
+    check(
+      "CHECK 106 — the in-card <button> is a real toggle (aria-expanded flips)",
+      (toggleAfter.after === "true" || toggleAfter.after === "false") &&
+        toggleAfter.after !== toggleBefore &&
+        toggleAfter.filled === (toggleAfter.after === "true"),
+      JSON.stringify({ before: toggleBefore, after: toggleAfter.after, text: toggleAfter.text, filled: toggleAfter.filled }),
+    );
+
+    await evaluate(cdp, `(() => { document.querySelector("#services article[data-service-card] .service-card__toggle").focus(); return true; })()`);
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+    await sleep(250);
+    const escapeFilled = await evaluate(cdp, `document.querySelector("#services article[data-service-card]").hasAttribute("data-filled")`);
+    check("CHECK 107 — Escape closes the fill", escapeFilled === false, String(escapeFilled));
+
+    const anchors = await evaluate(
+      cdp,
+      `(() => {
+        const cards = [...document.querySelectorAll("#services article[data-service-card]")];
+        const ids = cards.map((c) => c.id);
+        return { count: cards.length, allPrefixed: ids.every((id) => id.startsWith("service-")), unique: new Set(ids).size === ids.length };
+      })()`,
+    );
+    check(
+      "CHECK 108 — all 14 cards keep unique id=\"service-{slug}\" anchors (hub links resolve)",
+      anchors.count === 14 && anchors.allPrefixed && anchors.unique,
+      JSON.stringify(anchors),
+    );
+
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await cdp.send("Page.navigate", { url: `${BASE}/?services-rm=1` });
+    await waitFor(cdp, SERVICES_SETTLED, 15000, "services settled (reduced motion)");
+    await sleep(400);
+    const rmCard = await evaluate(
+      cdp,
+      `(() => {
+        const card = document.querySelector("#services article[data-service-card]");
+        card.scrollIntoView({ block: "center", behavior: "instant" });
+        card.querySelector(".service-card__toggle").focus();
+        const liquid = card.querySelector(".service-card__liquid");
+        return {
+          detailsOpacity: +getComputedStyle(card.querySelector(".service-card__details")).opacity,
+          transition: getComputedStyle(liquid).transitionDuration,
+          wave: getComputedStyle(card.querySelector(".service-card__wave")).animationName,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 109 — reduced motion: static fill (no wave, no transition) still reveals the description",
+      rmCard.detailsOpacity > 0.9 &&
+        rmCard.wave === "none" &&
+        rmCard.transition.split(",").every((d) => Number.parseFloat(d) === 0),
+      JSON.stringify(rmCard),
+    );
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+
+    // Screenshots: rest, then a filled card in both themes.
+    await cdp.send("Page.navigate", { url: `${BASE}/?services-shots=1` });
+    await waitFor(cdp, SERVICES_SETTLED, 15000, "services settled (shots)");
+    await shotSection("#services", "service-cards-rest-light.png", "light");
+    await shotSection("#services", "service-cards-rest-dark.png", "dark");
+    await cdp.send("Page.navigate", { url: `${BASE}/?services-shots=2` });
+    await waitFor(cdp, SERVICES_SETTLED, 15000, "services settled (filled shot)");
+    await evaluate(cdp, `(() => { const c = document.querySelector("#services article[data-service-card]"); c.scrollIntoView({ block: "center", behavior: "instant" }); document.documentElement.classList.remove("dark"); return true; })()`);
+    await sleep(400);
+    const filledPoint = await evaluate(
+      cdp,
+      `(() => { const r = document.querySelector("#services article[data-service-card]").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 40) }; })()`,
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: filledPoint.x, y: filledPoint.y });
+    await sleep(1000);
+    await capture("service-cards-filled-light.png");
+    await evaluate(cdp, `(() => { document.documentElement.classList.add("dark"); return true; })()`);
+    await sleep(500);
+    await capture("service-cards-filled-dark.png");
+    await evaluate(cdp, `(() => { document.documentElement.classList.remove("dark"); return true; })()`);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+    assertClean("services-cards");
+
+    // --- 21. Task I — navbar occlusion (pixel-level, non-vacuous) -----------
+    console.log("\n[21] Navbar occlusion");
+    resetErrors();
+    await setViewport(1366, 900, false);
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+    await cdp.send("Page.navigate", { url: `${BASE}/?nav-occlusion=1` });
+    await waitFor(cdp, `document.querySelector(".jt-nav .glass") !== null`, 15000, "navbar");
+    // The public opt-in prompt is a full-viewport dialog; it is unrelated to the
+    // navbar and must never skew this measurement, so dismiss it for this page.
+    await evaluate(cdp, `(() => { try { localStorage.setItem("jazari-push-dismissed", "1"); } catch {} return true; })()`);
+    await sleep(1000); // intro animation finished → no lingering transform
+
+    const NAV_FREE_REGION = `(() => {
+      const pill = document.querySelector(".jt-nav .glass");
+      const r = pill.getBoundingClientRect();
+      const kids = [...pill.children]
+        .filter((k) => !k.classList.contains("jt-nav__scrim"))
+        .map((k) => k.getBoundingClientRect())
+        .filter((b) => b.width > 4 && b.height > 4);
+      const free = [];
+      let cursor = r.left + 8;
+      for (const b of kids.sort((a, c) => a.left - c.left)) {
+        if (b.left - cursor > 40) free.push([cursor + 4, b.left - 4]);
+        cursor = Math.max(cursor, b.right);
+      }
+      if (r.right - 8 - cursor > 40) free.push([cursor + 4, r.right - 4]);
+      const pick = free.sort((a, b) => (b[1] - b[0]) - (a[1] - a[0]))[0];
+      if (!pick) return null;
+      const width = Math.min(72, Math.round(pick[1] - pick[0]));
+      return { x: Math.round(pick[0]), y: Math.round(r.top + r.height / 2 - 12), width, height: 24, scale: 1 };
+    })()`;
+
+    const runNavOcclusion = async (theme) => {
+      await evaluate(cdp, `(() => { document.documentElement.classList.toggle("dark", ${theme === "dark"}); return true; })()`);
+      await sleep(300);
+      // A deterministic high-contrast "text behind the bar" fixture.
+      await evaluate(
+        cdp,
+        `(() => {
+          const pill = document.querySelector(".jt-nav .glass");
+          const r = pill.getBoundingClientRect();
+          let el = document.getElementById("nav-occlusion-probe");
+          if (!el) { el = document.createElement("div"); el.id = "nav-occlusion-probe"; document.body.appendChild(el); }
+          el.setAttribute("aria-hidden", "true");
+          el.textContent = "HIGH CONTRAST TEXT BEHIND THE NAVBAR";
+          const dark = ${theme === "dark"};
+          el.style.cssText = "position:fixed;left:" + Math.round(r.left) + "px;top:" + Math.round(r.top) +
+            "px;width:" + Math.round(r.width) + "px;height:" + Math.round(r.height) +
+            "px;z-index:100;display:flex;align-items:center;justify-content:center;font:700 22px/1.1 sans-serif;letter-spacing:1px;pointer-events:none;" +
+            (dark ? "background:#ffffff;color:#000000;" : "background:#111111;color:#ffffff;");
+          return true;
+        })()`,
+      );
+      await sleep(300);
+      const probe = await evaluate(cdp, NAV_FREE_REGION);
+      if (!probe) return { ok: false, reason: "no free region inside the pill" };
+      const shown = await captureClipStats(cdp, probe);
+
+      // Establish the "without the bar" baseline. A React re-render can restore
+      // an inline style between our write and the screenshot, so the hide is
+      // applied with `!important` and then CONFIRMED in a separate evaluate
+      // (retrying if needed) before anything is captured — the non-vacuity
+      // guard is only meaningful if the bar was really gone.
+      const hidePill = `(() => {
+        const pill = document.querySelector(".jt-nav .glass");
+        if (!pill) return false;
+        pill.style.setProperty("visibility", "hidden", "important");
+        return true;
+      })()`;
+      const pillVisibility = `(() => {
+        const pill = document.querySelector(".jt-nav .glass");
+        return pill ? getComputedStyle(pill).visibility : "missing";
+      })()`;
+
+      let hiddenConfirmed = false;
+      for (let attempt = 0; attempt < 6 && !hiddenConfirmed; attempt += 1) {
+        await evaluate(cdp, hidePill);
+        await sleep(80);
+        hiddenConfirmed = (await evaluate(cdp, pillVisibility)) === "hidden";
+      }
+      await sleep(180);
+      const hidden = await captureClipStats(cdp, probe);
+      const baselineDiagnostics = {
+        pillVisibility: await evaluate(cdp, pillVisibility),
+        fixturePresent: await evaluate(cdp, `Boolean(document.getElementById("nav-occlusion-probe"))`),
+      };
+
+      await evaluate(
+        cdp,
+        `(() => {
+          const pill = document.querySelector(".jt-nav .glass");
+          if (pill) pill.style.removeProperty("visibility");
+          const el = document.getElementById("nav-occlusion-probe");
+          if (el) el.remove();
+          return true;
+        })()`,
+      );
+      await sleep(220);
+      return { ok: true, shown, hidden, probe, baselineDiagnostics };
+    };
+
+    const navLight = await runNavOcclusion("light");
+    check(
+      "CHECK 110 — light: high-contrast text behind the bar is not legible through it (bright + low variance)",
+      navLight.ok &&
+        navLight.shown.mean > 200 &&
+        navLight.shown.std < 20 &&
+        navLight.hidden.mean < navLight.shown.mean - 60,
+      JSON.stringify(navLight),
+    );
+
+    const navDark = await runNavOcclusion("dark");
+    check(
+      "CHECK 111 — dark: the same fixture is occluded (dark + low variance)",
+      navDark.ok &&
+        navDark.shown.mean < 60 &&
+        navDark.shown.std < 20 &&
+        navDark.hidden.mean > navDark.shown.mean + 60,
+      JSON.stringify(navDark),
+    );
+    await cdp.send("Page.navigate", { url: `${BASE}/?nav-shots=1` });
+    await waitFor(cdp, `document.querySelector(".jt-nav .glass") !== null`, 15000, "navbar (shots)");
+    await sleep(900);
+
+    // Anchor jumps must leave headings below the fixed bar.
+    const scrollMargin = await evaluate(
+      cdp,
+      `(() => {
+        const ids = ["home", "hub", "services", "start"];
+        const nav = document.querySelector(".jt-nav");
+        const navH = nav ? nav.getBoundingClientRect().height : 0;
+        const margins = ids.map((id) => {
+          const el = document.getElementById(id);
+          return el ? parseFloat(getComputedStyle(el).scrollMarginTop) : 0;
+        });
+        return { navH, margins };
+      })()`,
+    );
+    check(
+      "CHECK 112 — every anchored section declares scroll-margin-top >= the navbar height",
+      scrollMargin.margins.every((m) => m >= scrollMargin.navH && m > 0),
+      JSON.stringify(scrollMargin),
+    );
+    await evaluate(cdp, `(() => { const el = document.getElementById("services"); if (el) el.scrollIntoView(); return true; })()`);
+    await sleep(700);
+    const servicesHeadingClear = await evaluate(
+      cdp,
+      `(() => {
+        const h = document.getElementById("services-heading");
+        const nav = document.querySelector(".jt-nav");
+        return { headingTop: h.getBoundingClientRect().top, navBottom: nav.getBoundingClientRect().bottom };
+      })()`,
+    );
+    check(
+      "CHECK 112b — after an anchor jump the services heading sits below the navbar",
+      servicesHeadingClear.headingTop >= servicesHeadingClear.navBottom - 1,
+      JSON.stringify(servicesHeadingClear),
+    );
+    await setThemeThenReload("light");
+    await sleep(400);
+    await capture("navbar-occlusion-light.png");
+    await setThemeThenReload("dark");
+    await sleep(400);
+    await capture("navbar-occlusion-dark.png");
+    await setThemeThenReload("light");
+    assertClean("navbar-occlusion");
+
+    // --- 22. Task J — public notification opt-in prompt --------------------
+    console.log("\n[22] Notification opt-in prompt (public)");
+    resetErrors();
+    await setViewport(1366, 900, false);
+    await evaluate(cdp, `(() => { try { localStorage.removeItem("jazari-push-dismissed"); } catch {} return true; })()`);
+    await cdp.send("Page.navigate", { url: `${BASE}/?push-prompt=1` });
+    await waitFor(cdp, `document.querySelector(".jt-nav .glass") !== null`, 15000, "navbar (push prompt)");
+
+    const pushKey = await evaluate(
+      cdp,
+      `fetch("/api/push/public-key").then((r) => r.json()).then((d) => ({ configured: d.data.configured === true, keyLength: d.data.key.length }))`,
+    );
+    check(
+      "CHECK 117 — the browser receives the VAPID public key (push is configured)",
+      pushKey.configured === true && pushKey.keyLength > 20,
+      JSON.stringify(pushKey),
+    );
+
+    await sleep(7000);
+    check(
+      "CHECK 118 — the opt-in card is NOT shown immediately on arrival",
+      (await evaluate(cdp, `Boolean(document.querySelector("[data-push-prompt]"))`)) === false,
+    );
+
+    let promptAppeared = false;
+    for (let i = 0; i < 20 && !promptAppeared; i += 1) {
+      await sleep(500);
+      promptAppeared = await evaluate(cdp, `Boolean(document.querySelector("[data-push-prompt]"))`);
+    }
+    const promptInfo = await evaluate(
+      cdp,
+      `(() => {
+        const el = document.querySelector("[data-push-prompt]");
+        if (!el) return null;
+        const dialog = el.closest('[role="dialog"]');
+        return {
+          dialog: Boolean(dialog),
+          labelled: Boolean(dialog && dialog.getAttribute("aria-label")),
+          title: el.querySelector("h2")?.textContent?.trim() || "",
+          benefits: el.querySelectorAll(".push-prompt__benefits li").length,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 119 — it appears on its own ~10s in as a labelled, titled dialog",
+      promptAppeared && promptInfo?.dialog === true && promptInfo.labelled === true && promptInfo.title.length > 0 && promptInfo.benefits >= 3,
+      JSON.stringify(promptInfo),
+    );
+    await capture("notification-prompt.png");
+
+    await evaluate(
+      cdp,
+      `(() => { const b = [...document.querySelectorAll("button")].find((x) => x.textContent.trim() === "Not now"); if (b) b.click(); return Boolean(b); })()`,
+    );
+    await sleep(600);
+    const dismissState = await evaluate(
+      cdp,
+      `({ gone: !document.querySelector("[data-push-prompt]"), stored: localStorage.getItem("jazari-push-dismissed") })`,
+    );
+    check(
+      "CHECK 120 — “Not now” closes the card and is remembered",
+      dismissState.gone === true && dismissState.stored === "1",
+      JSON.stringify(dismissState),
+    );
+
+    await cdp.send("Page.navigate", { url: `${BASE}/?push-prompt=2` });
+    await waitFor(cdp, `document.querySelector(".jt-nav .glass") !== null`, 15000, "navbar (push prompt 2)");
+    await sleep(11500);
+    check(
+      "CHECK 120b — a visitor who dismissed it is not asked again",
+      (await evaluate(cdp, `Boolean(document.querySelector("[data-push-prompt]"))`)) === false,
+    );
+
+    assertClean("push-prompt");
+    await evaluate(cdp, `(() => { try { localStorage.setItem("jazari-push-dismissed", "1"); } catch {} return true; })()`);
 
     // --- favicon-tab: the largest ICO frame, written as-is (real icon) -----
     {

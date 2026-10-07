@@ -35,7 +35,7 @@ import { createLogoMaterial, type MaterialTier } from "./materials";
 import { disposeObject } from "./helpers/disposeScene";
 
 /* ---- Assembled logo parameters (TUNING) ---------------------------------- */
-const SOURCE_CENTER = 2048; // centre of the 4096 viewBox
+export const SOURCE_CENTER = 2048; // centre of the 4096 viewBox
 const TARGET_SIZE = 3.05; // assembled logo longest axis, scene units
 const EXTRUDE_DEPTH = 190; // source px — scaled down with the geometry
 const BEVEL = 20; // source px — soft moulded edge
@@ -62,6 +62,12 @@ export interface JazariRibbon {
   specs: LogoPieceSpec[];
   /** World-space hotspot anchor (the leaf, top-right of the mark). */
   anchor: Mesh;
+  /**
+   * Uniform scale applied to every piece (source px → scene units). Exposed so
+   * the shatter field can map sampled silhouette points onto the exact same
+   * coordinates as the solid pieces.
+   */
+  readonly scale: number;
   dispose(): void;
 }
 
@@ -69,6 +75,18 @@ export interface JazariRibbon {
 function buildSvg(): string {
   const paths = LOGO_PIECES.map((piece) => `<path d="${piece.d}" fill="#ffffff"/>`).join("");
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4096 4096">${paths}</svg>`;
+}
+
+/**
+ * Sample a real logo gradient at a source-space point — the exact same math as
+ * the per-vertex colouring below, reused by the shatter field so shards carry
+ * the true artwork colours (light-blue caps, deep-navy folds, green leaf).
+ */
+export function sampleLogoGradient(gradient: LogoGradient, x: number, y: number): Color {
+  const dx = gradient.x2 - gradient.x1;
+  const dy = gradient.y2 - gradient.y1;
+  const lengthSq = dx * dx + dy * dy || 1;
+  return makeGradientSampler(gradient)(((x - gradient.x1) * dx + (y - gradient.y1) * dy) / lengthSq);
 }
 
 /** Per-vertex color sampler over a real logo gradient (linear interpolation). */
@@ -208,6 +226,7 @@ export function createJazariRibbon(tier: MaterialTier): JazariRibbon {
     leaf,
     specs,
     anchor: leaf,
+    scale,
     dispose(): void {
       // BufferGeometry disposal is idempotent; one traversal is sufficient.
       disposeObject(group);

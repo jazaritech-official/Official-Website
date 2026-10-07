@@ -58,6 +58,9 @@ export const RefreshIcon = createIcon("RefreshIcon", paths.refresh);
 export const CopyIcon = createIcon("CopyIcon", paths.copy);
 export const ClockIcon = createIcon("ClockIcon", paths.clock);
 export const InboxIcon = createIcon("InboxIcon", paths.inbox);
+export const BellIcon = createIcon("BellIcon", paths.bell);
+export const BellOffIcon = createIcon("BellOffIcon", paths.bellOff);
+export const SendIcon = createIcon("SendIcon", paths.send);
 
 /**
  * Registry keyed by the `icon` field stored on Service documents in MongoDB,
@@ -115,6 +118,9 @@ export const iconRegistry: Record<IconName, ComponentType<IconProps>> = {
   copy: CopyIcon,
   clock: ClockIcon,
   inbox: InboxIcon,
+  bell: BellIcon,
+  bellOff: BellOffIcon,
+  send: SendIcon,
 };
 
 /** Resolve an icon key safely — unknown keys degrade to an info glyph. */

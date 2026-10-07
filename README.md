@@ -129,7 +129,7 @@ Then open **http://localhost:3000** — public site at `/`, admin portal at `/ad
 | `npm run build:icons` | Regenerate the icon set (`app/favicon.ico` 16/32/48, `app/icon.png`, `app/apple-icon.png`, `public/brand/icon-{192,512}.png`) from the owner logo — dependency-free |
 | `npm run snapshot:content` | Refresh `public/content-snapshot.json`, the build-time fallback for public content (never fails a build; never overwrites good data with empty) |
 | `npm run check:secrets` | Scan tracked example/doc files for real-looking secrets (prints `file:line` only, exits 1 on a finding) |
-| `node scripts/verify-three.mjs` | Full headless Chrome 3D/a11y/regression harness (**185 checks**; needs a production build on `:3001` + the backend) |
+| `node scripts/verify-three.mjs` | Full headless Chrome 3D/a11y/regression harness (**226 checks**; needs a production build on `:3001` + the backend) |
 | `node scripts/capture-themes.mjs <before\|after>` | Hero/hub/footer screenshots at desktop + mobile in light + dark |
 
 **Backend (`Backend/package.json`)**
@@ -141,7 +141,7 @@ Then open **http://localhost:3000** — public site at `/`, admin portal at `/ad
 | `npm start` | Production entry (`node server.js`) |
 | `npm run seed` / `npm run seed:mem` / `npm run seed:mem:once` | Seed admin, templates, services, sample products |
 | `npm run seed:prod` | **Guarded** production seed — refuses unless `CONFIRM_PRODUCTION_SEED=true` (see `DEPLOYMENT.md` §15) |
-| `npm run smoke` | Full end-to-end API test (real HTTP + in-memory Mongo, **144 assertions**) |
+| `npm run smoke` | Full end-to-end API test (real HTTP + in-memory Mongo, **160 assertions**) |
 | `npm run lint` | ESLint 10 flat config |
 | `npm run build` | Syntax check across all backend files |
 
@@ -206,25 +206,29 @@ Full tables: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §8–§12.
 - [ ] Metadata: title template, OG/Twitter, robots, sitemap, canonical production URL
 
 ### Verification
-- [ ] `frontend`: `npm run lint` ✅ (0 problems) `npm run build` ✅ (14 routes)
-- [ ] `Backend`: `npm run lint` ✅ `npm run build` ✅ (46 files) `npm run smoke` ✅ (124/124 assertions)
-- [ ] Full-stack smoke: public content, intake + reference ID, visitor dedupe, admin login/stats/CSV/logout, logo upload lifecycle, all routes 200
-- [ ] Three.js harness: `node scripts/verify-three.mjs` ✅ 158/158 · `NO_WEBGL=1 …` ✅ 9/9 (incl. brand/layout/first-load + grid + real-logo hub checks + screenshots in `frontend/test-output/screenshots/`)
+- [ ] `frontend`: `npm run lint` ✅ (0 problems) `npm run build` ✅ (16 routes) `npm run audit:contrast` ✅ (51/51)
+- [ ] `Backend`: `npm run lint` ✅ `npm run build` ✅ (54 files) `npm run smoke` ✅ (178/178 assertions)
+- [ ] Full-stack smoke: public content, intake + reference ID, visitor dedupe, admin login/stats/CSV/logout, logo upload lifecycle, session-cookie attributes, push subscribe/unsubscribe + notification compose/send/delete, all routes 200
+- [ ] Three.js harness: `node scripts/verify-three.mjs` ✅ 237/237 · `NO_WEBGL=1 …` ✅ 9/9 (incl. brand/layout/first-load, grid, real-logo hub, icons/manifest, services states, admin IA, admin session, hero shatter, SEO, hub wiring, service cards, navbar occlusion, notification opt-in + screenshots in `frontend/test-output/screenshots/`)
 
 ## 8. Production notes
 
 1. Set `NODE_ENV=production`, a real `JWT_SECRET`, `COOKIE_SECURE=true`, and real `MONGODB_URI`.
 2. Paste Cloudinary credentials — the storage driver switches automatically; local fallback is
    disabled outside development.
-3. Point `NEXT_PUBLIC_API_URL` at the deployed API and `CLIENT_ORIGIN` at the deployed site.
+3. Set the **VAPID key pair** (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`) plus `VAPID_SUBJECT` so the
+   API can send browser notifications (`npx web-push generate-vapid-keys` in `Backend/`). Without
+   them everything still runs — the public site simply does not offer the opt-in and admin sends
+   return `503 SERVICE_UNAVAILABLE` — but the keys are required for notifications to reach anyone.
+4. Point `NEXT_PUBLIC_API_URL` at the deployed API and `CLIENT_ORIGIN` at the deployed site.
 
    **Preferred: same-origin API proxy.** Set `NEXT_PUBLIC_API_URL` to an empty value (or `/api`) and
    set `BACKEND_ORIGIN` on the **frontend** project instead. `frontend/next.config.ts` then rewrites
    `/api/:path*` to `${BACKEND_ORIGIN}/api/:path*`, so the browser only ever talks to the frontend
    origin. That keeps the admin session cookie first-party (`SameSite=Lax` is sent normally) and
    removes cross-site CORS/preflight concerns. `lib/api.ts` supports both modes.
-4. Build: `frontend: npm run build && npm start` · `Backend: npm start` (use a process manager).
-5. **Backend on Vercel** — `Backend/vercel.json` sets the Express framework preset, so Vercel bundles
+5. Build: `frontend: npm run build && npm start` · `Backend: npm start` (use a process manager).
+6. **Backend on Vercel** — `Backend/vercel.json` sets the Express framework preset, so Vercel bundles
    the existing `Backend/server.js` app as one function and routes every request to it (all `/api/*`
    routes and `/api/health` included). `server.js` exposes `export default app` for detection; local
    `start()` (DB connect + port listen) is unchanged and runs only off-Vercel. The MongoDB connection
@@ -261,12 +265,15 @@ fallback. It is a progressive enhancement:
 - **Verify** (headless Chrome harness, no extra dependencies):
   ```bash
   cd frontend && npm run build && npx next start -p 3001   # terminal A
-  node scripts/verify-three.mjs                            # 164 checks
+  node scripts/verify-three.mjs                            # 237 checks
   NO_WEBGL=1 node scripts/verify-three.mjs                 # fallback checks
   ```
   Requires the backend running (the harness seeds two test logos via the admin API).
-  **Restart the backend first** — its shared rate limiter (300 req / 15 min) can trip mid-run and
-  surface as spurious API failures.
+  **Restart the backend first** — its shared rate limiter can trip mid-run and surface as spurious API
+  failures. One full pass now costs more than the default 300 requests / 15 min, so raise the ceiling for
+  the run (`RATE_LIMIT_MAX=1200 LOGIN_RATE_LIMIT_MAX=60 SENSITIVE_RATE_LIMIT_MAX=120`); no harness check
+  asserts rate limiting, so this only removes false 429s. The admin session checks read credentials from
+  the environment at runtime (never printed); without them they report SKIPPED, not passed.
 - **Troubleshooting WebGL fallback**: if the hero shows rings/tiles instead of the 3D mark, the
   scene is on its static fallback — check `data-scene` on the hero container (`fallback` = WebGL
   unavailable/context lost/chunk failed, all silent by design), check `data-quality` on the canvas,
@@ -407,5 +414,68 @@ Full detail: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §33 · deploy steps: [`DE
   states, cache/snapshot/error/empty resilience via CDP offline + interception, and admin IA), contrast
   **49/49**, backend smoke **144/144**.
 
-Architecture + tuning: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §34 · deploy steps:
-[`DEPLOYMENT.md`](./DEPLOYMENT.md) §15.4–§15.5.
+### Task I — admin session, hero shatter, SEO, hub wiring, service cards, navbar occlusion
+- **Admin session fixed at the root.** The browser was calling the API **cross-site**, so the host-only
+  `SameSite=Lax` admin cookie was never sent back (login `200`, then every request `401`). The same-origin
+  proxy is now the default path (`BACKEND_ORIGIN` pins `BASE` to `/api` even if a stale absolute
+  `NEXT_PUBLIC_API_URL` is inlined), `Backend/utils/authCookie.js` builds one options object for
+  set/refresh/clear (name, `Path=/`, `SameSite`, `Secure`, `HttpOnly`, seconds), the invalid
+  `SameSite=None` without `Secure` combination is refused, a misconfigured production build prints a
+  warning, and the login page verifies `/api/auth/me` before redirecting. **No seed was re-run.**
+- **Hero shatter** — the real-logo mark is untouched; hovering, a ~3 s idle dwell, or a touch tap drive an
+  additive `assembled → shattering → floating → reassembling → assembled` state on one `uProgress`
+  uniform, rendered as one `InstancedMesh` of ≤ 8-triangle neon shards (HIGH 1000 / MED 500 / LOW 200 /
+  reduced-motion 0) with per-instance baked attributes and GPU-only motion. Growth Green stays on the
+  leaf shards. No new dependency and no bloom pass.
+- **SEO** — the Google site-verification meta renders exactly once in the SSR head, plus canonical,
+  OG/Twitter and an `Organization` JSON-LD built from real values only (no invented `sameAs`); `/admin`
+  stays `noindex`.
+- **Hub wiring** — the Task F geometry is unchanged; connectors gained a flowing per-connector gradient,
+  10 travelling packets (cap 15), ripple pulses and hover/focus response, all token-driven and
+  reduced-motion-safe.
+- **Service cards** — a water-fill redesign (liquid rises with a transform, two wave paths, 2 px Growth
+  Green crest, full description always in the DOM) backed by new optional `Service.shortDescription`
+  (≤ 90 chars) and `highlights` (≤ 3 × ≤ 24 chars) fields seeded for all 14 services.
+- **Navbar occlusion** — an inner `.jt-nav__scrim` layer lifts effective opacity to ≈ 95 %/96.6 % so page
+  text can no longer read through the glass when `backdrop-filter` is dropped, plus `scroll-margin-top`
+  on anchored sections.
+- **Verification** — harness **226/226** (+ `NO_WEBGL` 9/9), contrast **51/51**, backend smoke **160/160**,
+  both linters clean, backend syntax check **49 files**, frontend build **15 routes**. Initial home JS
+  grew +1.0 KB gzip, the lazy three chunk +3.3 KB gzip; no new dependencies.
+
+Architecture + tuning: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §34–§35 · deploy steps:
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) §15.3–§15.6.
+
+### Task J — Web Push notifications (visitor opt-in + admin composer)
+
+Real browser notifications, end to end, with no third-party SaaS:
+
+- **Visitor side.** `frontend/public/sw.js` is a minimal service worker that only shows pushed
+  notifications and opens the tapped link (it never caches or intercepts fetches).
+  `components/notifications/NotificationPrompt.tsx` offers a premium, brand-coloured opt-in card
+  **10 s after arrival**, once per visitor, and only when the browser supports push, permission is
+  still undecided, the tab is visible and the server actually has VAPID keys. “Not now” is remembered
+  in `localStorage`; the card is a real labelled dialog (focus trap, Escape, scroll lock).
+  `lib/push.ts` owns all `navigator`/`Notification` access, so components stay SSR-safe and the VAPID
+  key is fetched from the API (`GET /api/push/public-key`) rather than baked into the bundle.
+- **Admin side.** `/admin/notifications` (sidebar group **Engagement**) shows the audience and delivery
+  counters, a “this device” toggle, a composer that can **reference any of the 14 seeded services**
+  (selecting one prefills an editable title/message/link), “Send now” / “Save draft”, and the delivery
+  history with per-notification targeted/delivered/failed counts, resend and delete.
+- **Backend.** `services/pushService.js` wraps `web-push` (the only new dependency) and is the single
+  place VAPID is configured; `models/PushSubscription.js` stores one row per device endpoint
+  (idempotent upsert, failure counter, auto-deactivate at `PUSH_MAX_FAILURES`); `models/Notification.js`
+  stores the message plus its delivery stats. Delivery runs with bounded concurrency (20), deletes
+  endpoints the push service reports gone (404/410) and records everything on the notification.
+  Missing keys are **non-fatal**: subscriptions are still stored and sends return a clean `503`.
+- **Verification.** Harness **237/237** (incl. `CHECK 113–120b`: the API key is exposed, the card does
+  not appear immediately, it appears ~10 s in as a labelled dialog, “Not now” is remembered and never
+  re-asked, the admin page renders, a service reference prefills, a draft saves and can be deleted) and
+  backend smoke **178/178** (public key, https-only subscribe, idempotent re-subscribe, stats, compose
+  validation, send outcomes, unsubscribe, delete). Live end-to-end was also driven in a real browser:
+  a device subscribed (`https://fcm.googleapis.com/...`) and the admin send produced an actual
+  notification on that device.
+
+Setup: add `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` to the backend
+(`npx web-push generate-vapid-keys`) — see [`DEPLOYMENT.md`](./DEPLOYMENT.md) §15.7 and
+[`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §36.

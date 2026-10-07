@@ -44,6 +44,11 @@
      never read through the glass and collide with nav text/logo. (TUNING)
      82-92% surface opacity + 14-18px backdrop blur + hairline border. */
   --nav-bg: rgba(255, 255, 255, 0.88);
+  /* Inner occlusion layer. `backdrop-filter` is silently dropped when an
+     ancestor becomes a "backdrop root" (an active animation / transform /
+     filter), which left the bar only 88% opaque and let page text read
+     through it. This layer adds real occlusion independently of the blur. */
+  --nav-scrim: rgba(255, 255, 255, 0.62);
   --nav-blur: 16px;
   --nav-border: color-mix(in srgb, var(--border-strong) 78%, transparent);
   --nav-shadow: 0 8px 30px -18px rgba(var(--shadow-tint), 0.28), 0 1px 2px rgba(var(--shadow-tint), 0.06);
@@ -132,6 +137,23 @@
   --grid-trace: var(--accent); /* circuit trace colour */
   --grid-trace-opacity: 0.35;
   --grid-tick: var(--slate); /* crosshair / tick colour */
+
+  /* ---- Services hub wiring layer (TUNING) ------------------------------
+     Animated connector colours/speeds. Brand family only: Deep Navy →
+     Technology Blue → a light blue tint; Growth Green is reserved for the
+     tiny travelling packet heads. */
+  --hub-wire-base: color-mix(in srgb, var(--slate) 68%, transparent);
+  --hub-wire-base-w: 1.2px;
+  --hub-wire-a: var(--primary);
+  --hub-wire-b: var(--accent);
+  --hub-wire-c: color-mix(in srgb, var(--accent) 42%, #ffffff);
+  --hub-wire-flow-w: 2.4px;
+  --hub-wire-flow-dash: 12 108;
+  --hub-wire-speed: 3.6s;
+  --hub-wire-speed-lit: 1.5s;
+  --hub-wire-packet: var(--growth);
+  --hub-wire-packet-r: 2.6px;
+  --hub-wire-ripple: color-mix(in srgb, var(--accent) 60%, transparent);
 }
 
 /* ============================================================
@@ -169,6 +191,7 @@
   --btn-outline-border-hover: var(--accent);
   --btn-sheen: rgba(255, 255, 255, 0.1);
   --nav-bg: rgba(10, 15, 36, 0.9);
+  --nav-scrim: rgba(10, 15, 36, 0.66);
   --nav-border: color-mix(in srgb, #46527f 78%, transparent);
   --nav-shadow: 0 10px 34px -18px rgba(0, 0, 0, 0.7), 0 1px 2px rgba(0, 0, 0, 0.45);
   --overlay: rgba(4, 7, 18, 0.62);
@@ -179,6 +202,13 @@
   --grid-line-fine: rgba(167, 179, 200, 0.055);
   --grid-line-major: rgba(93, 151, 218, 0.13);
   --grid-trace-opacity: 0.42;
+
+  /* Services hub wiring — brighter, still brand-derived, on the dark canvas. */
+  --hub-wire-base: color-mix(in srgb, var(--slate) 48%, transparent);
+  --hub-wire-a: color-mix(in srgb, var(--accent) 55%, #ffffff);
+  --hub-wire-b: var(--accent);
+  --hub-wire-c: #cfe2fb;
+  --hub-wire-ripple: color-mix(in srgb, var(--accent) 75%, transparent);
 
   --shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-card: 0 14px 34px -18px rgba(0, 0, 0, 0.75), 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -344,6 +374,20 @@
     backdrop-filter: blur(var(--nav-blur)) saturate(160%);
     border: 1px solid var(--nav-border);
     box-shadow: var(--nav-shadow);
+  }
+
+  /* Navbar pill: an inner layer that occludes page content even when the
+     backdrop blur is unavailable, so text beneath can never be read through
+     the bar. Content sits above it (`relative z-[1]` in Navbar.tsx). */
+  .jt-nav__scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    background-color: var(--nav-scrim);
+    -webkit-backdrop-filter: blur(var(--nav-blur)) saturate(160%);
+    backdrop-filter: blur(var(--nav-blur)) saturate(160%);
+    pointer-events: none;
   }
 
   .eyebrow {
@@ -1673,6 +1717,319 @@ html:not(.js-intro) .hairline {
 }
 
 /* ============================================================
+   6c. SERVICES CARDS — water-fill redesign (Task I)
+   ------------------------------------------------------------
+   Rest: white card, icon tile, title, ONE short line, up to 3 chips.
+   Hover / focus-within / tap: a liquid layer rises (transform only), the
+   copy turns white and the full description + CTA fade up. Growth Green is
+   the 2px crest line and nothing else. No-JS: everything stays visible.
+   ============================================================ */
+
+:root {
+  --service-fill-a: var(--primary); /* Deep Navy */
+  --service-fill-b: var(--accent); /* Technology Blue */
+  /* Lightest stop. Deliberately only slightly lighter than Technology Blue:
+     white copy over it still clears WCAG AA (>= 4.5:1). */
+  --service-fill-c: color-mix(in srgb, var(--accent) 92%, #ffffff);
+  --service-fill-crest: var(--growth);
+  --service-fill-dur: 700ms;
+  --on-fill: #ffffff;
+  /* Worst-case contrast backdrop for white text on the lightest fill stop. */
+  --service-fill-worst: var(--service-fill-c);
+}
+
+.dark {
+  /* Dark canvas: keep the lightest stop dark enough for white copy (>= 4.5:1). */
+  --service-fill-c: color-mix(in srgb, var(--accent) 70%, #0a0f24);
+}
+
+.service-card {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  min-height: 19.5rem;
+}
+
+.service-card__body {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  height: 100%;
+  padding: 1.5rem;
+}
+
+/* Liquid: rises with transform only — never height. */
+.service-card__liquid {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  transform: translateY(101%);
+  transition: transform var(--service-fill-dur) var(--ease-out);
+  background: linear-gradient(
+    var(--service-fill-angle, 158deg),
+    var(--service-fill-a),
+    var(--service-fill-b) 58%,
+    var(--service-fill-c)
+  );
+  will-change: transform;
+}
+
+/* Two wave crests, ~200% wide, looping at different speeds/opacities. */
+.service-card__wave {
+  position: absolute;
+  left: -50%;
+  top: -13px;
+  width: 200%;
+  height: 26px;
+  display: block;
+  animation: jt-service-wave 7s linear infinite;
+}
+
+.service-card__wave--a {
+  fill: var(--service-fill-b);
+  opacity: 0.9;
+}
+
+.service-card__wave--b {
+  fill: var(--service-fill-c);
+  opacity: 0.55;
+  animation-duration: 11s;
+  animation-direction: reverse;
+}
+
+/* 2px Growth Green crest — the ONLY green on the card. */
+.service-card__crest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 13px;
+  height: 2px;
+  background: var(--service-fill-crest);
+  opacity: 0.95;
+}
+
+@keyframes jt-service-wave {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-25%);
+  }
+}
+
+/* Short line + chips make way for the full copy when filled. */
+.service-card__short,
+.service-card__chips,
+.service-card__title {
+  transition:
+    color 320ms var(--ease-out),
+    opacity 260ms var(--ease-out);
+}
+
+/* Full description + CTA — always in the DOM, revealed on fill. */
+.service-card__details {
+  position: absolute;
+  left: 1.5rem;
+  right: 1.5rem;
+  bottom: 1.35rem;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  opacity: 0;
+  transform: translateY(12px);
+  pointer-events: none;
+  transition:
+    opacity 320ms var(--ease-out),
+    transform 480ms var(--ease-out);
+}
+
+.service-card__desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  overflow: hidden;
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+.service-card__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--on-fill);
+  width: fit-content;
+  border-bottom: 1px solid color-mix(in srgb, var(--on-fill) 55%, transparent);
+  padding-bottom: 2px;
+}
+
+/* Fill triggers. `.js` is set by the theme bootstrap: without JS nothing is
+   hidden and no fill is attempted. */
+.js .service-card[data-filled] .service-card__liquid {
+  transform: translateY(0);
+}
+
+@media (hover: hover) {
+  .js .service-card:hover .service-card__liquid {
+    transform: translateY(0);
+  }
+}
+
+.js .service-card:focus-within .service-card__liquid {
+  transform: translateY(0);
+}
+
+.js .service-card[data-filled] .service-card__title,
+.js .service-card[data-filled] .service-card__desc,
+.js .service-card[data-filled] .service-card__short,
+.js .service-card[data-filled] .service-card__chip,
+.js .service-card[data-filled] .service-card__icon {
+  color: var(--on-fill);
+}
+
+.js .service-card[data-filled] .service-card__chip {
+  border-color: color-mix(in srgb, var(--on-fill) 58%, transparent);
+  background-color: transparent;
+}
+
+/* Icon tile: translucent white over the fill, white glyph (decorative). */
+.js .service-card[data-filled] .service-card__icon {
+  background-color: color-mix(in srgb, var(--on-fill) 18%, transparent);
+}
+
+.js .service-card[data-filled] .service-card__short,
+.js .service-card[data-filled] .service-card__chips {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.js .service-card[data-filled] .service-card__details {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* Hover / focus parity on desktop (same visual result as [data-filled]). */
+@media (hover: hover) {
+  .js .service-card:hover .service-card__title,
+  .js .service-card:hover .service-card__icon,
+  .js .service-card:hover .service-card__desc,
+  .js .service-card:hover .service-card__short,
+  .js .service-card:hover .service-card__chip {
+    color: var(--on-fill);
+  }
+
+  .js .service-card:hover .service-card__short,
+  .js .service-card:hover .service-card__chips {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .js .service-card:hover .service-card__details {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+
+  .js .service-card:hover .service-card__chip {
+    border-color: color-mix(in srgb, var(--on-fill) 58%, transparent);
+    background-color: transparent;
+  }
+
+  .js .service-card:hover .service-card__icon {
+    background-color: color-mix(in srgb, var(--on-fill) 18%, transparent);
+  }
+}
+
+.js .service-card:focus-within .service-card__title,
+.js .service-card:focus-within .service-card__icon,
+.js .service-card:focus-within .service-card__desc,
+.js .service-card:focus-within .service-card__short,
+.js .service-card:focus-within .service-card__chip {
+  color: var(--on-fill);
+}
+
+.js .service-card:focus-within .service-card__short,
+.js .service-card:focus-within .service-card__chips {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.js .service-card:focus-within .service-card__details {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.js .service-card:focus-within .service-card__chip {
+  border-color: color-mix(in srgb, var(--on-fill) 58%, transparent);
+  background-color: transparent;
+}
+
+.js .service-card:focus-within .service-card__icon {
+  background-color: color-mix(in srgb, var(--on-fill) 18%, transparent);
+}
+
+/* The card's own toggle: a real button for touch + keyboard. */
+.service-card__toggle {
+  margin-top: auto;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background-color: transparent;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    color 220ms var(--ease-out),
+    border-color 220ms var(--ease-out);
+}
+
+.js .service-card[data-filled] .service-card__toggle,
+.js .service-card:focus-within .service-card__toggle {
+  color: var(--on-fill);
+  border-color: color-mix(in srgb, var(--on-fill) 45%, transparent);
+}
+
+/* No-JS: nothing is hidden, the liquid never rises. */
+html:not(.js) .service-card__details {
+  position: static;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  margin-top: 0.5rem;
+}
+
+html:not(.js) .service-card__toggle,
+html:not(.js) .service-card__liquid {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .service-card__liquid,
+  .service-card__details,
+  .service-card__short,
+  .service-card__chips,
+  .service-card__title {
+    transition: none !important;
+  }
+
+  .service-card__wave {
+    animation: none !important;
+  }
+}
+
+/* ============================================================
    7e-bis. HUB — DESKTOP BLUEPRINT DIAGRAM (>= 1024px)
    LEFT CARDS | TRACES | CENTRE LOGO | TRACES | RIGHT CARDS,
    plus the centred lower card that carries the assembly node.
@@ -1782,6 +2139,119 @@ html:not(.js-intro) .hairline {
     fill: var(--accent);
     stroke: var(--accent);
   }
+
+  /* ---- Animated wiring layer (Task I) ---------------------------------- */
+
+  /* Faint base hairline — every connector is drawn even at rest. */
+  .hub-wire--base {
+    stroke: var(--hub-wire-base);
+    stroke-width: var(--hub-wire-base-w);
+    opacity: 0.7;
+  }
+
+  /* Flowing gradient overlay: a dashed gradient stroke whose dash offset
+     animates (stroke-dashoffset only — never a filter, never layout). */
+  .hub-wire--flow {
+    stroke-width: var(--hub-wire-flow-w);
+    stroke-dasharray: var(--hub-wire-flow-dash);
+    opacity: 0.9;
+    animation: jt-hub-wire-flow var(--hub-wire-speed) linear infinite;
+    animation-delay: var(--hub-wire-phase, 0s);
+    animation-play-state: paused; /* runs only while the hub is in view */
+  }
+
+  .hub.is-inview .hub-wire--flow {
+    animation-play-state: running;
+  }
+
+  /* Direction alternates per connector so the board reads multi-colour. */
+  .hub-wire--flow[data-dir="reverse"] {
+    animation-direction: reverse;
+  }
+
+  /* Per-connector gradient stroke (CSS, so the exploded/lit rules below can
+     still override it — an inline style would win and break the highlight). */
+  .hub-wire--grad-top {
+    stroke: url(#hub-wire-grad-top);
+  }
+  .hub-wire--grad-right {
+    stroke: url(#hub-wire-grad-right);
+  }
+  .hub-wire--grad-bottom {
+    stroke: url(#hub-wire-grad-bottom);
+  }
+  .hub-wire--grad-fold {
+    stroke: url(#hub-wire-grad-fold);
+  }
+  .hub-wire--grad-leaf {
+    stroke: url(#hub-wire-grad-leaf);
+  }
+
+  /* Hover / focus: the lit connector flows faster; the others dim. */
+  .hub-wire--flow.is-lit {
+    animation-duration: var(--hub-wire-speed-lit);
+    opacity: 1;
+  }
+
+  .hub[data-active] .hub-wire--base:not(.is-lit) {
+    opacity: 0.26;
+  }
+
+  .hub[data-active] .hub-wire--flow:not(.is-lit) {
+    opacity: 0.3;
+  }
+
+  /* Exploded state increases the overall flow. */
+  .hub.is-exploded .hub-wire--flow {
+    --hub-wire-speed: 2.1s;
+    opacity: 1;
+  }
+
+  /* Travelling packet heads — Growth Green micro-accent only. */
+  .hub-wire__packet {
+    fill: var(--hub-wire-packet);
+    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--growth) 62%, transparent));
+  }
+
+  /* Soft ripple ring at every socket and anchor node. */
+  .hub-wire__ripple {
+    fill: none;
+    stroke: var(--hub-wire-ripple);
+    stroke-width: 1.2px;
+    transform-box: fill-box;
+    transform-origin: center;
+    opacity: 0;
+    animation: jt-hub-wire-ripple 3.6s var(--ease-out) infinite;
+    animation-delay: var(--hub-wire-phase, 0s);
+    animation-play-state: paused;
+  }
+
+  .hub.is-inview .hub-wire__ripple {
+    animation-play-state: running;
+  }
+}
+
+@keyframes jt-hub-wire-flow {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -120;
+  }
+}
+
+@keyframes jt-hub-wire-ripple {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  30% {
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
 }
 
 /* ---- Reduced motion: static exploded state, no movement ------------------ */
@@ -1802,6 +2272,21 @@ html:not(.js-intro) .hairline {
   .hub-wire__node,
   .hub-card__socket {
     transition: none !important;
+  }
+
+  /* Static gradient lines: no flow, no packets, no ripples. */
+  .hub-wire--flow,
+  .hub-wire__ripple {
+    animation: none !important;
+  }
+
+  .hub-wire--flow {
+    stroke-dasharray: none;
+    opacity: 0.85;
+  }
+
+  .hub-wire__packet {
+    display: none !important;
   }
 }
 
@@ -1912,9 +2397,22 @@ html:not(.js-intro) .hairline {
   animation-delay: var(--jt-intro-delay, var(--intro-logo-delay));
 }
 
+/* `backwards` (not `both`): the animation applies its from-state during the
+   delay, then the element returns to its natural, transform-free style once it
+   finishes — so the nav never keeps a composited transform that would turn it
+   into a backdrop root and kill the pill's backdrop-filter. */
 .js-intro .jt-nav {
-  animation: jt-nav-in 700ms var(--ease-emphasis) both;
+  animation: jt-nav-in 700ms var(--ease-emphasis) backwards;
   animation-delay: var(--jt-intro-delay, var(--intro-nav-delay));
+}
+
+/* Anchor jumps must never leave a heading tucked under the fixed navbar. */
+section[id],
+h1[id],
+h2[id],
+h3[id],
+article[id] {
+  scroll-margin-top: 6rem;
 }
 
 /* Headline — word-by-word masked slide-up (mask padding protects descenders) */
@@ -2383,5 +2881,189 @@ html:not(.dark) .logo-item[data-tone="light"] .logo-item__img {
 @media (prefers-reduced-motion: reduce) {
   .admin-enter {
     animation: none !important;
+  }
+}
+
+/* ===========================================================================
+   Notification opt-in prompt (public site)
+   Premium, brand-coloured opt-in card offered ~10s after arrival. Overrides the
+   generic `.card` surface with a gradient banner + glass bell tile. Colours are
+   derived from existing tokens so light/dark stay in one system.
+   =========================================================================== */
+.push-prompt {
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
+  background-color: var(--surface-elevated);
+  box-shadow: var(--shadow-elevated);
+}
+
+.push-prompt__inner {
+  position: relative;
+}
+
+.push-prompt__banner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 8.5rem;
+  overflow: hidden;
+  background:
+    radial-gradient(130% 170% at 18% -10%, color-mix(in srgb, var(--growth) 26%, transparent), transparent 58%),
+    linear-gradient(
+      135deg,
+      var(--primary),
+      var(--accent) 62%,
+      color-mix(in srgb, var(--accent) 52%, #ffffff)
+    );
+}
+
+/* Blueprint grid + hairline over the gradient — the Jazari signature. */
+.push-prompt__banner::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.09) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.09) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(120% 120% at 50% 0%, #000 30%, transparent 78%);
+  -webkit-mask-image: radial-gradient(120% 120% at 50% 0%, #000 30%, transparent 78%);
+}
+
+.push-prompt__glow {
+  position: absolute;
+  width: 12rem;
+  height: 12rem;
+  border-radius: 999px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--growth) 60%, transparent), transparent 65%);
+  filter: blur(8px);
+  opacity: 0.55;
+}
+
+.push-prompt__bell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 4.25rem;
+  height: 4.25rem;
+  border-radius: var(--radius-xl);
+  color: #ffffff;
+  background-color: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 18px 40px -18px rgba(4, 8, 24, 0.75);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  animation: jt-push-bell 3.4s var(--ease-in-out) infinite;
+}
+
+.push-prompt__body {
+  padding: 1.6rem 1.6rem 1.5rem;
+}
+
+.push-prompt__eyebrow {
+  font-family: var(--font-code);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.push-prompt__title {
+  margin-top: 0.5rem;
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+}
+
+.push-prompt__lead {
+  margin-top: 0.55rem;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.push-prompt__benefits {
+  margin-top: 1.1rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.push-prompt__benefits li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 0.88rem;
+  color: var(--foreground);
+}
+
+.push-prompt__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-top: 1px;
+  border-radius: 999px;
+  color: var(--growth-ink);
+  /* 12% keeps the Growth-Green glyph at WCAG AA (>= 4.5:1) in both themes. */
+  background-color: color-mix(in srgb, var(--growth) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--growth) 45%, transparent);
+}
+
+.push-prompt__error {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  background-color: var(--danger-soft);
+  padding: 0.6rem 0.75rem;
+  font-size: 0.82rem;
+  color: var(--danger);
+}
+
+.push-prompt__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1.4rem;
+}
+
+.push-prompt__fineprint {
+  margin-top: 0.9rem;
+  font-size: 0.72rem;
+  color: var(--muted-soft);
+}
+
+@keyframes jt-push-bell {
+  0%,
+  72%,
+  100% {
+    transform: rotate(0deg);
+  }
+  78% {
+    transform: rotate(9deg);
+  }
+  84% {
+    transform: rotate(-7deg);
+  }
+  90% {
+    transform: rotate(4deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .push-prompt__bell {
+    animation: none;
   }
 }

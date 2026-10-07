@@ -8,6 +8,7 @@ import { StartProjectForm } from "@/components/forms/StartProjectForm";
 import { BrandStatement } from "@/components/sections/BrandStatement";
 import { Footer } from "@/components/layout/Footer";
 import { VisitTracker } from "@/components/tracking/VisitTracker";
+import { NotificationPrompt } from "@/components/notifications/NotificationPrompt";
 import { PointerGlow } from "@/components/motion/PointerGlow";
 
 export default function Home() {
@@ -29,6 +30,7 @@ export default function Home() {
       </main>
       <Footer />
       <VisitTracker />
+      <NotificationPrompt />
     </>
   );
 }

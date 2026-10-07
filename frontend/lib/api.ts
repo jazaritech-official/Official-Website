@@ -26,6 +26,10 @@ import type {
   Product,
   ProductTypeTemplate,
   PublicLogo,
+  PushKeyResponse,
+  PushSubscribeInput,
+  PushSubscribeResult,
+  PushUnsubscribeResult,
   Service,
   Submission,
   SubmissionInput,
@@ -34,19 +38,26 @@ import type {
   Visitor,
   VisitorTrackInput,
   VisitorTrackResult,
+  AdminNotification,
+  NotificationInput,
+  NotificationStats,
 } from "@/types/api";
 import { loadPublicContent } from "@/lib/publicContent";
 
 // Two supported modes:
-//  Mode 1 (production default) — NEXT_PUBLIC_API_URL is empty or "/api": the
-//    client talks to the SAME origin at /api, and the Next server proxies to
-//    BACKEND_ORIGIN via the rewrite in next.config.ts. Keeps the auth cookie
-//    first-party.
+//  Mode 1 (production default) — the same-origin /api proxy: the client talks
+//    to its OWN origin at /api, and the Next server proxies to BACKEND_ORIGIN
+//    via the rewrite in next.config.ts. Keeps the auth cookie first-party.
+//    When the proxy is configured at build time (NEXT_PUBLIC_API_PROXY is set
+//    by next.config.ts) this wins even if a stale absolute NEXT_PUBLIC_API_URL
+//    is present, because an absolute cross-site URL would make the session
+//    cookie third-party (stored on login, never sent afterwards → 401).
 //  Mode 2 (local development) — an absolute URL such as
 //    http://localhost:5000/api is used directly, preserving the previous
 //    direct frontend→backend workflow.
+const API_PROXY_ACTIVE = process.env.NEXT_PUBLIC_API_PROXY === "1";
 const RAW_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
-const BASE = RAW_BASE || "/api";
+const BASE = API_PROXY_ACTIVE ? "/api" : RAW_BASE || "/api";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -273,6 +284,15 @@ export const api = {
   services: () => loadPublicContent<Service[]>("services").then((result) => result.data),
   submitProject: (body: SubmissionInput) => request<SubmissionResult>("/submission", { method: "POST", body }),
 
+  /* --- Push notifications (public) -------------------------------------- */
+  push: {
+    publicKey: () => request<PushKeyResponse>("/push/public-key"),
+    subscribe: (body: PushSubscribeInput) =>
+      request<PushSubscribeResult>("/push/subscribe", { method: "POST", body }),
+    unsubscribe: (endpoint: string) =>
+      request<PushUnsubscribeResult>("/push/unsubscribe", { method: "POST", body: { endpoint } }),
+  },
+
   /** Fire-and-forget analytics beacon — never throws to the caller. */
   async trackVisit(input: VisitorTrackInput): Promise<void> {
     try {
@@ -355,6 +375,21 @@ export const api = {
     visitors: {
       list: (query: Query = {}, signal?: AbortSignal) =>
         requestWithMeta<Visitor[]>("/admin/visitors", { query, signal }),
+    },
+
+    /* --- Push notifications ------------------------------------------------- */
+    notifications: {
+      list: (signal?: AbortSignal) => request<AdminNotification[]>("/admin/notifications", { signal }),
+      stats: (signal?: AbortSignal) => request<NotificationStats>("/admin/notifications/stats", { signal }),
+      create: (input: NotificationInput) =>
+        request<AdminNotification>("/admin/notifications", { method: "POST", body: input }),
+      send: (id: string, endpoint?: string) =>
+        request<AdminNotification>(`/admin/notifications/${id}/send`, {
+          method: "POST",
+          body: endpoint ? { endpoint } : {},
+        }),
+      remove: (id: string) =>
+        request<{ id: string; deleted: boolean }>(`/admin/notifications/${id}`, { method: "DELETE" }),
     },
 
     /** Super-admin-only team management (backend enforces the role). */

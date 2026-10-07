@@ -166,6 +166,14 @@ export interface Service {
   slug: string;
   icon: string;
   description: string;
+  /**
+   * Optional one-line summary (≤ 90 chars) shown at rest on the services card.
+   * Backward compatible: when absent the card falls back to the first clause of
+   * `description` — the frontend never invents copy.
+   */
+  shortDescription?: string;
+  /** Optional list of up to 3 short tag chips (≤ 24 chars each). */
+  highlights?: string[];
   sortOrder: number;
   /** 0..4 when this service is featured in the Exploded Logo Services Hub, else null. */
   hubSlot?: number | null;
@@ -255,6 +263,72 @@ export interface DashboardStats {
   };
   generatedAt: string;
   mongoReady: boolean;
+}
+
+/* --- Push notifications --------------------------------------------------- */
+
+/** Public answer from GET /api/push/public-key. */
+export interface PushKeyResponse {
+  /** VAPID application server key (empty when push is not configured). */
+  key: string;
+  /** False when the server has no VAPID keys — sending is disabled. */
+  configured: boolean;
+}
+
+export interface PushSubscribeInput {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  page?: string;
+}
+
+export interface PushSubscribeResult {
+  subscribed: boolean;
+  id: string;
+}
+
+export interface PushUnsubscribeResult {
+  unsubscribed: boolean;
+}
+
+export type NotificationStatus = "draft" | "sent" | "failed";
+
+export interface NotificationStats {
+  /** Total stored devices. */
+  subscribers: number;
+  /** Devices still eligible to receive a message. */
+  activeSubscribers: number;
+  notificationsSent: number;
+  delivered: number;
+  failed: number;
+  pushConfigured: boolean;
+}
+
+export interface AdminNotification {
+  _id: string;
+  title: string;
+  body: string;
+  url: string;
+  icon: string;
+  tag: string;
+  /** Optional service slug this message was composed from. */
+  serviceSlug: string;
+  status: NotificationStatus;
+  stats: { targeted: number; sent: number; failed: number; removed: number };
+  error: string;
+  createdByName: string;
+  sentAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NotificationInput {
+  title: string;
+  body: string;
+  url?: string;
+  tag?: string;
+  serviceSlug?: string;
+  /** Deliver immediately instead of saving a draft. */
+  send?: boolean;
 }
 
 /* --- Auth ----------------------------------------------------------------- */

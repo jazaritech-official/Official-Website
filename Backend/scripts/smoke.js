@@ -840,6 +840,107 @@ console.log("[smoke] 10b. production seed (seed:prod) safety + idempotency");
   );
 }
 
+console.log("[smoke] 10b. push notifications");
+{
+  const fakeEndpoint = "https://example.invalid/push/smoke-endpoint-0001";
+  const p256dh = Buffer.alloc(65, 1).toString("base64url");
+  const auth = Buffer.alloc(16, 2).toString("base64url");
+
+  // Public key endpoint: always answers; the key is exposed ONLY when configured.
+  const keyRes = await json("/push/public-key");
+  check(
+    "GET /api/push/public-key → 200 with configured flag",
+    keyRes.status === 200 && typeof keyRes.body?.data?.configured === "boolean",
+  );
+  check(
+    "public key is exposed exactly when VAPID is configured",
+    keyRes.body.data.configured === env.push.enabled &&
+      (env.push.enabled ? keyRes.body.data.key.length > 20 : keyRes.body.data.key === ""),
+    `configured=${keyRes.body?.data?.configured}`,
+  );
+
+  // Reject a non-https endpoint.
+  const badSub = await json("/push/subscribe", {
+    method: "POST",
+    body: { endpoint: "http://not-secure.example", keys: { p256dh, auth } },
+  });
+  check("subscribe rejects a non-https endpoint → 400", badSub.status === 400);
+
+  // Register, then re-register the same endpoint (idempotent refresh).
+  const first = await json("/push/subscribe", {
+    method: "POST",
+    body: { endpoint: fakeEndpoint, keys: { p256dh, auth }, page: "/" },
+  });
+  check("subscribe stores a device → 201", first.status === 201 && first.body?.data?.subscribed === true);
+  const second = await json("/push/subscribe", {
+    method: "POST",
+    body: { endpoint: fakeEndpoint, keys: { p256dh, auth }, page: "/services" },
+  });
+  check("re-subscribe refreshes instead of duplicating", second.status === 201);
+
+  // Admin audience stats (authenticated).
+  const stats = await json("/admin/notifications/stats", { cookie });
+  check(
+    "GET /api/admin/notifications/stats counts the device once",
+    stats.status === 200 && stats.body?.data?.activeSubscribers === 1,
+    `active=${stats.body?.data?.activeSubscribers}`,
+  );
+  check("stats reports the push configuration state", stats.body?.data?.pushConfigured === env.push.enabled);
+  check("notification admin route without cookie → 401", (await json("/admin/notifications")).status === 401);
+
+  // Compose validations.
+  const tooShort = await json("/admin/notifications", { method: "POST", cookie, body: { title: "x", body: "hello" } });
+  check("create rejects a too-short title → 400", tooShort.status === 400);
+
+  // Create a draft (no send).
+  const draft = await json("/admin/notifications", {
+    method: "POST",
+    cookie,
+    body: { title: "Smoke notification", body: "Testing the delivery pipeline.", url: "/", serviceSlug: "web-development" },
+  });
+  check("create draft notification → 201 draft", draft.status === 201 && draft.body?.data?.status === "draft");
+  const draftId = draft.body?.data?._id;
+  check("draft records its composer", typeof draft.body?.data?.createdByName === "string");
+
+  // Send it (targets the single fake device).
+  const sendRes = await json(`/admin/notifications/${draftId}/send`, { method: "POST", cookie, body: {} });
+  if (env.push.enabled) {
+    check(
+      "sending targets the stored device and reports an outcome",
+      sendRes.status === 200 &&
+        sendRes.body?.data?.stats?.targeted === 1 &&
+        sendRes.body.data.stats.sent + sendRes.body.data.stats.failed === 1,
+      `status=${sendRes.status} stats=${JSON.stringify(sendRes.body?.data?.stats)}`,
+    );
+    check(
+      "a send always resolves to sent|failed (never stuck in draft)",
+      ["sent", "failed"].includes(sendRes.body?.data?.status),
+      `status=${sendRes.body?.data?.status}`,
+    );
+  } else {
+    check(
+      "sending without VAPID keys → 503 configured error (not a 500/ crash)",
+      sendRes.status === 503 && sendRes.body?.error?.code === "SERVICE_UNAVAILABLE",
+      `status=${sendRes.status} code=${sendRes.body?.error?.code}`,
+    );
+  }
+
+  const list = await json("/admin/notifications", { cookie });
+  check("list notifications returns the draft", list.status === 200 && list.body.data.some((n) => n._id === draftId));
+
+  // Unsubscribe (idempotent).
+  const un1 = await json("/push/unsubscribe", { method: "POST", body: { endpoint: fakeEndpoint } });
+  check("unsubscribe removes the device", un1.status === 200 && un1.body?.data?.unsubscribed === true);
+  const un2 = await json("/push/unsubscribe", { method: "POST", body: { endpoint: fakeEndpoint } });
+  check("unsubscribe is idempotent", un2.status === 200 && un2.body?.data?.unsubscribed === false);
+
+  // Clean up the created notification.
+  const removed = await json(`/admin/notifications/${draftId}`, { method: "DELETE", cookie });
+  check("delete notification → 200", removed.status === 200 && removed.body?.data?.deleted === true);
+  const missing = await json(`/admin/notifications/${draftId}`, { method: "DELETE", cookie });
+  check("deleting twice → 404", missing.status === 404);
+}
+
 console.log("[smoke] 11. logout");
 {
   const out = await json("/auth/logout", { method: "POST", cookie });

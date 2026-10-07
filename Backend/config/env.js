@@ -100,6 +100,20 @@ if (!["lax", "strict", "none"].includes(cookieSameSite)) {
   problems.push('COOKIE_SAMESITE must be "lax", "strict" or "none".');
 }
 
+// --- Web Push (VAPID) ---------------------------------------------------------
+// Optional. When BOTH keys are present the API can send push notifications;
+// when either is missing the API still stores device subscriptions but sending
+// is disabled (503) instead of crashing — a half-configured push setup must
+// never take the whole API down.
+const pushPublicKey = readOptional("VAPID_PUBLIC_KEY");
+const pushPrivateKey = readOptional("VAPID_PRIVATE_KEY");
+if ((pushPublicKey && !pushPrivateKey) || (!pushPublicKey && pushPrivateKey)) {
+  warnings.push(
+    "VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY must both be set for push notifications to work — sending is disabled until then.",
+  );
+}
+const pushEnabled = Boolean(pushPublicKey && pushPrivateKey);
+
 // Used only by the seed script (never by the running server).
 const admin = {
   email: readOptional("ADMIN_EMAIL"),
@@ -130,6 +144,17 @@ const config = {
     cookieSameSite,
   },
   cloudinary,
+  push: {
+    publicKey: pushPublicKey,
+    privateKey: pushPrivateKey,
+    // Contact address web-push sends to the push service (mailto: or https:).
+    subject: readOptional("VAPID_SUBJECT", "mailto:hello@jazaritech.com"),
+    // True only when both keys are configured.
+    enabled: pushEnabled,
+    // A subscription that fails this many times (and is not reported gone) is
+    // deactivated so dead devices stop being retried forever.
+    maxFailures: readInt("PUSH_MAX_FAILURES", 5),
+  },
   admin,
   // Public base URL of this API (used to build local development asset URLs).
   publicApiUrl: readOptional("PUBLIC_API_URL", ""),
@@ -148,6 +173,8 @@ const config = {
     loginMax: readInt("LOGIN_RATE_LIMIT_MAX", 10),
     submissionMax: readInt("SUBMISSION_RATE_LIMIT_MAX", 5),
     visitorMax: readInt("VISITOR_RATE_LIMIT_MAX", 120),
+    // Push subscription register/unregister beacons.
+    pushMax: readInt("PUSH_RATE_LIMIT_MAX", 60),
     // Team management + password changes (sensitive write operations).
     sensitiveMax: readInt("SENSITIVE_RATE_LIMIT_MAX", 30),
   },

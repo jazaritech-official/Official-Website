@@ -19,6 +19,12 @@ export interface QualityConfig {
   particleCount: number;
   /** Soft spot particles enabled. */
   atmospheric: boolean;
+  /**
+   * Hero shatter budget — number of instanced neon shards sampled inside the
+   * real logo silhouette. 0 disables the shatter field entirely (static /
+   * reduced-motion). The FPS downgrade path reduces this too (see engine).
+   */
+  shardCount: number;
 }
 
 export type RenderQualityConfig = QualityConfig & { tier: Exclude<QualityTier, "static"> };
@@ -35,6 +41,7 @@ export const QUALITY: Record<Exclude<QualityTier, "static">, QualityConfig> = {
     hover: true,
     particleCount: 140,
     atmospheric: true,
+    shardCount: 1000,
   },
   medium: {
     pixelRatioCap: 1.5,
@@ -43,6 +50,7 @@ export const QUALITY: Record<Exclude<QualityTier, "static">, QualityConfig> = {
     hover: true,
     particleCount: 70,
     atmospheric: true,
+    shardCount: 500,
   },
   low: {
     pixelRatioCap: 1.25,
@@ -51,6 +59,7 @@ export const QUALITY: Record<Exclude<QualityTier, "static">, QualityConfig> = {
     hover: false,
     particleCount: 0,
     atmospheric: false,
+    shardCount: 200,
   },
 };
 
