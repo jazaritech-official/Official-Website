@@ -84,6 +84,22 @@ if (isProd && (!cloudinary.cloudName || !cloudinary.apiKey || !cloudinary.apiSec
   );
 }
 
+// --- Session cookie flags -----------------------------------------------------
+// A host-only, first-party cookie is the reliable production setup (the browser
+// talks to the frontend origin, which proxies /api to this server). These flags
+// are read once here so set / refresh / clear can never disagree.
+const cookieName = readOptional("JWT_COOKIE_NAME", "jazari_admin");
+const cookieSecure = readBool("COOKIE_SECURE", isProd);
+const cookieSameSite = readOptional("COOKIE_SAMESITE", "lax").toLowerCase();
+if (cookieSameSite === "none" && !cookieSecure) {
+  warnings.push(
+    "COOKIE_SAMESITE=none requires COOKIE_SECURE=true — browsers reject the session cookie otherwise.",
+  );
+}
+if (!["lax", "strict", "none"].includes(cookieSameSite)) {
+  problems.push('COOKIE_SAMESITE must be "lax", "strict" or "none".');
+}
+
 // Used only by the seed script (never by the running server).
 const admin = {
   email: readOptional("ADMIN_EMAIL"),
@@ -106,11 +122,12 @@ const config = {
   jwt: {
     secret: jwtSecret,
     expiresIn: readOptional("JWT_EXPIRES_IN", "7d"),
-    cookieName: readOptional("JWT_COOKIE_NAME", "jazari_admin"),
-    cookieSecure: readBool("COOKIE_SECURE", isProd),
-    // Use "none" (with COOKIE_SECURE=true) when frontend and API are on
-    // different top-level domains in production.
-    cookieSameSite: readOptional("COOKIE_SAMESITE", "lax"),
+    cookieName,
+    cookieSecure,
+    // Preferred: "lax" with the same-origin /api proxy. Use "none" (with
+    // COOKIE_SECURE=true) only when frontend and API are unavoidably on
+    // different sites — browsers increasingly block those cookies.
+    cookieSameSite,
   },
   cloudinary,
   admin,

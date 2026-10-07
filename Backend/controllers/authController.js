@@ -7,32 +7,11 @@ import { ApiError } from "../utils/errors.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { recordAudit } from "../utils/audit.js";
 import { assertStrongPassword } from "../utils/password.js";
-
-/** Decode simple duration strings like "7d", "12h", "30m" or seconds. */
-function parseDurationMs(value, fallbackMs) {
-  const match = /^(\d+)\s*(s|m|h|d)?$/i.exec(String(value).trim());
-  if (!match) return fallbackMs;
-  const amount = Number(match[1]);
-  const unit = (match[2] || "s").toLowerCase();
-  const factors = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
-  return amount * factors[unit];
-}
-
-const sessionMaxAge = parseDurationMs(env.jwt.expiresIn, 7 * 86_400_000);
+import { SESSION_MAX_AGE_MS, setAuthCookie, clearAuthCookie } from "../utils/authCookie.js";
 
 function signToken(admin) {
   return jwt.sign({ sub: admin._id.toString(), role: admin.role }, env.jwt.secret, {
-    expiresIn: Math.floor(sessionMaxAge / 1000),
-  });
-}
-
-function setAuthCookie(res, token) {
-  res.cookie(env.jwt.cookieName, token, {
-    httpOnly: true,
-    secure: env.jwt.cookieSecure,
-    sameSite: env.jwt.cookieSameSite,
-    maxAge: sessionMaxAge,
-    path: "/",
+    expiresIn: Math.floor(SESSION_MAX_AGE_MS / 1000),
   });
 }
 
@@ -73,12 +52,7 @@ export const login = asyncHandler(async (req, res) => {
 
 /** POST /api/auth/logout */
 export const logout = asyncHandler(async (_req, res) => {
-  res.clearCookie(env.jwt.cookieName, {
-    httpOnly: true,
-    secure: env.jwt.cookieSecure,
-    sameSite: env.jwt.cookieSameSite,
-    path: "/",
-  });
+  clearAuthCookie(res);
   return sendData(res, { loggedOut: true });
 });
 

@@ -110,6 +110,8 @@ export const SERVICES = [
     icon: "code",
     description:
       "Custom platforms, internal tools and integrations engineered around the way your business actually operates.",
+    shortDescription: "Custom platforms and integrations built around how you work.",
+    highlights: ["Web & mobile apps", "API integrations", "Legacy modernisation"],
   },
   {
     title: "Business Growth",
@@ -117,6 +119,8 @@ export const SERVICES = [
     icon: "chart",
     description:
       "Strategy, process and technology roadmaps that turn operational efficiency into measurable revenue growth.",
+    shortDescription: "Roadmaps that turn operational efficiency into measurable growth.",
+    highlights: ["Growth strategy", "Process automation", "Analytics"],
   },
   {
     title: "Graphic Designing",
@@ -124,6 +128,8 @@ export const SERVICES = [
     icon: "palette",
     description:
       "Brand identities, visual systems and marketing collateral crafted for consistency across every touchpoint.",
+    shortDescription: "Brand identities and visual systems that stay consistent.",
+    highlights: ["Brand identity", "Design systems", "Collateral"],
   },
   {
     title: "Marketing",
@@ -131,6 +137,8 @@ export const SERVICES = [
     icon: "megaphone",
     description:
       "Performance marketing, SEO and content programmes that put your products in front of the right audience.",
+    shortDescription: "Marketing, SEO and content that reach the right audience.",
+    highlights: ["SEO", "Paid campaigns", "Content strategy"],
   },
   {
     title: "AI Solutions",
@@ -138,6 +146,8 @@ export const SERVICES = [
     icon: "chip",
     description:
       "Practical AI — document intelligence, recommendation engines and automation that remove repetitive work.",
+    shortDescription: "Practical AI that automates repetitive work and surfaces insight.",
+    highlights: ["Document AI", "Recommendations", "Automation"],
   },
   {
     title: "E-commerce",
@@ -145,6 +155,8 @@ export const SERVICES = [
     icon: "cart",
     description:
       "Storefronts, checkout flows and order operations built to convert and to scale through peak demand.",
+    shortDescription: "Storefronts and checkout flows built to convert and scale.",
+    highlights: ["Storefronts", "Checkout", "Order operations"],
   },
   {
     title: "Mobile App Development",
@@ -152,6 +164,8 @@ export const SERVICES = [
     icon: "mobile",
     description:
       "Native and cross-platform applications with dependable performance and a genuinely polished feel.",
+    shortDescription: "Native and cross-platform apps with dependable performance.",
+    highlights: ["iOS & Android", "React Native", "App maintenance"],
   },
   {
     title: "Web Development",
@@ -159,6 +173,8 @@ export const SERVICES = [
     icon: "website",
     description:
       "Fast, accessible and search-friendly websites engineered for longevity, not just launch day.",
+    shortDescription: "Fast, accessible websites built to last beyond launch day.",
+    highlights: ["Next.js", "Accessibility", "Core Web Vitals"],
   },
   {
     title: "UI/UX Design",
@@ -166,6 +182,8 @@ export const SERVICES = [
     icon: "pen",
     description:
       "Research-led interface design that makes complex products feel effortless for the people using them.",
+    shortDescription: "Research-led design that makes complex products feel simple.",
+    highlights: ["User research", "Interface design", "Prototyping"],
   },
   {
     title: "Cloud and DevOps",
@@ -173,6 +191,8 @@ export const SERVICES = [
     icon: "cloud",
     description:
       "Cloud architecture, CI/CD and observability so releases are routine and infrastructure stays predictable.",
+    shortDescription: "Cloud architecture, CI/CD and observability for stable releases.",
+    highlights: ["Cloud architecture", "CI/CD", "Observability"],
   },
   {
     title: "Cybersecurity",
@@ -180,6 +200,8 @@ export const SERVICES = [
     icon: "shield",
     description:
       "Hardening, review and monitoring that protect customer data and keep your compliance posture solid.",
+    shortDescription: "Hardening and monitoring that protect customer data.",
+    highlights: ["Security review", "Hardening", "Monitoring"],
   },
   {
     title: "Data and Analytics",
@@ -187,6 +209,8 @@ export const SERVICES = [
     icon: "analytics",
     description:
       "Pipelines, warehousing and dashboards that turn scattered operational data into decisions you can defend.",
+    shortDescription: "Pipelines and dashboards that turn scattered data into decisions.",
+    highlights: ["Data pipelines", "Warehousing", "Dashboards"],
   },
   {
     title: "IT Consulting",
@@ -194,6 +218,8 @@ export const SERVICES = [
     icon: "consulting",
     description:
       "Vendor-neutral technical guidance for platform selection, modernisation and delivery strategy.",
+    shortDescription: "Vendor-neutral guidance for platform and delivery decisions.",
+    highlights: ["Platform strategy", "Modernisation", "Delivery"],
   },
   {
     title: "Automation",
@@ -201,6 +227,8 @@ export const SERVICES = [
     icon: "automation",
     description:
       "Workflow and back-office automation that removes manual handoffs and the errors that come with them.",
+    shortDescription: "Workflow automation that removes manual handoffs and errors.",
+    highlights: ["Workflow design", "Integrations", "RPA"],
   },
 ];
 

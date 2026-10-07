@@ -6,7 +6,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 export const listPublicServices = asyncHandler(async (_req, res) => {
   const services = await Service.find({ isVisible: true })
     .sort({ sortOrder: 1, createdAt: 1 })
-    .select("title slug icon description sortOrder hubSlot hubLabel")
+    .select("title slug icon description shortDescription highlights sortOrder hubSlot hubLabel")
     .lean();
   sendData(res, services);
 });

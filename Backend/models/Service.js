@@ -29,6 +29,32 @@ const serviceSchema = new mongoose.Schema(
       minlength: [20, "Descriptions must be at least 20 characters."],
       maxlength: [400, "Description is too long."],
     },
+    // Optional, backward-compatible one-line summary (the services grid shows
+    // this at rest; the full `description` is revealed on hover/focus/tap).
+    // Older records without it remain valid — the frontend falls back to the
+    // first sentence of `description`, never inventing copy.
+    shortDescription: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: [90, "shortDescription must be 90 characters or fewer."],
+    },
+    // Optional, backward-compatible list of up to 3 short tag chips.
+    highlights: {
+      type: [String],
+      default: [],
+      validate: [
+        {
+          validator: (value) => !Array.isArray(value) || value.length <= 3,
+          message: "highlights may contain at most 3 entries.",
+        },
+        {
+          validator: (value) =>
+            !Array.isArray(value) || value.every((entry) => String(entry).trim().length <= 24),
+          message: "Each highlight must be 24 characters or fewer.",
+        },
+      ],
+    },
     sortOrder: {
       type: Number,
       default: 0,
@@ -58,6 +84,14 @@ const serviceSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+// Trim highlights entries on save so whitespace can never inflate a limit.
+serviceSchema.pre("validate", function normalizeHighlights(next) {
+  if (Array.isArray(this.highlights)) {
+    this.highlights = this.highlights.map((entry) => String(entry).trim()).filter(Boolean);
+  }
+  next();
+});
 
 serviceSchema.index({ isVisible: 1, sortOrder: 1 });
 

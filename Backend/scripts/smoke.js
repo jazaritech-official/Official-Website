@@ -12,6 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import env from "../config/env.js";
+import Service from "../models/Service.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = process.env.SMOKE_PORT || "5199";
@@ -50,11 +51,11 @@ function runScript(args, env) {
   });
 }
 
-async function waitForHealth(timeoutMs = 30_000) {
+async function waitForHealth(timeoutMs = 30_000, base = BASE) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${BASE}/health`);
+      const res = await fetch(`${base}/health`);
       if (res.ok) return true;
     } catch {
       // not up yet
@@ -62,6 +63,31 @@ async function waitForHealth(timeoutMs = 30_000) {
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
   return false;
+}
+
+/**
+ * Read the attribute NAMES of a Set-Cookie header — never its value.
+ * Used to assert the session cookie's security flags without touching the
+ * token itself.
+ */
+function cookieAttributes(response, name = "jazari_admin") {
+  const raw = (response.headers.getSetCookie?.() || []).find((c) =>
+    c.trim().toLowerCase().startsWith(`${name.toLowerCase()}=`),
+  );
+  if (!raw) return { found: false };
+  const attrs = { found: true, httpOnly: false, secure: false, sameSite: null, path: null, domain: null };
+  for (const part of raw.split(";").slice(1)) {
+    const trimmed = part.trim();
+    const eq = trimmed.indexOf("=");
+    const key = (eq === -1 ? trimmed : trimmed.slice(0, eq)).toLowerCase();
+    const value = eq === -1 ? "" : trimmed.slice(eq + 1);
+    if (key === "httponly") attrs.httpOnly = true;
+    else if (key === "secure") attrs.secure = true;
+    else if (key === "samesite") attrs.sameSite = value;
+    else if (key === "path") attrs.path = value;
+    else if (key === "domain") attrs.domain = value;
+  }
+  return attrs;
 }
 
 /* ---- Synthetic fixtures for the image-processing assertions ------------- */
@@ -180,6 +206,43 @@ console.log("[smoke] 2. public content");
     `featured=${hubServices.length} slots=[${hubServices.map((s) => s.hubSlot).join(",")}]`);
   check("hub services expose a hubLabel",
     hubServices.every((s) => typeof s.hubLabel === "string" && s.hubLabel.length > 0));
+
+  // Services-card copy (Task I, backward-compatible optional fields).
+  check(
+    "every service exposes the optional shortDescription/highlights fields",
+    services.body.data.every((s) => "shortDescription" in s && Array.isArray(s.highlights)),
+  );
+  check(
+    "shortDescription is populated and within 90 characters",
+    services.body.data.every(
+      (s) => typeof s.shortDescription === "string" && s.shortDescription.length > 0 && s.shortDescription.length <= 90,
+    ),
+    `max=${Math.max(...services.body.data.map((s) => (s.shortDescription || "").length))}`,
+  );
+  check(
+    "highlights hold at most 3 entries of at most 24 characters",
+    services.body.data.every(
+      (s) =>
+        s.highlights.length <= 3 &&
+        s.highlights.every((entry) => typeof entry === "string" && entry.length <= 24),
+    ),
+    `maxEntries=${Math.max(...services.body.data.map((s) => s.highlights.length))}`,
+  );
+
+  // Schema-level backward compatibility: the new fields are optional with
+  // defaults, so records created before Task I remain valid.
+  const shortPath = Service.schema.path("shortDescription");
+  const highlightsPath = Service.schema.path("highlights");
+  check(
+    "Service schema: shortDescription/highlights are optional with defaults (old records stay valid)",
+    shortPath?.instance === "String" &&
+      shortPath?.options?.default === "" &&
+      highlightsPath?.instance === "Array" &&
+      Array.isArray(highlightsPath?.options?.default) &&
+      shortPath?.isRequired !== true &&
+      highlightsPath?.isRequired !== true,
+  );
+
   const logos = await json("/logos");
   check("GET /api/logos → empty list without errors", logos.status === 200 && Array.isArray(logos.body.data) && logos.body.data.length === 0);
 }
@@ -245,14 +308,76 @@ let cookie;
   check("valid login → 200 + httpOnly cookie", ok.status === 200 && cookie.startsWith("jazari_admin="));
   check("login response has no password hash", !JSON.stringify(ok.body).includes("$2"));
 
+  // Session-cookie attributes (names/booleans only — the value is never read).
+  const attrs = cookieAttributes(ok.response);
+  check("session cookie: HttpOnly present", attrs.found && attrs.httpOnly === true);
+  check("session cookie: Path is /", attrs.path === "/");
+  check("session cookie: host-only (no Domain attribute)", attrs.found && attrs.domain === null);
+  check(
+    `session cookie: SameSite=${env.jwt.cookieSameSite}`,
+    (attrs.sameSite || "").toLowerCase() === env.jwt.cookieSameSite.toLowerCase(),
+  );
+  check(
+    "session cookie: Secure matches COOKIE_SECURE",
+    attrs.secure === env.jwt.cookieSecure,
+    `secure=${attrs.secure} configured=${env.jwt.cookieSecure}`,
+  );
+
   const me = await json("/auth/me", { cookie });
   check("GET /auth/me with cookie → admin", me.status === 200 && me.body?.data?.admin?.email === ADMIN_EMAIL);
+
+  const meNoCookie = await json("/auth/me");
+  check(
+    "GET /auth/me without cookie → 401 generic",
+    meNoCookie.status === 401 &&
+      meNoCookie.body?.error?.code === "UNAUTHORIZED" &&
+      meNoCookie.body?.error?.message === "Please sign in to continue.",
+    `status=${meNoCookie.status} msg=${meNoCookie.body?.error?.message}`,
+  );
 
   const unauth = await json("/admin/products");
   check("admin route without cookie → 401", unauth.status === 401);
 
   const badCookie = await json("/admin/products", { cookie: "jazari_admin=forged.value" });
   check("forged cookie → 401", badCookie.status === 401);
+}
+
+console.log("[smoke] 5b. session cookie under production flags");
+{
+  // Boot a second API process with the production cookie flags (COOKIE_SECURE
+  // true + SameSite=Lax) against the same database and assert the attributes a
+  // production browser would receive. A separate process has its own in-memory
+  // rate-limit store, so the extra login never counts against the main server.
+  const prodPort = String(Number(PORT) + 1);
+  const prodBase = `http://127.0.0.1:${prodPort}/api`;
+  const prodServer = spawn(process.execPath, ["server.js"], {
+    cwd: root,
+    stdio: ["ignore", "ignore", "ignore"],
+    env: {
+      ...process.env,
+      MONGODB_URI: uri,
+      PORT: prodPort,
+      NODE_ENV: "test",
+      COOKIE_SECURE: "true",
+      COOKIE_SAMESITE: "lax",
+    },
+  });
+  const prodUp = await waitForHealth(30_000, prodBase);
+  check("production-flags API reachable", prodUp === true);
+  if (prodUp) {
+    const res = await fetch(`${prodBase}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
+    });
+    const prodAttrs = cookieAttributes(res);
+    check("prod config: Secure present", prodAttrs.found && prodAttrs.secure === true);
+    check("prod config: HttpOnly present", prodAttrs.httpOnly === true);
+    check("prod config: SameSite=Lax", (prodAttrs.sameSite || "").toLowerCase() === "lax");
+    check("prod config: host-only (no Domain)", prodAttrs.domain === null);
+    check("prod config: Path is /", prodAttrs.path === "/");
+  }
+  prodServer.kill("SIGTERM");
 }
 
 console.log("[smoke] 6. admin content management");
