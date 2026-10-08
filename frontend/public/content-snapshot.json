@@ -1,6 +1,6 @@
 {
   "_generated": "GENERATED - NEVER HAND-EDIT. Produced by `npm run snapshot:content` from the public API. Public data only; no secrets.",
-  "generatedAt": "2026-10-07T04:05:08.521Z",
+  "generatedAt": "2026-10-08T03:25:00.412Z",
   "source": "http://localhost:5000/api",
   "counts": {
     "logos": 2,
@@ -9,10 +9,10 @@
   },
   "logos": [
     {
-      "_id": "6ac5bf3ae149bfe0e614a8e4",
+      "_id": "6ac643415aea10ff7b73c0aa",
       "name": "Showcase Fixture A",
       "displayName": "Showcase Fixture A",
-      "secureUrl": "https://res.cloudinary.com/x5yym0zn/image/upload/v1791344440/jazari/logos/processed/wjxasv8p7rtixw1ggvtd.png",
+      "secureUrl": "https://res.cloudinary.com/x5yym0zn/image/upload/v1791378238/jazari/logos/processed/ancoijp9by9pvynrejjt.png",
       "alt": "Showcase Fixture A",
       "websiteUrl": "",
       "sortOrder": 0,
@@ -32,10 +32,10 @@
       ]
     },
     {
-      "_id": "6ac5bf3ce149bfe0e614a8e7",
+      "_id": "6ac643435aea10ff7b73c0ad",
       "name": "Showcase Fixture B",
       "displayName": "Showcase Fixture B",
-      "secureUrl": "https://res.cloudinary.com/x5yym0zn/image/upload/v1791344442/jazari/logos/processed/vfffmyd8oxkl0fqvqpzf.png",
+      "secureUrl": "https://res.cloudinary.com/x5yym0zn/image/upload/v1791378240/jazari/logos/processed/mfcz4p7j03rreh0cqrvh.png",
       "alt": "Showcase Fixture B",
       "websiteUrl": "",
       "sortOrder": 0,
@@ -57,7 +57,7 @@
   ],
   "products": [
     {
-      "_id": "6ac5bd370a3ecadd5309f489",
+      "_id": "6ac6431c6fcf2180bb8fa6e1",
       "name": "Jazari Commerce Suite",
       "logo": "",
       "productUrl": "",
@@ -69,10 +69,10 @@
         "Admin analytics for sales performance"
       ],
       "sortOrder": 10,
-      "createdAt": "2026-10-07T03:32:07.575Z"
+      "createdAt": "2026-10-07T13:03:24.639Z"
     },
     {
-      "_id": "6ac5bd370a3ecadd5309f48a",
+      "_id": "6ac6431c6fcf2180bb8fa6e2",
       "name": "Jazari Flow",
       "logo": "",
       "productUrl": "",
@@ -84,10 +84,10 @@
         "Automatic updates with zero downtime"
       ],
       "sortOrder": 20,
-      "createdAt": "2026-10-07T03:32:07.575Z"
+      "createdAt": "2026-10-07T13:03:24.640Z"
     },
     {
-      "_id": "6ac5bd370a3ecadd5309f48b",
+      "_id": "6ac6431c6fcf2180bb8fa6e3",
       "name": "Jazari Pulse",
       "logo": "",
       "productUrl": "",
@@ -98,10 +98,10 @@
         "Scalable architecture for growing teams"
       ],
       "sortOrder": 30,
-      "createdAt": "2026-10-07T03:32:07.575Z"
+      "createdAt": "2026-10-07T13:03:24.640Z"
     },
     {
-      "_id": "6ac5bd370a3ecadd5309f48c",
+      "_id": "6ac6431c6fcf2180bb8fa6e4",
       "name": "Jazari Desk",
       "logo": "",
       "productUrl": "",
@@ -112,13 +112,15 @@
         "Role-based access for departments"
       ],
       "sortOrder": 40,
-      "createdAt": "2026-10-07T03:32:07.575Z"
+      "createdAt": "2026-10-07T13:03:24.640Z"
     }
   ],
   "services": [
     {
-      "_id": "6ac5bd37b3816845e864c433",
+      "_id": "6ac6431ca08330fd044db985",
       "slug": "software-solutions",
+      "accent": "blue",
+      "category": "engineering",
       "description": "Custom platforms, internal tools and integrations engineered around the way your business actually operates.",
       "highlights": [
         "Web & mobile apps",
@@ -133,8 +135,10 @@
       "title": "Software Solutions"
     },
     {
-      "_id": "6ac5bd37b3816845e864c434",
+      "_id": "6ac6431ca08330fd044db986",
       "slug": "business-growth",
+      "accent": "green-micro",
+      "category": "growth",
       "description": "Strategy, process and technology roadmaps that turn operational efficiency into measurable revenue growth.",
       "highlights": [
         "Growth strategy",
@@ -149,8 +153,10 @@
       "title": "Business Growth"
     },
     {
-      "_id": "6ac5bd37b3816845e864c435",
+      "_id": "6ac6431ca08330fd044db987",
       "slug": "graphic-designing",
+      "accent": "blue",
+      "category": "design",
       "description": "Brand identities, visual systems and marketing collateral crafted for consistency across every touchpoint.",
       "highlights": [
         "Brand identity",
@@ -165,8 +171,10 @@
       "title": "Graphic Designing"
     },
     {
-      "_id": "6ac5bd37b3816845e864c436",
+      "_id": "6ac6431ca08330fd044db988",
       "slug": "marketing",
+      "accent": "blue",
+      "category": "growth",
       "description": "Performance marketing, SEO and content programmes that put your products in front of the right audience.",
       "highlights": [
         "SEO",
@@ -181,8 +189,10 @@
       "title": "Marketing"
     },
     {
-      "_id": "6ac5bd37b3816845e864c437",
+      "_id": "6ac6431ca08330fd044db989",
       "slug": "ai-solutions",
+      "accent": "blue",
+      "category": "engineering",
       "description": "Practical AI — document intelligence, recommendation engines and automation that remove repetitive work.",
       "highlights": [
         "Document AI",
@@ -197,8 +207,10 @@
       "title": "AI Solutions"
     },
     {
-      "_id": "6ac5bd37b3816845e864c438",
+      "_id": "6ac6431ca08330fd044db98a",
       "slug": "e-commerce",
+      "accent": "blue",
+      "category": "engineering",
       "description": "Storefronts, checkout flows and order operations built to convert and to scale through peak demand.",
       "highlights": [
         "Storefronts",
@@ -213,8 +225,10 @@
       "title": "E-commerce"
     },
     {
-      "_id": "6ac5bd37b3816845e864c439",
+      "_id": "6ac6431ca08330fd044db98b",
       "slug": "mobile-app-development",
+      "accent": "blue",
+      "category": "engineering",
       "description": "Native and cross-platform applications with dependable performance and a genuinely polished feel.",
       "highlights": [
         "iOS & Android",
@@ -229,8 +243,10 @@
       "title": "Mobile App Development"
     },
     {
-      "_id": "6ac5bd37b3816845e864c43a",
+      "_id": "6ac6431ca08330fd044db98c",
       "slug": "web-development",
+      "accent": "blue",
+      "category": "engineering",
       "description": "Fast, accessible and search-friendly websites engineered for longevity, not just launch day.",
       "highlights": [
         "Next.js",
@@ -245,8 +261,10 @@
       "title": "Web Development"
     },
     {
-      "_id": "6ac5bd37b3816845e864c43b",
+      "_id": "6ac6431ca08330fd044db98d",
       "slug": "ui-ux-design",
+      "accent": "blue",
+      "category": "design",
       "description": "Research-led interface design that makes complex products feel effortless for the people using them.",
       "highlights": [
         "User research",
@@ -261,8 +279,10 @@
       "title": "UI/UX Design"
     },
     {
-      "_id": "6ac5bd37b3816845e864c43c",
+      "_id": "6ac6431ca08330fd044db98e",
       "slug": "cloud-and-devops",
+      "accent": "blue",
+      "category": "operations",
       "description": "Cloud architecture, CI/CD and observability so releases are routine and infrastructure stays predictable.",
       "highlights": [
         "Cloud architecture",
@@ -277,8 +297,10 @@
       "title": "Cloud and DevOps"
     },
     {
-      "_id": "6ac5bd37b3816845e864c43d",
+      "_id": "6ac6431ca08330fd044db98f",
       "slug": "cybersecurity",
+      "accent": "navy",
+      "category": "security",
       "description": "Hardening, review and monitoring that protect customer data and keep your compliance posture solid.",
       "highlights": [
         "Security review",
@@ -293,8 +315,10 @@
       "title": "Cybersecurity"
     },
     {
-      "_id": "6ac5bd37b3816845e864c43e",
+      "_id": "6ac6431ca08330fd044db990",
       "slug": "data-and-analytics",
+      "accent": "blue",
+      "category": "operations",
       "description": "Pipelines, warehousing and dashboards that turn scattered operational data into decisions you can defend.",
       "highlights": [
         "Data pipelines",
@@ -309,8 +333,10 @@
       "title": "Data and Analytics"
     },
     {
-      "_id": "6ac5bd37b3816845e864c43f",
+      "_id": "6ac6431ca08330fd044db991",
       "slug": "it-consulting",
+      "accent": "navy",
+      "category": "operations",
       "description": "Vendor-neutral technical guidance for platform selection, modernisation and delivery strategy.",
       "highlights": [
         "Platform strategy",
@@ -325,8 +351,10 @@
       "title": "IT Consulting"
     },
     {
-      "_id": "6ac5bd37b3816845e864c440",
+      "_id": "6ac6431ca08330fd044db992",
       "slug": "automation",
+      "accent": "blue",
+      "category": "engineering",
       "description": "Workflow and back-office automation that removes manual handoffs and the errors that come with them.",
       "highlights": [
         "Workflow design",

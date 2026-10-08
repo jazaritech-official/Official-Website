@@ -129,7 +129,7 @@ Then open **http://localhost:3000** — public site at `/`, admin portal at `/ad
 | `npm run build:icons` | Regenerate the icon set (`app/favicon.ico` 16/32/48, `app/icon.png`, `app/apple-icon.png`, `public/brand/icon-{192,512}.png`) from the owner logo — dependency-free |
 | `npm run snapshot:content` | Refresh `public/content-snapshot.json`, the build-time fallback for public content (never fails a build; never overwrites good data with empty) |
 | `npm run check:secrets` | Scan tracked example/doc files for real-looking secrets (prints `file:line` only, exits 1 on a finding) |
-| `node scripts/verify-three.mjs` | Full headless Chrome 3D/a11y/regression harness (**226 checks**; needs a production build on `:3001` + the backend) |
+| `node scripts/verify-three.mjs` | Full headless Chrome 3D/a11y/regression harness (**271 checks**; needs a production build on `:3001` + the backend) |
 | `node scripts/capture-themes.mjs <before\|after>` | Hero/hub/footer screenshots at desktop + mobile in light + dark |
 
 **Backend (`Backend/package.json`)**
@@ -265,7 +265,7 @@ fallback. It is a progressive enhancement:
 - **Verify** (headless Chrome harness, no extra dependencies):
   ```bash
   cd frontend && npm run build && npx next start -p 3001   # terminal A
-  node scripts/verify-three.mjs                            # 237 checks
+  node scripts/verify-three.mjs                            # 271 checks
   NO_WEBGL=1 node scripts/verify-three.mjs                 # fallback checks
   ```
   Requires the backend running (the harness seeds two test logos via the admin API).
@@ -479,3 +479,34 @@ Real browser notifications, end to end, with no third-party SaaS:
 Setup: add `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` to the backend
 (`npx web-push generate-vapid-keys`) — see [`DEPLOYMENT.md`](./DEPLOYMENT.md) §15.7 and
 [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §36.
+### Task K — production admin login, real exploded-view hero, Discipline Atlas, VAPID contact
+
+- **Production admin login fixed at the root, again — this time on the *frontend* origin.** The browser
+  called the backend on a different origin, so the `Set-Cookie` from a `200` login was discarded as a
+  third-party cookie and every later request was `401`. The auth API is now served **same-origin** by BFF
+  route handlers (`frontend/lib/authBff.ts` + `app/api/auth/{login,logout,password,me}/route.ts`), which
+  re-emit the session cookie **host-only** (`Path=/`, `HttpOnly`, `SameSite=Lax`, `Secure` in prod). A new
+  `/api/diag-session` (only when `DIAGNOSTICS=true`, booleans/enums only) and a login-page hint make the
+  next occurrence self-diagnosing. Backend `AUTH_DEBUG_HEADERS` (default off) adds opt-in
+  `X-Auth-Reason` markers; logout now also writes a past `Expires`.
+- **Hero explosion rebuilt as a real exploded view.** The instanced neon shards are replaced by a true
+  Voronoi fracture of the five **traced** logo contours (`components/three/fracture.ts`): 100 / 50 / 20
+  pieces (HIGH/MED/LOW) that separate, drift, spin and land back exactly on the mark, in one merged
+  geometry (one draw call). The stages read `assembled → separating → fracturing → floating →
+  reassembling`; the old `data-explode` vocabulary (`shattering` / `floating` / `reassembling`) is
+  preserved for backward compatibility. Measured: tiling **IoU 0.999**, median projected fragment
+  **9.6 %** of the logo width, home initial JS unchanged (+0 B).
+- **Service cards → Discipline Atlas.** All 14 services are a keyboard-operable `tablist` rail beside a
+  live stage (title, full description, chips, CTA, 14-node constellation), with an optional reduced-motion
+  -safe tour and a sticky scroll-snapped chip carousel below 1024 px. Every `#service-{slug}` deep link
+  and the services hub still resolve.
+- **VAPID contact corrected** to `mailto:jazaritechofficial@gmail.com`; rotating the keys invalidates
+  existing subscriptions but needs no frontend redeploy.
+- **Verification.** Frontend lint/tsc clean, build **17 routes**, harness **271/271** (new suite **[25]**
+  `CHECK 143–151`: tier budgets + stage vocabulary, IoU ≥ 0.95, median projected fragment ≥ 2.5 %, neon
+  edges, reassembly round-trip, reduced motion, `explode-*.png` screenshots, bundle budget, cycle/heap
+  bound), `NO_WEBGL=1` **9/9**, `verify:bff` **21/21**, contrast **51/51**, backend smoke **200/200**,
+  syntax check **54 files**. The three chunk grew **+13.1 KB raw / +4.4 KB gzip**; no new dependency.
+
+Architecture + tuning: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §37 · deploy steps:
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) §15.

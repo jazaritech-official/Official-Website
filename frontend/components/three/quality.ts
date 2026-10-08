@@ -20,11 +20,17 @@ export interface QualityConfig {
   /** Soft spot particles enabled. */
   atmospheric: boolean;
   /**
-   * Hero shatter budget — number of instanced neon shards sampled inside the
-   * real logo silhouette. 0 disables the shatter field entirely (static /
-   * reduced-motion). The FPS downgrade path reduces this too (see engine).
+   * Neon dust budget — instanced ember shards sampled inside the real logo
+   * silhouette, released by the fracture. 0 disables them entirely (static /
+   * reduced-motion). Kept as the tier's particle budget.
    */
   shardCount: number;
+  /**
+   * Voronoi fragment budget — how many real pieces the mark breaks into.
+   * Spec bands: HIGH 80–120, MEDIUM 40–60, LOW 16–24. The fracture is rebuilt
+   * on a tier change, so `data-fragments` always matches `data-quality`.
+   */
+  fragmentCount: number;
 }
 
 export type RenderQualityConfig = QualityConfig & { tier: Exclude<QualityTier, "static"> };
@@ -42,6 +48,7 @@ export const QUALITY: Record<Exclude<QualityTier, "static">, QualityConfig> = {
     particleCount: 140,
     atmospheric: true,
     shardCount: 1000,
+    fragmentCount: 100,
   },
   medium: {
     pixelRatioCap: 1.5,
@@ -51,6 +58,7 @@ export const QUALITY: Record<Exclude<QualityTier, "static">, QualityConfig> = {
     particleCount: 70,
     atmospheric: true,
     shardCount: 500,
+    fragmentCount: 50,
   },
   low: {
     pixelRatioCap: 1.25,
@@ -60,6 +68,7 @@ export const QUALITY: Record<Exclude<QualityTier, "static">, QualityConfig> = {
     particleCount: 0,
     atmospheric: false,
     shardCount: 200,
+    fragmentCount: 20,
   },
 };
 

@@ -17,15 +17,37 @@ export type SceneStatus = "loading" | "ready" | "fallback";
 export type ScenePhase = "initializing" | "assembling" | "idle";
 
 /**
- * Hero shatter state machine (additive to the assembly phase).
- * `assembled` = the solid logo is whole; `shattering`/`reassembling` are the
- * transitions; `floating` = fully exploded neon shards. */
-export type ShatterState = "assembled" | "shattering" | "floating" | "reassembling";
+ * Hero explosion state machine (additive to the assembly phase).
+ *
+ * Stages: `assembled` (solid mark) → `separating` (the five real parts pull
+ * apart as an exploded diagram) → `fracturing` (each Voronoi fragment takes
+ * its own path) → `floating` (drift + tumble) → `reassembling` (magnetic snap
+ * home) → `assembled`. */
+export type ShatterState =
+  | "assembled"
+  | "separating"
+  | "fracturing"
+  | "floating"
+  | "reassembling";
 
-/** Live shatter telemetry written to `canvas.dataset` for the harness. */
+/**
+ * The pre-rebuild vocabulary, still written to `canvas.dataset.explode` for
+ * every existing assertion and integration: `separating`/`fracturing` collapse
+ * to `shattering`. `canvas.dataset.stage` carries the five real names. */
+export type LegacyShatterState = "assembled" | "shattering" | "floating" | "reassembling";
+
+/** What the debug hooks accept — new names, or the legacy ones. */
+export type ShatterStateInput = ShatterState | LegacyShatterState;
+
+/** Live explosion telemetry written to `canvas.dataset` for the harness. */
 export interface ShatterDebug {
   state: ShatterState;
+  /** Legacy view of `state` (what `data-explode` holds). */
+  explode: LegacyShatterState;
+  /** Neon dust shards drawn (tier budget). */
   shards: number;
+  /** Voronoi fragments drawn (tier budget). */
+  fragments: number;
 }
 
 /**
@@ -79,5 +101,5 @@ export interface EngineHandle {
   /** Touch tap on the visual column — toggles shatter. */
   tap(): void;
   /** Debug/test hook: force a state (null releases the override). */
-  forceShatterState(state: ShatterState | null): void;
+  forceShatterState(state: ShatterStateInput | null): void;
 }

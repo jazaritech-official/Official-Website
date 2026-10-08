@@ -2410,3 +2410,148 @@ device.
   temp file and `cat temp >> target` (as done here), never by “writing the tail”.
 - VAPID keys live only in `Backend/.env` (gitignored) locally and in the Vercel env in production; the
   `.env.example` holds placeholders.
+## 37. 2026-10-08 — Task K: production admin login, real exploded-view hero, Discipline Atlas, VAPID contact
+
+Four tasks in one pass. Task 1 fixes the production admin login failure and hardens it; Task 2 replaces the
+hero "shatter" with a real exploded view of the traced logo (a Voronoi fracture); Task 3 replaces the 14
+service cards with the Discipline Atlas; Task 4 corrects the VAPID contact and documents the rotation rules.
+
+### 37.1 Task 1 — production admin login (root-cause fix)
+
+**Root cause (proven, not guessed).** In production the browser called the backend on a *different origin*
+(`localhost:4100` → `127.0.0.1:4101` in the throwaway repro). The login POST returned `200` and a
+`Set-Cookie`, but the browser discarded it as a third-party cookie, so every later request was `401`:
+"login succeeds, then you are not signed in". The fix is to make the session cookie **first-party** by
+serving the auth API through the frontend origin.
+
+- **`frontend/lib/authBff.ts`** (new) — `sessionCookieName()`, `backendApiBase()`, `CONFIG_MISSING_BODY`
+  and `forwardAuth(request, "login"|"logout"|"password"|"me", { method, clearSession })`. It forwards to the
+  backend and **re-emits the session cookie host-only** (`Path=/`, `HttpOnly`, `SameSite=Lax`, `Secure` in
+  production, the upstream `Max-Age` copied) so the browser stores it on the frontend origin. Logout writes
+  `Max-Age=0`; an unreachable backend is a `502 UPSTREAM_UNREACHABLE` that never echoes the host.
+- **BFF route handlers** (new, real filesystem routes): `app/api/auth/{login,logout,password,me}/route.ts`
+  and `app/api/diag-session/route.ts`. `me` is `no-store`; `diag-session` returns `404` unless
+  `DIAGNOSTICS === "true"` and exposes **booleans/enums only** (never a token or cookie value).
+- **`next.config.ts`** — `Cache-Control: no-store` for `/api/auth/:path*` and `/api/diag-session`. The
+  `/api/:path*` → `BACKEND_ORIGIN` rewrite is unchanged but is **baked at build time** (see gotchas).
+- **Login UX** — `app/admin/login/page.tsx` is now a server component that reads the runtime `DIAGNOSTICS`
+  flag (`force-dynamic`) and renders the client `LoginForm.tsx`. Distinct
+  `CONFIG_ERROR` / credentials / deactivated / rate-limit / service / `SESSION_COOKIE_ERROR` messages; an
+  authenticated visitor is redirected straight to the dashboard; a `data-diagnostics-hint="on"` hint links
+  to `/api/diag-session` when diagnostics are on.
+- **Backend hardening** — `config/env.js` gained `AUTH_DEBUG_HEADERS` (default false);
+  `middleware/auth.js` `markAuthReason(res, no-token|invalid-token|no-admin|inactive)` is emitted **only**
+  when it is true; `utils/authCookie.js` `clearAuthCookie` now writes `Max-Age=0` **and** a past `Expires`.
+- **Tests (add-only)** — `Backend/scripts/smoke.js` gained Bearer `/auth/me`, "no `X-Auth-Reason` by
+  default", logout cookie attributes, and a third server with `AUTH_DEBUG_HEADERS=true` asserting all four
+  reasons. A new harness suite **[23]** (`CHECK 121–129`) checks diag gating/payload keys/no token leak,
+  the BFF `401` + `no-store`, and — with real credentials — that the browser stores the cookie host-only
+  and resends it (`me` 200), then clears it on logout (SKIPPED loudly if creds are absent).
+  `frontend/scripts/verify-bff.mjs` (`npm run verify:bff`) runs the BFF handlers standalone: **21/21**.
+
+### 37.2 Task 2 — real exploded-view logo + Voronoi fracture
+
+The previous "shatter" was instanced neon dust. It is replaced by a **true exploded view**: every one of the
+five traced logo contours is fractured into Voronoi cells that separate, drift, spin and then land back
+exactly on the mark.
+
+**`frontend/components/three/fracture.ts`** (new) is the core. It reads the five `M…L…Z` polylines from
+`components/services/logoGeometry.ts` (top 56 pts, bottom 40, right 33, fold 16, leaf 15 — all straight
+segments, no curves) and for each contour:
+
+1. parses + ensures CCW winding, triangulates once (`ShapeUtils.triangulateShape`);
+2. allocates seeds **area-proportionally** to the fragment budget, scatters them deterministically
+   (dart-throw, `mulberry32(0x2f6d21b3)`);
+3. builds each cell as the union of `contour-triangle ∩ every bisector half-plane` (Sutherland–Hodgman,
+   exact for convex subjects);
+4. emits front/back caps (convex fan) + walls (edges not shared with a sibling sub-poly, via an
+   `insideConvex` midpoint test) into **one merged `BufferGeometry`** → one draw call, `DoubleSide`.
+
+Per-vertex attributes bake the whole animation: `aCenter` (rest centroid), `aColor` (artwork gradient, linear
+space), `aDir` (radial drift), `aSep` (per-piece separation vector), `aDelay`, `aSpin`, and `aEdge`
+(`0` cap / `1` wall). The vertex shader splits stage A/B at `uSeparateEnd` (`SEPARATE_END = 0.42`) with a
+`smoothstep`, uses a back-ease `easeReturn` when `uMagnetic > 0.5` (reassembly), and wobbles only while
+`floatMix` is fractional. The fragment shader mixes the cap gradient against a neon wall
+`uNeon * (0.75 + 0.45 * fresnel) * uGlow`, then runs `#include <tonemapping_fragment>` +
+`#include <colorspace_fragment>` so it matches the solid PBR mark. Tuning: `FRAGMENT_DEPTH=230`,
+`Z_BIAS=16`, `RASTER=512`, `SEPARATE_DISTANCE=0.085`, `DRIFT_DISTANCE=1.05`.
+
+**Stages.** `shatterState.ts` now drives `assembled → separating → fracturing → floating → reassembling`
+(`SHATTER_DURATION=0.75`, `REASSEMBLE_DURATION=0.85`, `SEPARATE_END=0.42`, `IDLE_DWELL=3`, `MAX_HOLD=8`,
+`SHATTER_COOLDOWN=10`). Forced states park at fixed progress (0 / 0.3 / 0.75 / 1 / 0.5) so captures are
+deterministic. The legacy vocabulary is preserved: `legacyExplodeState` maps `separating|fracturing` →
+`shattering`, and `force()`/`forceShatter()` still accept the legacy `shattering` name — so existing suites
+keep reading the same `data-explode` contract, and `data-stage` (new) reports the true stage.
+
+**Budgets.** `quality.ts` gained `fragmentCount` (**high 100 / medium 50 / low 20**) beside the dust
+`shardCount` (1000/500/200); the engine exposes both as `data-fragments` and `data-shards` and rebuilds the
+field on a tier change (`rebuildShatter()`), re-applying the live timeline so a mid-explosion downgrade
+never flashes.
+
+**`shatter.ts`** is now two layers: the fracture (real fragments) plus the previous instanced neon dust,
+which now only wakes after the cracks open (`DUST_START = 0.35`). `setVisible` / `setDustVisible` /
+`setFragmentsVisible` exist purely so a screenshot can isolate a layer.
+
+**Measured fidelity** (rasterised on demand, cached): fracture tiling vs. the traced silhouette
+**IoU = 0.99925**, tiling overlap **0.00120**, all five pieces 100 % fractured; the median projected
+fragment is **9.55 %** of the projected logo width (spec floor 2.5 %).
+
+### 37.3 Task 3 — Discipline Atlas
+
+The 14 service cards became a **rail + stage** atlas (`components/services/DisciplineAtlas.tsx`; the old
+`ServicesGrid.tsx` was deleted). The rail is a `role="tablist"` with roving tabindex (Up/Down/Home/End/
+PageUp/PageDown); rows keep the old DOM contract (`article.service-card.atlas-row[data-service-card]`
+`role="tab" id="service-{slug}"`) so every hub deep link still resolves. The stage is a
+`role="tabpanel" aria-live="polite"` showing the selected discipline's title, full description, chips, CTA
+and a 14-node constellation. An optional "Play tour" (off by default, paused on hover/focus/off-screen/
+hidden-tab, absent under reduced motion) animates the theme. Below 1024 px it becomes a sticky, scroll-
+snapped chip carousel. Backend `Service` gained optional `category` and `accent`; all 14 are seeded.
+`audit-contrast.mjs` gained `growth`/`accent` exemptions → still **51/51**.
+
+### 37.4 Task 4 — VAPID contact
+
+The VAPID subject default is now `mailto:jazaritechofficial@gmail.com` (`Backend/config/env.js`),
+`.env.example` documents it, and `DEPLOYMENT.md` records that the subject is public, that the owner sets the
+key pair locally in the gitignored `Backend/.env` and in the Vercel dashboard, and that rotating the keys
+invalidates existing subscriptions (the frontend needs no redeploy).
+
+### 37.5 Verification (measured)
+
+| Check | Result |
+|---|---|
+| Frontend `npm run lint` / `npx tsc --noEmit` | 0 problems / 0 errors |
+| Frontend `npm run build` | 17 routes |
+| `npm run audit:contrast` | 51/51 |
+| `npm run check:secrets` | clean (7 files) |
+| Harness `node scripts/verify-three.mjs` | **271/271** |
+| Harness `NO_WEBGL=1 …` | 9/9 |
+| `npm run verify:bff` | 21/21 |
+| Backend `npm run lint` / `npm run build` | clean / 54 files |
+| Backend `NODE_ENV=test npm run smoke` | 200/200 |
+| three chunk (baseline 639071 B / 164135 B gz) | 652165 B (**+13094**) / 168521 gz (**+4386**) |
+| home initial JS (baseline 707403 / 217523 gz) | 707403 (**+0**) / 217522 (**−1**) |
+
+New harness suite **[25]** (`CHECK 143–151`): tier fragment budget + `data-stage`/`data-explode`
+vocabulary; the five stages park in order with the legacy mapping; silhouette IoU ≥ 0.95 and overlap ≤ 0.02;
+median projected fragment ≥ 2.5 %; the neon faces brighten with the glow and read blue at rest; the
+explosion round-trips home at the same IoU; reduced motion never fractures; the `explode-*.png` set; the
+bundle budget; and four fracture cycles leave one canvas and a bounded heap.
+
+### 37.6 Owner actions (ordered)
+
+1. Set `BACKEND_ORIGIN` to the backend origin and `NEXT_PUBLIC_API_URL=/api` in the **Vercel frontend**
+   env, then **redeploy** (both are read at build time).
+2. In the Vercel backend env set the real VAPID pair `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` and
+   `VAPID_SUBJECT=mailto:jazaritechofficial@gmail.com`.
+3. Optionally set `DIAGNOSTICS=true` on the frontend to expose `/api/diag-session` and the login-page
+   hint while diagnosing; set it back to `false` (or remove it) afterwards.
+4. Confirm the admin login works from a real browser and that the session survives a refresh.
+
+### 37.7 Gotchas for future work
+
+- **`rewrites()` is evaluated at build time.** `BACKEND_ORIGIN` must be present during `npm run build`
+  (not only at `next start`) or the `/api/*` proxy is not baked in and same-origin API calls `404`.
+- The login page **redirects an authenticated visitor to the dashboard**, so a harness suite that needs the
+  sign-in form must clear the browser cookies first (both session suites do).
+- The neon glow scales only the fracture **walls** (caps do not respond), which is what makes the neon-edge
+  pixel test meaningful; judging the hue on the low-glow capture avoids ACES saturation skewing the deltas.

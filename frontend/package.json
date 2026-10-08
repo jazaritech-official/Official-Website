@@ -12,7 +12,8 @@
     "trace:logo": "node scripts/trace-logo.mjs",
     "snapshot:content": "node scripts/snapshot-content.mjs",
     "build:icons": "node scripts/build-logo-assets.mjs",
-    "check:secrets": "node scripts/check-no-secrets.mjs"
+    "check:secrets": "node scripts/check-no-secrets.mjs",
+    "verify:bff": "node scripts/verify-bff.mjs"
   },
   "dependencies": {
     "next": "16.3.8",

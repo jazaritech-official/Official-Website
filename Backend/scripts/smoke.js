@@ -11,8 +11,11 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
+import jwt from "jsonwebtoken";
+import mongoose from "mongoose";
 import env from "../config/env.js";
 import Service from "../models/Service.js";
+import Admin from "../models/Admin.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = process.env.SMOKE_PORT || "5199";
@@ -229,6 +232,70 @@ console.log("[smoke] 2. public content");
     `maxEntries=${Math.max(...services.body.data.map((s) => s.highlights.length))}`,
   );
 
+  // Discipline Atlas fields (Task K) — optional, backward-compatible grouping
+  // metadata for the frontend "Discipline Atlas" (no UI depends on it yet).
+  const ATLAS_CATEGORIES = ["", "engineering", "growth", "design", "security", "operations"];
+  const ATLAS_ACCENTS = ["blue", "navy", "green-micro"];
+  check(
+    "every service exposes the optional atlas fields (category/accent)",
+    services.body.data.every((s) => "category" in s && "accent" in s),
+  );
+  check(
+    "category is empty or one of the five disciplines (enum respected)",
+    services.body.data.every((s) => ATLAS_CATEGORIES.includes(s.category)),
+    `values=[${[...new Set(services.body.data.map((s) => s.category))].join(",")}]`,
+  );
+  check(
+    "the seeded catalogue covers every discipline (the atlas can group its nodes)",
+    ["engineering", "growth", "design", "security", "operations"].every((category) =>
+      services.body.data.some((s) => s.category === category),
+    ),
+  );
+  check(
+    "accent is one of blue/navy/green-micro and Growth Green stays a micro accent",
+    services.body.data.every((s) => ATLAS_ACCENTS.includes(s.accent)) &&
+      services.body.data.filter((s) => s.accent === "green-micro").length <= 3,
+    `green=${services.body.data.filter((s) => s.accent === "green-micro").length}`,
+  );
+  const categoryPath = Service.schema.path("category");
+  const accentPath = Service.schema.path("accent");
+  check(
+    "Service schema: category/accent are optional with defaults (old records stay valid)",
+    categoryPath?.isRequired !== true &&
+      accentPath?.isRequired !== true &&
+      categoryPath?.options?.default === "" &&
+      accentPath?.options?.default === "blue",
+  );
+  {
+    // Model-level validation, no database needed (these are new, unsaved docs).
+    const badCategory = new Service({
+      title: "X",
+      slug: "x",
+      icon: "code",
+      description: "A description long enough.",
+      category: "nonsense",
+    });
+    check(
+      "an out-of-enum category is rejected by the model",
+      Boolean(badCategory.validateSync()?.errors?.category),
+    );
+    const badAccent = new Service({
+      title: "X",
+      slug: "x",
+      icon: "code",
+      description: "A description long enough.",
+      accent: "rainbow",
+    });
+    check("an out-of-enum accent is rejected by the model", Boolean(badAccent.validateSync()?.errors?.accent));
+    const legacy = new Service({
+      title: "X",
+      slug: "x",
+      icon: "code",
+      description: "A description long enough.",
+    });
+    check("a legacy record with no category/accent is still valid", legacy.validateSync() === undefined);
+  }
+
   // Schema-level backward compatibility: the new fields are optional with
   // defaults, so records created before Task I remain valid.
   const shortPath = Service.schema.path("shortDescription");
@@ -340,6 +407,24 @@ let cookie;
 
   const badCookie = await json("/admin/products", { cookie: "jazari_admin=forged.value" });
   check("forged cookie → 401", badCookie.status === 401);
+
+  // The same token delivered as `Authorization: Bearer` must keep working for
+  // server-to-server callers (cookie OR bearer — the extractor supports both).
+  const bearerToken = cookie.slice(cookie.indexOf("=") + 1);
+  const bearer = await json("/auth/me", { headers: { Authorization: `Bearer ${bearerToken}` } });
+  check(
+    "Authorization: Bearer still works for server-to-server callers",
+    bearer.status === 200 && bearer.body?.data?.admin?.email === ADMIN_EMAIL,
+    `status=${bearer.status}`,
+  );
+
+  // The internal diagnostic header is OFF unless explicitly enabled — it is never
+  // part of the public contract (attribute/enum only; the body is untouched).
+  check("no X-Auth-Reason header by default", meNoCookie.response.headers.get("x-auth-reason") === null);
+  check(
+    "diagnostic header absent leaves the generic 401 body unchanged",
+    meNoCookie.body?.error?.code === "UNAUTHORIZED",
+  );
 }
 
 console.log("[smoke] 5b. session cookie under production flags");
@@ -378,6 +463,74 @@ console.log("[smoke] 5b. session cookie under production flags");
     check("prod config: Path is /", prodAttrs.path === "/");
   }
   prodServer.kill("SIGTERM");
+}
+
+console.log("[smoke] 5c. opt-in auth diagnostics header (AUTH_DEBUG_HEADERS)");
+{
+  // Boot a third API process with AUTH_DEBUG_HEADERS=true and assert the internal
+  // reason enum. The header is an enum only — never a token, claim or value — and
+  // the public body must stay identical to the default configuration.
+  const diagPort = String(Number(PORT) + 2);
+  const diagBase = `http://127.0.0.1:${diagPort}/api`;
+  const diagServer = spawn(process.execPath, ["server.js"], {
+    cwd: root,
+    stdio: ["ignore", "ignore", "ignore"],
+    env: { ...process.env, MONGODB_URI: uri, PORT: diagPort, NODE_ENV: "test", AUTH_DEBUG_HEADERS: "true" },
+  });
+  const diagUp = await waitForHealth(30_000, diagBase);
+  check("diagnostics-enabled API reachable", diagUp === true);
+  if (diagUp) {
+    const noToken = await fetch(`${diagBase}/auth/me`);
+    const noTokenBody = await noToken.json().catch(() => null);
+    check("X-Auth-Reason=no-token without a cookie", noToken.headers.get("x-auth-reason") === "no-token");
+    check(
+      "diagnostics never change the public 401 body",
+      noToken.status === 401 &&
+        noTokenBody?.error?.code === "UNAUTHORIZED" &&
+        noTokenBody?.error?.message === "Please sign in to continue.",
+    );
+
+    const badToken = await fetch(`${diagBase}/auth/me`, { headers: { Cookie: "jazari_admin=forged.value" } });
+    check("X-Auth-Reason=invalid-token for a forged token", badToken.headers.get("x-auth-reason") === "invalid-token");
+
+    // A well-formed, correctly signed token for an account that no longer exists.
+    const ghostToken = jwt.sign({ sub: "0".repeat(24), role: "admin" }, env.jwt.secret, { expiresIn: 60 });
+    const noAdmin = await fetch(`${diagBase}/auth/me`, { headers: { Authorization: `Bearer ${ghostToken}` } });
+    check("X-Auth-Reason=no-admin for a missing account", noAdmin.headers.get("x-auth-reason") === "no-admin");
+
+    // A deactivated account. The seed only deactivates a demo admin if one
+    // already exists, so a fresh in-memory database has none — create a
+    // throwaway inactive admin, assert the enum, then remove it again. This test
+    // process is not otherwise connected to Mongo (only the spawned server is),
+    // so it connects just for the fixture and disconnects afterwards.
+    await mongoose.connect(uri).catch(() => {});
+    try {
+      const inactiveAdmin = await Admin.create({
+        email: "smoke-inactive@example.com",
+        name: "Smoke Inactive",
+        passwordHash: await Admin.hashPassword("SmokeInactive9"),
+        role: "admin",
+        isActive: false,
+      });
+      const inactiveToken = jwt.sign(
+        { sub: inactiveAdmin._id.toString(), role: inactiveAdmin.role },
+        env.jwt.secret,
+        { expiresIn: 60 },
+      );
+      const inactive = await fetch(`${diagBase}/auth/me`, { headers: { Authorization: `Bearer ${inactiveToken}` } });
+      check(
+        "X-Auth-Reason=inactive for a deactivated account",
+        inactive.status === 403 && inactive.headers.get("x-auth-reason") === "inactive",
+        `status=${inactive.status}`,
+      );
+      await Admin.deleteOne({ _id: inactiveAdmin._id });
+    } catch {
+      check("X-Auth-Reason=inactive for a deactivated account", false, "fixture creation failed");
+    } finally {
+      await mongoose.disconnect().catch(() => {});
+    }
+  }
+  diagServer.kill("SIGTERM");
 }
 
 console.log("[smoke] 6. admin content management");
@@ -947,6 +1100,21 @@ console.log("[smoke] 11. logout");
   check("logout → 200", out.status === 200);
   const cleared = cookieFrom(out.response);
   check("logout clears cookie", cleared === "jazari_admin=" || (out.response.headers.getSetCookie?.() || []).some((c) => c.startsWith("jazari_admin=;")));
+
+  // Clearing must use the SAME options object as setting, or the browser keeps a
+  // cookie that no longer matches the attributes it was written with.
+  const clearedAttrs = cookieAttributes(out.response);
+  check("logout clears with HttpOnly", clearedAttrs.found && clearedAttrs.httpOnly === true);
+  check("logout clears with Path=/", clearedAttrs.path === "/");
+  check("logout clears host-only (no Domain)", clearedAttrs.found && clearedAttrs.domain === null);
+  check(
+    `logout clears with SameSite=${env.jwt.cookieSameSite}`,
+    (clearedAttrs.sameSite || "").toLowerCase() === env.jwt.cookieSameSite.toLowerCase(),
+  );
+  check(
+    "logout re-emits the cookie with Max-Age=0",
+    (out.response.headers.getSetCookie?.() || []).some((c) => /\bmax-age=0\b/i.test(c)),
+  );
 }
 
 console.log(`\n[smoke] ${passed} passed, ${failed} failed`);

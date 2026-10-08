@@ -27,7 +27,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { inflateSync } from "node:zlib";
+import { gzipSync, inflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1816,12 +1816,26 @@ async function main() {
       check("CHECK 12 — 1 service: exactly one label", n === 1, `labels=${n}`);
     });
     await withServices(flagged.slice(0, 3), async () => {
-      const n = await evaluate(cdp, `document.querySelectorAll("#hub-service-list a").length`);
-      check("CHECK 13 — 3 services: three labels", n === 3, `labels=${n}`);
+      const n = await evaluate(
+        cdp,
+        `(() => ({
+          labels: document.querySelectorAll("#hub-service-list a").length,
+          atlasRows: document.querySelectorAll("[data-atlas-item]").length,
+        }))()`,
+      );
+      // The SAME one public services request feeds the hub AND the Discipline
+      // Atlas, so both must track the intercepted count exactly.
+      check("CHECK 13 — 3 services: three hub labels and three atlas rows", n.labels === 3 && n.atlasRows === 3, JSON.stringify(n));
     });
     await withServices(flagged.slice(0, 5), async () => {
-      const n = await evaluate(cdp, `document.querySelectorAll("#hub-service-list a").length`);
-      check("CHECK 14 — 5 services: five labels", n === 5, `labels=${n}`);
+      const n = await evaluate(
+        cdp,
+        `(() => ({
+          labels: document.querySelectorAll("#hub-service-list a").length,
+          atlasRows: document.querySelectorAll("[data-atlas-item]").length,
+        }))()`,
+      );
+      check("CHECK 14 — 5 services: five hub labels and five atlas rows", n.labels === 5 && n.atlasRows === 5, JSON.stringify(n));
     });
 
     /* ================================================================
@@ -3090,6 +3104,10 @@ async function main() {
         );
       } else {
         await setViewport(1366, 900, false);
+        // Signed-out precondition: the login page redirects an already
+        // authenticated visitor to the dashboard, so clear the session the
+        // admin IA suite left in the browser jar first.
+        await cdp.send("Network.clearBrowserCookies");
         await cdp.send("Page.navigate", { url: `${BASE}/admin/login` });
         await waitFor(cdp, `document.querySelector('#admin-email') !== null`, 15000, "admin login form");
 
@@ -3937,6 +3955,766 @@ async function main() {
 
     assertClean("push-prompt");
     await evaluate(cdp, `(() => { try { localStorage.setItem("jazari-push-dismissed", "1"); } catch {} return true; })()`);
+
+    // --- 23. Task K — auth BFF session cookie attributes + diagnostics ----
+    // Adds to (never edits) the Task I session suite: the BFF route handlers are
+    // real filesystem routes on the FRONTEND origin, and the browser must store
+    // their cookie host-only. Attributes only — no cookie value is ever read.
+    console.log("\n[23] Auth BFF session cookie attributes + diagnostics");
+    resetErrors();
+    {
+      await setViewport(1366, 900, false);
+      // Signed-out precondition (see the Task I session suite above).
+      await cdp.send("Network.clearBrowserCookies");
+      await cdp.send("Page.navigate", { url: `${BASE}/admin/login` });
+      await waitFor(cdp, `document.querySelector('#admin-email') !== null`, 15000, "admin login form (BFF)");
+
+      // The server-side DIAGNOSTICS flag is reflected by the login-page hint; the
+      // endpoint and the hint must agree (both read the same runtime env).
+      const diagnosticsOn = await evaluate(cdp, `Boolean(document.querySelector('[data-diagnostics-hint]'))`);
+      const diagRes = await fetch(`${BASE}/api/diag-session`);
+      const diagType = diagRes.headers.get("content-type") || "";
+      const diagBody = diagRes.status === 200 ? await diagRes.json().catch(() => null) : null;
+      const diagKeys = diagBody ? Object.keys(diagBody).sort().join(",") : "";
+      const EXPECTED_DIAG_KEYS = [
+        "backendDatabase",
+        "backendHealthStatus",
+        "backendOriginIsHttps",
+        "cookiePresentOnThisRequest",
+        "nodeEnv",
+        "proxyConfigured",
+        "requestHostMatchesForwardedHost",
+      ].join(",");
+      check(
+        "CHECK 121 — /api/diag-session is 200 iff DIAGNOSTICS is on, and always JSON (no client JS)",
+        (diagnosticsOn && diagRes.status === 200 && /application\/json/.test(diagType)) ||
+          (!diagnosticsOn && diagRes.status === 404),
+        `hint=${diagnosticsOn} status=${diagRes.status} type=${diagType}`,
+      );
+      check(
+        "CHECK 122 — diagnostics payload is booleans/enums only, and confirms proxy + healthy backend",
+        !diagnosticsOn ||
+          (diagKeys === EXPECTED_DIAG_KEYS &&
+            diagBody.proxyConfigured === true &&
+            diagBody.backendHealthStatus === 200 &&
+            diagBody.backendDatabase === "connected"),
+        `keys=${diagKeys} body=${JSON.stringify(diagBody)}`,
+      );
+      check(
+        "CHECK 123 — diagnostics never leak a cookie value or a token",
+        !diagnosticsOn || !/[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/.test(JSON.stringify(diagBody)),
+        `len=${diagBody ? JSON.stringify(diagBody).length : 0}`,
+      );
+
+      // Real filesystem BFF routes: answered on the frontend origin, no-store,
+      // upstream status/body forwarded untouched.
+      const meNoCookie = await fetch(`${BASE}/api/auth/me`);
+      check(
+        "CHECK 124 — BFF /api/auth/me without a cookie → 401 generic with Cache-Control: no-store",
+        meNoCookie.status === 401 && /no-store/.test(meNoCookie.headers.get("cache-control") || ""),
+        `status=${meNoCookie.status} cache=${meNoCookie.headers.get("cache-control")}`,
+      );
+      const badLogin = await fetch(`${BASE}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "nobody@invalid.invalid", password: "definitely-wrong" }),
+      });
+      const badBody = await badLogin.json().catch(() => null);
+      check(
+        "CHECK 125 — BFF login forwards the upstream 401 + generic body untouched",
+        badLogin.status === 401 &&
+          badBody?.error?.code === "UNAUTHORIZED" &&
+          !/hash|jwt/i.test(JSON.stringify(badBody)),
+        `status=${badLogin.status}`,
+      );
+
+      const bffEnv = readBackendEnv();
+      const bffEmail = process.env.ADMIN_EMAIL ?? bffEnv.ADMIN_EMAIL;
+      const bffPassword = process.env.ADMIN_PASSWORD ?? bffEnv.ADMIN_PASSWORD;
+      if (!bffEmail || !bffPassword) {
+        console.log(
+          "  ⚠ SKIPPED (Task K BFF cookie attributes): ADMIN_EMAIL/ADMIN_PASSWORD unavailable — NOT counted as a pass",
+        );
+      } else {
+        const creds = JSON.stringify({ email: bffEmail, password: bffPassword });
+        const loginStatus = await evaluate(
+          cdp,
+          `(async () => {
+            const res = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: ${JSON.stringify(creds)} });
+            return res.status;
+          })()`,
+        );
+        const jar = await cdp.send("Network.getCookies", { urls: [`${BASE}/`] });
+        const session = (jar.cookies || []).find((c) => c.httpOnly === true) ?? null;
+        const host = new URL(BASE).hostname;
+        check(
+          "CHECK 126 — the BROWSER stores the session cookie from the FRONTEND origin: HttpOnly, Path=/, host-only",
+          loginStatus === 200 &&
+            session !== null &&
+            session.httpOnly === true &&
+            session.path === "/" &&
+            session.domain === host &&
+            !String(session.domain).startsWith("."),
+          `login=${loginStatus} cookie=${
+            session
+              ? JSON.stringify({ domain: session.domain, path: session.path, httpOnly: session.httpOnly, sameSite: session.sameSite })
+              : null
+          }`,
+        );
+        check(
+          "CHECK 127 — that cookie is SameSite=Lax (sent on the same-origin XHR)",
+          session !== null && String(session.sameSite).toLowerCase() === "lax",
+          `sameSite=${session?.sameSite}`,
+        );
+        const meStatus = await evaluate(cdp, `fetch('/api/auth/me', { credentials: 'include' }).then((r) => r.status)`);
+        check("CHECK 128 — the browser resends it: /api/auth/me is 200", meStatus === 200, `me=${meStatus}`);
+
+        await evaluate(
+          cdp,
+          `fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).then((r) => r.status)`,
+        );
+        const jarAfter = await cdp.send("Network.getCookies", { urls: [`${BASE}/`] });
+        const stillThere = (jarAfter.cookies || []).some((c) => c.httpOnly === true);
+        check("CHECK 129 — logout removes the session cookie from the BROWSER jar", stillThere === false);
+      }
+      assertClean("auth-bff");
+    }
+
+    // --- 24. Task K — Discipline Atlas (rail + stage) ---------------------
+    console.log("\n[24] Discipline Atlas — rail + stage");
+    resetErrors();
+    await setViewport(1440, 900, false);
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+    await cdp.send("Page.navigate", { url: `${BASE}/?atlas=1` });
+    await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 15000, "atlas rail loaded");
+
+    const atlas = await evaluate(
+      cdp,
+      `(() => {
+        const rail = document.querySelector('[data-atlas-rail]');
+        const rows = rail ? [...rail.children] : [];
+        const stage = document.querySelector('[data-atlas-stage]');
+        const hubLinks = [...document.querySelectorAll('#hub-service-list a[data-hub-card]')].map((a) => a.getAttribute('href'));
+        return {
+          rows: rows.length,
+          rowIds: rows.map((r) => r.id),
+          role: rail ? rail.getAttribute('role') : null,
+          stageRole: stage ? stage.getAttribute('role') : null,
+          live: stage ? stage.getAttribute('aria-live') : null,
+          hubLinks,
+          hubResolved: hubLinks.filter((href) => href && document.querySelector(href)).length,
+          selected: rows.filter((r) => r.getAttribute('aria-selected') === 'true').length,
+          roving: rows.filter((r) => r.getAttribute('tabindex') === '0').length,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 130 — the atlas rail is a tablist of all 14 disciplines, with exactly one selected/roving row",
+      atlas.rows === 14 &&
+        atlas.role === "tablist" &&
+        atlas.stageRole === "tabpanel" &&
+        atlas.live === "polite" &&
+        atlas.selected === 1 &&
+        atlas.roving === 1 &&
+        atlas.rowIds.every((id) => /^service-/.test(id || "")),
+      JSON.stringify({ rows: atlas.rows, role: atlas.role, stage: atlas.stageRole, live: atlas.live, selected: atlas.selected, roving: atlas.roving }),
+    );
+    check(
+      "CHECK 131 — every hub link still resolves to a rail anchor (#service-{slug})",
+      atlas.hubLinks.length === 5 && atlas.hubResolved === atlas.hubLinks.length,
+      JSON.stringify(atlas.hubLinks),
+    );
+
+    const stageOf = `(() => {
+      const stage = document.querySelector('[data-atlas-stage]');
+      const rows = [...document.querySelectorAll('[data-atlas-item]')];
+      const activeRow = rows.find((r) => r.getAttribute('aria-selected') === 'true');
+      return {
+        slug: activeRow ? activeRow.dataset.atlasItem : null,
+        title: stage ? stage.querySelector('.atlas-stage__title')?.textContent.trim() : null,
+        descLen: stage ? (stage.querySelector('.atlas-stage__desc')?.textContent.trim().length || 0) : 0,
+        chips: stage ? stage.querySelectorAll('.atlas-stage__chips .atlas-chip').length : 0,
+        cta: stage ? Boolean(stage.querySelector('.atlas-stage__cta')) : false,
+        nodes: stage ? stage.querySelectorAll('[data-atlas-node]').length : 0,
+        liveText: stage ? stage.textContent.trim().slice(0, 60) : '',
+      };
+    })()`;
+    const firstStage = await evaluate(cdp, stageOf);
+    check(
+      "CHECK 132 — the stage renders the selected discipline: title, full description, chips, CTA and the 14-node constellation",
+      firstStage.slug === "software-solutions" &&
+        firstStage.title &&
+        firstStage.title.length > 0 &&
+        firstStage.descLen > 40 &&
+        firstStage.chips <= 3 &&
+        firstStage.cta === true &&
+        firstStage.nodes === 14,
+      JSON.stringify(firstStage),
+    );
+    check(
+      "CHECK 133 — the stage is a live region announcing the selected title",
+      firstStage.liveText.includes(firstStage.title || "@"),
+      firstStage.liveText,
+    );
+    await shotSection("#services", "atlas-selection-a-light.png", "light");
+    await shotSection("#services", "atlas-selection-a-dark.png", "dark");
+    await evaluate(cdp, `(() => { document.documentElement.classList.remove('dark'); return true; })()`);
+
+    // Keyboard: focus the selected row, ArrowDown twice, Home, End.
+    await evaluate(cdp, `(() => { const r = document.querySelector('[data-atlas-item][tabindex="0"]'); if (r) r.focus(); return Boolean(r); })()`);
+    const keySequence = async (key) => {
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key, code: key, windowsVirtualKeyCode: 0 });
+      await sleep(120);
+    };
+    await keySequence("ArrowDown");
+    await keySequence("ArrowDown");
+    const afterArrows = await evaluate(cdp, `(() => {
+      const rows = [...document.querySelectorAll('[data-atlas-item]')];
+      const idx = rows.findIndex((r) => r.getAttribute('aria-selected') === 'true');
+      return { index: idx, focused: document.activeElement === rows[idx], visible: rows[idx] ? getComputedStyle(rows[idx]).outlineStyle : null };
+    })()`);
+    await keySequence("End");
+    const afterEnd = await evaluate(cdp, `(() => {
+      const rows = [...document.querySelectorAll('[data-atlas-item]')];
+      return rows.findIndex((r) => r.getAttribute('aria-selected') === 'true');
+    })()`);
+    await keySequence("Home");
+    const afterHome = await evaluate(cdp, `(() => {
+      const rows = [...document.querySelectorAll('[data-atlas-item]')];
+      return rows.findIndex((r) => r.getAttribute('aria-selected') === 'true');
+    })()`);
+    check(
+      "CHECK 134 — keyboard navigation moves the selection with the focus (Down/End/Home)",
+      afterArrows.index === 2 && afterArrows.focused === true && afterEnd === 13 && afterHome === 0,
+      JSON.stringify({ afterArrows, afterEnd, afterHome }),
+    );
+
+    // A different selection → the stage changes and a second screenshot pair.
+    const secondStage = await evaluate(
+      cdp,
+      `(() => {
+        const row = [...document.querySelectorAll('[data-atlas-item]')].find((r) => r.dataset.atlasItem === 'cybersecurity');
+        if (!row) return null;
+        row.click();
+        return true;
+      })()`,
+    );
+    await sleep(250);
+    const stageB = await evaluate(cdp, stageOf);
+    check(
+      "CHECK 135 — selecting another discipline updates the stage (title + description)",
+      secondStage === true && stageB.slug === "cybersecurity" && stageB.title !== firstStage.title && stageB.descLen > 40,
+      JSON.stringify(stageB),
+    );
+    await shotSection("#services", "atlas-selection-b-light.png", "light");
+    await shotSection("#services", "atlas-selection-b-dark.png", "dark");
+    await evaluate(cdp, `(() => { document.documentElement.classList.remove('dark'); return true; })()`);
+
+    // Deep link: #service-{slug} selects that discipline, and the row lands
+    // below the fixed navbar (scroll-margin-top).
+    await evaluate(cdp, `(() => { window.location.hash = '#service-cloud-and-devops'; return true; })()`);
+    await sleep(400);
+    const deepLink = await evaluate(
+      cdp,
+      `(() => {
+        const row = document.querySelector('[data-atlas-item="cloud-and-devops"]');
+        const stage = document.querySelector('[data-atlas-stage]');
+        const nav = document.querySelector('.jt-nav, header');
+        const r = row ? row.getBoundingClientRect() : null;
+        const navBottom = nav ? nav.getBoundingClientRect().bottom : 0;
+        return {
+          selected: row ? row.getAttribute('aria-selected') === 'true' : false,
+          title: stage ? stage.querySelector('.atlas-stage__title')?.textContent.trim() : null,
+          top: r ? Math.round(r.top) : null,
+          navBottom: Math.round(navBottom),
+          margin: row ? getComputedStyle(row).scrollMarginTop : null,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 136 — #service-{slug} selects the discipline and its row scrolls below the navbar",
+      deepLink.selected === true &&
+        deepLink.title === "Cloud and DevOps" &&
+        deepLink.margin !== "0px" &&
+        deepLink.top !== null &&
+        deepLink.top >= deepLink.navBottom - 4,
+      JSON.stringify(deepLink),
+    );
+
+    // Full text present at rest; the stage description is never clamped.
+    const restText = await evaluate(
+      cdp,
+      `(() => {
+        const descs = [...document.querySelectorAll('.atlas-row .service-card__desc')].map((e) => e.textContent.trim().length);
+        const stageDesc = document.querySelector('.atlas-stage__desc');
+        const clamp = stageDesc ? getComputedStyle(stageDesc).webkitLineClamp : 'none';
+        return { rows: descs.length, min: Math.min(...descs), clamp, sectionText: document.querySelector('#services').textContent.replace(/\\s+/g, ' ').trim().length };
+      })()`,
+    );
+    check(
+      "CHECK 137 — every discipline's full description is in the DOM at rest and the stage copy is not clamped",
+      restText.rows === 14 && restText.min > 40 && (restText.clamp === "none" || restText.clamp === "") && restText.sectionText > 2000,
+      JSON.stringify(restText),
+    );
+
+    // Contrast on the stage: the description colour vs the surface it sits on.
+    const stageColours = await evaluate(
+      cdp,
+      `(() => {
+        const stage = document.querySelector('[data-atlas-stage]');
+        const desc = stage ? stage.querySelector('.atlas-stage__desc') : null;
+        const section = document.querySelector('#services');
+        return {
+          fg: desc ? getComputedStyle(desc).color : null,
+          bg: section ? getComputedStyle(section).backgroundColor : null,
+        };
+      })()`,
+    );
+    const parseRgb = (value) => {
+      const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(value || "");
+      return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+    };
+    const relLum = ([r, g, b]) => {
+      const ch = (v) => {
+        const x = v / 255;
+        return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+      };
+      return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
+    };
+    const stageFg = parseRgb(stageColours.fg);
+    const stageBg = parseRgb(stageColours.bg);
+    const stageRatio =
+      stageFg && stageBg
+        ? (Math.max(relLum(stageFg), relLum(stageBg)) + 0.05) / (Math.min(relLum(stageFg), relLum(stageBg)) + 0.05)
+        : 0;
+    check(
+      "CHECK 138 — the measured stage description contrast clears WCAG AA (>= 4.5:1)",
+      stageRatio >= 4.5,
+      `${stageRatio.toFixed(2)}:1 (fg=${stageColours.fg} bg=${stageColours.bg})`,
+    );
+
+    // Reduced motion: no tour, no packets, no wave animation.
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await cdp.send("Page.navigate", { url: `${BASE}/?atlas-rm=1` });
+    await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 15000, "atlas (reduced motion)");
+    await sleep(500);
+    const reducedAtlas = await evaluate(
+      cdp,
+      `(() => {
+        const band = document.querySelector('.atlas-band__wave');
+        return {
+          tour: Boolean(document.querySelector('[data-atlas-tour]')),
+          packets: document.querySelectorAll('.atlas-visual__packet').length,
+          bandAnim: band ? getComputedStyle(band).animationName : 'none',
+          rows: document.querySelectorAll('[data-atlas-item]').length,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 139 — reduced motion: no tour control, no packets, no wave animation (list still complete)",
+      reducedAtlas.tour === false && reducedAtlas.packets === 0 && reducedAtlas.bandAnim === "none" && reducedAtlas.rows === 14,
+      JSON.stringify(reducedAtlas),
+    );
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+
+    // 1 and 3 disciplines via response interception (existing checks cover 0 and 14).
+    const liveServices = await (await fetch(`${BASE}/api/services`)).json();
+    const atlasServicePatterns = [
+      { urlPattern: `${BASE}/api/services*`, requestStage: "Request" },
+      { urlPattern: "*localhost:5000/api/services*", requestStage: "Request" },
+    ];
+    for (const count of [1, 3]) {
+      const body = Buffer.from(
+        JSON.stringify({ success: true, data: liveServices.data.slice(0, count) }),
+      ).toString("base64");
+      await cdp.send("Fetch.enable", { patterns: atlasServicePatterns });
+      const handler = async (params) => {
+        try {
+          await cdp.send("Fetch.fulfillRequest", {
+            requestId: params.requestId,
+            responseCode: 200,
+            responseHeaders: [
+              { name: "Content-Type", value: "application/json" },
+              { name: "Access-Control-Allow-Origin", value: BASE },
+              { name: "Access-Control-Allow-Credentials", value: "true" },
+            ],
+            body,
+          });
+        } catch {
+          /* cancelled */
+        }
+      };
+      cdp.on("Fetch.requestPaused", handler);
+      await evaluate(
+        cdp,
+        `(() => { Object.keys(localStorage).filter((k) => k.startsWith('jazari:public-content:')).forEach((k) => localStorage.removeItem(k)); return true; })()`,
+      );
+      await cdp.send("Page.navigate", { url: `${BASE}/?atlas-count=${count}` });
+      await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 15000, `atlas with ${count} disciplines`);
+      const small = await evaluate(
+        cdp,
+        `(() => ({
+          rows: document.querySelectorAll('[data-atlas-item]').length,
+          nodes: document.querySelectorAll('[data-atlas-node]').length,
+          title: document.querySelector('[data-atlas-stage] .atlas-stage__title')?.textContent.trim() || null,
+          gauge: Boolean(document.querySelector('[data-atlas-gauge]')),
+        }))()`,
+      );
+      check(
+        `CHECK 14${count === 1 ? "0" : "1"} — atlas renders ${count} discipline(s) with a valid stage (no crash, no invented data)`,
+        small.rows === count && small.nodes === count && Boolean(small.title) && small.gauge === true,
+        JSON.stringify(small),
+      );
+      cdp.off("Fetch.requestPaused", handler);
+      await cdp.send("Fetch.disable");
+    }
+
+    // Mobile: sticky scroll-snapped chip carousel, no page overflow.
+    await setViewport(390, 844, true);
+    await cdp.send("Page.navigate", { url: `${BASE}/?atlas-mobile=1` });
+    await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 15000, "atlas mobile");
+    await sleep(400);
+    const mobileAtlas = await evaluate(
+      cdp,
+      `(() => {
+        const rail = document.querySelector('[data-atlas-rail]');
+        const style = rail ? getComputedStyle(rail) : null;
+        return {
+          direction: style ? style.flexDirection : null,
+          snap: style ? style.scrollSnapType : null,
+          overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          rows: document.querySelectorAll('[data-atlas-item]').length,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 142 — mobile shows the horizontal scroll-snapped chip carousel with no page overflow",
+      mobileAtlas.direction === "row" &&
+        /x/.test(mobileAtlas.snap || "") &&
+        mobileAtlas.overflowX <= 1 &&
+        mobileAtlas.rows === 14,
+      JSON.stringify(mobileAtlas),
+    );
+    await shotSection("#services", "atlas-mobile-light.png", "light");
+    await shotSection("#services", "atlas-mobile-dark.png", "dark");
+    await setViewport(1440, 900, false);
+    assertClean("atlas");
+
+    // --- 25. Task 2 — hero explosion: real Voronoi fragments + neon edges --
+    // Rebuilds the shatter as a REAL exploded view of the traced logo (a
+    // Voronoi fracture of the five true contours) while keeping the legacy
+    // `data-explode` vocabulary so suites [17] keep reading the same contract.
+    console.log("\n[25] Hero explosion — Voronoi fracture + neon edges");
+    resetErrors();
+    await setViewport(1440, 900, false);
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+    await cdp.send("Page.navigate", { url: `${BASE}/?fracture=1` });
+    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero scene (fracture)");
+    await evaluate(cdp, BRING_HERO_INTO_VIEW);
+    await sleep(700);
+
+    const FRAG_BUDGET = { high: 100, medium: 50, low: 20 };
+    const fragInfo = await evaluate(
+      cdp,
+      `(() => {
+        const c = document.querySelector("[data-scene] canvas");
+        const d = c.__jazariDebug;
+        return {
+          quality: c.dataset.quality,
+          shards: Number(c.dataset.shards),
+          fragments: Number(c.dataset.fragments),
+          fragmentCount: d.fragmentCount(),
+          stage: c.dataset.stage,
+          explode: c.dataset.explode,
+        };
+      })()`,
+    );
+    check(
+      "CHECK 143 — data-fragments matches the tier budget (100/50/20), data-stage starts assembled, data-explode stays backward-compatible",
+      fragInfo.fragments === FRAG_BUDGET[fragInfo.quality] &&
+        fragInfo.fragmentCount === FRAG_BUDGET[fragInfo.quality] &&
+        fragInfo.shards === TIER_BUDGET[fragInfo.quality] &&
+        fragInfo.stage === "assembled" &&
+        fragInfo.explode === "assembled",
+      JSON.stringify(fragInfo),
+    );
+
+    // Stage order + legacy mapping: each designed stage parks at a fixed point
+    // (the forced override holds the timeline, so the capture never races).
+    const STAGE_EXPLODE = {
+      separating: "shattering",
+      fracturing: "shattering",
+      floating: "floating",
+      reassembling: "reassembling",
+      assembled: "assembled",
+    };
+    const STAGE_ORDER = ["separating", "fracturing", "floating", "reassembling", "assembled"];
+    const stageTrail = [];
+    for (const stage of STAGE_ORDER) {
+      await evaluate(
+        cdp,
+        `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter(${JSON.stringify(stage)})`,
+      );
+      await sleep(260);
+      const seen = await evaluate(
+        cdp,
+        `(() => { const c = document.querySelector("[data-scene] canvas"); return { stage: c.dataset.stage, explode: c.dataset.explode, progress: c.__jazariDebug.shatter().progress }; })()`,
+      );
+      stageTrail.push({ forced: stage, ...seen });
+    }
+    check(
+      "CHECK 144 — the five designed stages park in order and map to the legacy data-explode vocabulary",
+      stageTrail.length === 5 &&
+        stageTrail.every((entry) => entry.stage === entry.forced && entry.explode === STAGE_EXPLODE[entry.forced]),
+      JSON.stringify(stageTrail),
+    );
+
+    // Fidelity + resolution, measured from the rest tiling (deterministic).
+    await evaluate(
+      cdp,
+      `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("floating")`,
+    );
+    await sleep(320);
+    const fidelity = await evaluate(
+      cdp,
+      `(() => { const d = document.querySelector("[data-scene] canvas").__jazariDebug; return { m: d.fractureMetrics(), p: d.fragmentProjection() }; })()`,
+    );
+    check(
+      "CHECK 145 — the fracture tiles the traced logo silhouette: raster IoU ≥ 0.95, overlap ≤ 0.02, all five pieces fully fractured",
+      fidelity.m &&
+        fidelity.m.iou >= 0.95 &&
+        fidelity.m.overlapRatio <= 0.02 &&
+        fidelity.m.pieces.length === 5 &&
+        fidelity.m.pieces.every((piece) => piece.ratio >= 0.98),
+      JSON.stringify({ iou: fidelity.m?.iou, overlap: fidelity.m?.overlapRatio, pieces: fidelity.m?.pieces }),
+    );
+    check(
+      "CHECK 146 — the median projected fragment is ≥ 2.5% of the projected logo width (a real exploded view, not a dissolve)",
+      fidelity.p &&
+        fidelity.p.fragments === FRAG_BUDGET[fragInfo.quality] &&
+        fidelity.p.medianRatio >= 0.025 &&
+        fidelity.p.medianWidth > 0 &&
+        fidelity.p.logoWidth > 0,
+      JSON.stringify(fidelity.p),
+    );
+
+    // Neon edge: the fracture faces glow Technology Blue. Raise the neon-glow
+    // uniform at a fixed state (dust hidden) and require the rendered pixels to
+    // brighten blue-ward — a measured proof the neon layer drives real pixels.
+    await evaluate(
+      cdp,
+      `(() => { const d = document.querySelector("[data-scene] canvas").__jazariDebug; d.forceShatter("floating"); d.setDustVisible(false); d.setFragmentsVisible(true); return true; })()`,
+    );
+    await sleep(450);
+    // Clip to the hero so the comparison is exactly the canvas, not the page.
+    const neonClip = await evaluate(
+      cdp,
+      `(() => {
+        const r = document.querySelector("[data-scene]").getBoundingClientRect();
+        const x = Math.max(0, Math.round(r.x));
+        const y = Math.max(0, Math.round(r.y));
+        return { x, y, width: Math.round(Math.min(r.width, window.innerWidth - x)), height: Math.round(Math.min(r.height, window.innerHeight - y)), scale: 1 };
+      })()`,
+    );
+    const neonShot = async () =>
+      Buffer.from(
+        (await cdp.send("Page.captureScreenshot", { format: "png", clip: neonClip, captureBeyondViewport: false })).data,
+        "base64",
+      );
+    const neonLo = decodePng(await neonShot());
+    await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.setFractureGlow(3.6)`);
+    await sleep(320);
+    const neonHi = decodePng(await neonShot());
+    // Only the fracture WALLS scale with uGlow (caps do not), so every pixel
+    // that brightens is a neon fracture face. At the raised glow the blue
+    // channel tone-maps toward saturation, so the hue is judged on the DEFAULT
+    // (low) capture: those neon faces must read blue-dominant there.
+    let neonBrightened = 0;
+    let neonLowBlue = 0;
+    let neonSumB = 0;
+    for (let i = 0; i < neonLo.width * neonLo.height; i += 1) {
+      const at = i * neonLo.channels;
+      const db = neonHi.data[at + 2] - neonLo.data[at + 2];
+      if (db > 12) {
+        neonBrightened += 1;
+        neonSumB += db;
+        const lr = neonLo.data[at];
+        const lg = neonLo.data[at + 1];
+        const lb = neonLo.data[at + 2];
+        if (lb >= lg && lb > lr + 8) neonLowBlue += 1;
+      }
+    }
+    const neonMeanB = neonBrightened ? neonSumB / neonBrightened : 0;
+    const neonBlueFraction = neonBrightened ? neonLowBlue / neonBrightened : 0;
+    check(
+      "CHECK 147 — the fracture faces are neon: they brighten with the glow and read blue at rest (thousands of pixels)",
+      neonBrightened >= 1500 && neonMeanB >= 30 && neonBlueFraction >= 0.6,
+      JSON.stringify({
+        brightened: neonBrightened,
+        meanBlueDelta: +neonMeanB.toFixed(1),
+        blueFraction: +neonBlueFraction.toFixed(3),
+        bluePixels: neonLowBlue,
+      }),
+    );
+    await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.setFractureGlow(0.8)`);
+
+    // Reassembly: the explosion must round-trip home to the exact mark.
+    await evaluate(
+      cdp,
+      `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("reassembling")`,
+    );
+    await sleep(260);
+    const midReturn = await evaluate(
+      cdp,
+      `document.querySelector("[data-scene] canvas").__jazariDebug.shatter().progress`,
+    );
+    await evaluate(
+      cdp,
+      `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("assembled")`,
+    );
+    await sleep(360);
+    const reassembled = await evaluate(
+      cdp,
+      `(() => { const c = document.querySelector("[data-scene] canvas"); const d = c.__jazariDebug; return { stage: c.dataset.stage, explode: c.dataset.explode, progress: d.shatter().progress, iou: d.fractureMetrics().iou }; })()`,
+    );
+    check(
+      "CHECK 148 — the explosion round-trips home: reassembling parks mid-return, assembled restores the mark at the same ≥ 0.95 IoU",
+      midReturn > 0 &&
+        midReturn < 1 &&
+        reassembled.stage === "assembled" &&
+        reassembled.explode === "assembled" &&
+        reassembled.progress <= 0.001 &&
+        reassembled.iou >= 0.95,
+      JSON.stringify({ midReturn, ...reassembled }),
+    );
+
+    // Reduced motion: the mark never fractures (hover and the forced hook inert).
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await cdp.send("Page.navigate", { url: `${BASE}/?fracture-rm=1` });
+    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (fracture reduced motion)");
+    await evaluate(cdp, BRING_HERO_INTO_VIEW);
+    await sleep(700);
+    const rmFracturePoint = await evaluate(
+      cdp,
+      `(() => { const r = document.querySelector("[data-scene]").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`,
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: rmFracturePoint.x, y: rmFracturePoint.y });
+    await evaluate(
+      cdp,
+      `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("floating")`,
+    );
+    await sleep(900);
+    const rmFracture = await evaluate(
+      cdp,
+      `(() => { const c = document.querySelector("[data-scene] canvas"); return { stage: c.dataset.stage, explode: c.dataset.explode, fragments: Number(c.dataset.fragments), shards: Number(c.dataset.shards) }; })()`,
+    );
+    check(
+      "CHECK 149 — reduced motion keeps the mark assembled (no fracture), budgets still reported",
+      rmFracture.stage === "assembled" &&
+        rmFracture.explode === "assembled" &&
+        rmFracture.fragments === FRAG_BUDGET[fragInfo.quality] &&
+        rmFracture.shards === TIER_BUDGET[fragInfo.quality],
+      JSON.stringify(rmFracture),
+    );
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+
+    // Screenshot set `explode-*.png` (stages A-D × light/dark + mobile).
+    // Captured without scrolling: a scroll would release the forced state.
+    await cdp.send("Page.navigate", { url: `${BASE}/?fracture-shots=1` });
+    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (fracture shots)");
+    await evaluate(cdp, BRING_HERO_INTO_VIEW);
+    await sleep(600);
+    const fractureShot = async (stage, theme, name) => {
+      await evaluate(
+        cdp,
+        `(() => { document.documentElement.classList.toggle("dark", ${theme === "dark"}); const d = document.querySelector("[data-scene] canvas").__jazariDebug; d.setDustVisible(false); d.forceShatter(${JSON.stringify(stage)}); return true; })()`,
+      );
+      await sleep(420);
+      await capture(name);
+    };
+    for (const stage of ["separating", "fracturing", "floating", "reassembling"]) {
+      await fractureShot(stage, "light", `explode-${stage}-light.png`);
+      await fractureShot(stage, "dark", `explode-${stage}-dark.png`);
+    }
+    await evaluate(cdp, `(() => { document.documentElement.classList.remove("dark"); return true; })()`);
+
+    await setViewport(390, 844, true);
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    await cdp.send("Page.navigate", { url: `${BASE}/?fracture-mobile=1` });
+    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (fracture mobile)");
+    await evaluate(cdp, BRING_HERO_INTO_VIEW);
+    await sleep(600);
+    await fractureShot("floating", "light", "explode-floating-mobile-light.png");
+    await fractureShot("floating", "dark", "explode-floating-mobile-dark.png");
+    await evaluate(cdp, `(() => { document.documentElement.classList.remove("dark"); return true; })()`);
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    await setViewport(1440, 900, false);
+
+    // Bundle deltas: the fracture adds real geometry + shader code; keep the
+    // three chunk and the home initial JS within a documented budget.
+    const BUNDLE_BASELINE = { threeRaw: 639071, threeGz: 164135, homeRaw: 707403, homeGz: 217523 };
+    const BUNDLE_BUDGET = { threeRaw: 40000, threeGz: 15000, homeRaw: 20000, homeGz: 8000 };
+    const threeBytes = readFileSync(join(process.cwd(), ".next", "static", "chunks", threeChunk));
+    const threeRaw = threeBytes.length;
+    const threeGz = gzipSync(threeBytes, { level: 9 }).length;
+    const fractureHomeHtml = await (await fetch(`${BASE}/`)).text();
+    const fractureScripts = [
+      ...new Set([...fractureHomeHtml.matchAll(/<script[^>]*src="([^"]+\.js)"/g)].map((m) => m[1])),
+    ];
+    let homeRaw = 0;
+    let homeGz = 0;
+    for (const src of fractureScripts) {
+      const bytes = readFileSync(join(process.cwd(), ".next", src.replace(/^\/_next\//, "").split("?")[0]));
+      homeRaw += bytes.length;
+      homeGz += gzipSync(bytes, { level: 9 }).length;
+    }
+    check(
+      "CHECK 150 — the fracture stays within the bundle budget (three chunk + home initial JS vs the measured baseline)",
+      threeRaw - BUNDLE_BASELINE.threeRaw <= BUNDLE_BUDGET.threeRaw &&
+        threeGz - BUNDLE_BASELINE.threeGz <= BUNDLE_BUDGET.threeGz &&
+        homeRaw - BUNDLE_BASELINE.homeRaw <= BUNDLE_BUDGET.homeRaw &&
+        homeGz - BUNDLE_BASELINE.homeGz <= BUNDLE_BUDGET.homeGz,
+      JSON.stringify({
+        three: { raw: threeRaw, gz: threeGz, dRaw: threeRaw - BUNDLE_BASELINE.threeRaw, dGz: threeGz - BUNDLE_BASELINE.threeGz },
+        home: { scripts: fractureScripts.length, raw: homeRaw, gz: homeGz, dRaw: homeRaw - BUNDLE_BASELINE.homeRaw, dGz: homeGz - BUNDLE_BASELINE.homeGz },
+      }),
+    );
+
+    // Rapid explosion cycles must not leak the WebGL context or the heap.
+    await cdp.send("Page.navigate", { url: `${BASE}/?fracture-cycles=1` });
+    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (fracture cycles)");
+    await evaluate(cdp, BRING_HERO_INTO_VIEW);
+    await sleep(600);
+    const readFractureHeap = () =>
+      evaluate(
+        cdp,
+        `(() => { if (window.gc) window.gc(); return performance.memory ? performance.memory.usedJSHeapSize : 0; })()`,
+      );
+    const fractureHeapStart = await readFractureHeap();
+    for (let cycle = 0; cycle < 4; cycle += 1) {
+      await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("floating")`);
+      await sleep(300);
+      await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("assembled")`);
+      await sleep(300);
+    }
+    const fractureCycleState = await evaluate(
+      cdp,
+      `(() => { const c = document.querySelector("[data-scene] canvas"); return { canvases: document.querySelectorAll("[data-scene] canvas").length, stage: c.dataset.stage }; })()`,
+    );
+    const fractureHeapEnd = await readFractureHeap();
+    check(
+      "CHECK 151 — four fracture cycles leave exactly one canvas and a bounded JS heap",
+      fractureCycleState.canvases === 1 &&
+        fractureCycleState.stage === "assembled" &&
+        (fractureHeapEnd === 0 || fractureHeapEnd <= fractureHeapStart * 3),
+      JSON.stringify({
+        canvases: fractureCycleState.canvases,
+        heapStartMB: +(fractureHeapStart / 1048576).toFixed(1),
+        heapEndMB: +(fractureHeapEnd / 1048576).toFixed(1),
+      }),
+    );
+    assertClean("hero-fracture");
 
     // --- favicon-tab: the largest ICO frame, written as-is (real icon) -----
     {

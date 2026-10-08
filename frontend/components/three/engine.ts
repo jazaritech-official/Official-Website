@@ -34,9 +34,10 @@ import type {
   QualityTier,
   SceneTheme,
   ShatterState,
+  ShatterStateInput,
 } from "./types";
 import { disposeObject } from "./helpers/disposeScene";
-import { PALETTES, readPageBackground } from "./theme";
+import { BRAND, PALETTES, readPageBackground } from "./theme";
 import { createFpsMonitor, renderConfig, type FpsMonitor } from "./quality";
 import { clamp, damp } from "./helpers/math";
 import { createEnvironment, type SceneEnvironment } from "./environment";
@@ -45,7 +46,7 @@ import { createJazariRibbon, type JazariRibbon } from "./createLogoPieces";
 import { createSupportSystem, type SupportSystem } from "./createTechObjects";
 import { createAnimator, type Animator } from "./animation";
 import { createShatterField, type ShatterField } from "./shatter";
-import { createShatterController } from "./shatterState";
+import { createShatterController, legacyExplodeState } from "./shatterState";
 import { createInteraction, type InteractionHandle } from "./interaction";
 import { projectToContainerPx, type ScreenPoint } from "./helpers/projection";
 
@@ -121,9 +122,16 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
   const ribbon: JazariRibbon = createJazariRibbon(tier);
   const supports: SupportSystem = createSupportSystem(tier, PALETTES[themeState]);
 
-  // Neon shatter field (additive state — the solid logo is untouched).
+  // Explosion field (additive state — the solid logo is untouched): the mark's
+  // real Voronoi fragments plus the neon dust they release.
   const glowFor = (next: SceneTheme): number => (next === "dark" ? 1.3 : 0.8);
-  const shatter: ShatterField = createShatterField(config.shardCount, ribbon.scale, glowFor(themeState));
+  let shatter: ShatterField = createShatterField(
+    config.shardCount,
+    config.fragmentCount,
+    ribbon.scale,
+    glowFor(themeState),
+    BRAND.blue,
+  );
   ribbon.group.add(shatter.group);
 
   // Solid-piece cross-fade targets (transparent only while a shatter is open).
@@ -153,9 +161,11 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
   let pointerInside = false;
   let heroInView = true;
   let pageVisible = typeof document === "undefined" || document.visibilityState !== "hidden";
-  let lastExplodeAttr = "";
+  let lastStageAttr = "";
+  canvas.dataset.stage = "assembled";
   canvas.dataset.explode = "assembled";
   canvas.dataset.shards = String(shatter.count);
+  canvas.dataset.fragments = String(shatter.fragmentCount);
 
   const applyEnvironmentIntensity = (): void => {
     environment.applyIntensity(
@@ -219,11 +229,36 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, config.pixelRatioCap));
     applyEnvironmentIntensity();
     applyTierBudget(); // object counts + hover/parallax budgets
-    shatter.setBudget(config.shardCount); // downgrade draws fewer shards
-    canvas.dataset.shards = String(Math.min(config.shardCount, shatter.count));
+    rebuildShatter(); // tier budgets (dust shards + Voronoi fragments) stay truthful
     hoverAmounts.clear(); // stale keys would target now-hidden roots
     rebuildPickTargets(); // visible-object set changed
     resize();
+  }
+
+  /**
+   * Rebuild the explosion field so BOTH tier budgets track `data-quality`:
+   * dust shards (1000/500/200) and Voronoi fragments (100/50/20). A tier
+   * change is rare (downgrade-only, never at start-up), so one synchronous
+   * rebuild beats carrying three pre-built fractures around.
+   */
+  function rebuildShatter(): void {
+    ribbon.group.remove(shatter.group);
+    shatter.dispose();
+    shatter = createShatterField(
+      config.shardCount,
+      config.fragmentCount,
+      ribbon.scale,
+      glowFor(themeState),
+      BRAND.blue,
+    );
+    ribbon.group.add(shatter.group);
+    // Re-apply the live timeline so a mid-explosion rebuild never flashes.
+    shatter.setProgress(shatterController.progress);
+    shatter.setMagnetic(shatterController.state === "reassembling");
+    shatter.setTime(elapsed);
+    shatter.setGlow(glowFor(themeState));
+    canvas.dataset.shards = String(shatter.count);
+    canvas.dataset.fragments = String(shatter.fragmentCount);
   }
 
   /* --- Hover: pick-root resolution + eased feedback ----------------------
@@ -350,13 +385,84 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
         applyTierBudget();
       },
       logoSize: (): { x: number; y: number } => ({ x: logoSize.x, y: logoSize.y }),
-      // Test hook: force a shatter state (null releases the override).
-      forceShatter: (state: ShatterState | null): void => {
-        if (reduced) return; // reduced motion never shatters
+      // Test hook: force a stage (null releases the override). Legacy names
+      // (`shattering`) are accepted and map onto stage B.
+      forceShatter: (state: ShatterStateInput | null): void => {
+        if (reduced && state !== null) return; // reduced motion never explodes
         shatterController.force(state);
       },
       shatterState: (): ShatterState => shatterController.state,
       shardCount: (): number => shatter.count,
+      fragmentCount: (): number => shatter.fragmentCount,
+      /** Hide the dust layer so a screenshot isolates the real fragments. */
+      setDustVisible: (visible: boolean): void => shatter.setDustVisible(visible),
+      /** Hide the fracture layer (screenshot A/B isolation against the dust). */
+      setFragmentsVisible: (visible: boolean): void => shatter.setFragmentsVisible(visible),
+      /**
+       * Test/tuning hook: override the neon glow of the fracture faces so the
+       * harness can prove the neon-edge layer really drives rendered pixels.
+       */
+      setFractureGlow: (glow: number): void => shatter.setGlow(glow),
+      /**
+       * Fracture fidelity: raster IoU vs the traced silhouette, tiling overlap
+       * and the median fragment size — measured, never asserted from vibes.
+       */
+      fractureMetrics: () => shatter.metrics(),
+      /**
+       * The spec's "median projected fragment": every fragment's rest bbox
+       * projected into container pixels, median over the logo's own projected
+       * width. Camera-exact (not a source-space guess) and deterministic at a
+       * fixed scroll position.
+       */
+      fragmentProjection: (): {
+        fragments: number;
+        medianRatio: number;
+        medianWidth: number;
+        logoWidth: number;
+        iou: number;
+        overlapRatio: number;
+      } | null => {
+        const boxes = shatter.restBoxes;
+        if (!boxes || boxes.length < 4 || viewWidth <= 0 || viewHeight <= 0) return null;
+        shatter.group.updateWorldMatrix(true, false);
+        const scratch = new Vector3();
+        const project = (x: number, y: number): { x: number; y: number } => {
+          scratch.set(x, y, 0).applyMatrix4(shatter.group.matrixWorld).project(camera);
+          return { x: (scratch.x * 0.5 + 0.5) * viewWidth, y: (-scratch.y * 0.5 + 0.5) * viewHeight };
+        };
+        const widths: number[] = [];
+        let minX = Infinity;
+        let maxX = -Infinity;
+        for (let i = 0; i < boxes.length; i += 4) {
+          const corners = [
+            project(boxes[i], boxes[i + 2]),
+            project(boxes[i + 1], boxes[i + 2]),
+            project(boxes[i + 1], boxes[i + 3]),
+            project(boxes[i], boxes[i + 3]),
+          ];
+          let lo = Infinity;
+          let hi = -Infinity;
+          for (const corner of corners) {
+            if (corner.x < lo) lo = corner.x;
+            if (corner.x > hi) hi = corner.x;
+            if (corner.x < minX) minX = corner.x;
+            if (corner.x > maxX) maxX = corner.x;
+          }
+          widths.push(hi - lo);
+        }
+        widths.sort((a, b) => a - b);
+        const logoWidth = maxX - minX;
+        const medianWidth = widths[Math.floor(widths.length / 2)];
+        const metrics = shatter.metrics();
+        return {
+          fragments: widths.length,
+          medianRatio: logoWidth > 0 ? medianWidth / logoWidth : 0,
+          medianWidth,
+          logoWidth,
+          iou: metrics ? metrics.iou : 0,
+          overlapRatio: metrics ? metrics.overlapRatio : 1,
+        };
+      },
       // Test/tuning hook: restart the idle-dwell timer without freezing motion.
       noteActivity: (): void => shatterController.noteActivity(elapsed),
       shatter: () => ({
@@ -398,13 +504,16 @@ export function createHeroEngine(options: EngineOptions): EngineHandle {
     shatterController.update({ dt, time: elapsed, reduced, pointerInside, heroInView, pageVisible });
     const shatterProgress = shatterController.progress;
     shatter.setProgress(shatterProgress);
+    shatter.setMagnetic(shatterController.state === "reassembling");
     shatter.setTime(elapsed);
     // Solid pieces cross-fade out over the first ~150 ms and back in on the way
-    // home, so the hand-off between solid mark and shards is seamless.
+    // home, so the hand-off between solid mark and fragments is seamless.
     applySolidFade(1 - clamp(shatterProgress / 0.22, 0, 1));
-    if (shatterController.state !== lastExplodeAttr) {
-      lastExplodeAttr = shatterController.state;
-      canvas.dataset.explode = lastExplodeAttr;
+    const stage = shatterController.state;
+    if (stage !== lastStageAttr) {
+      lastStageAttr = stage;
+      canvas.dataset.stage = stage;
+      canvas.dataset.explode = legacyExplodeState(stage);
     }
 
     // 2) Render (also refreshes world matrices).

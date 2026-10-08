@@ -55,7 +55,19 @@ export function setAuthCookie(res, token) {
   });
 }
 
-/** Clear the session cookie (logout). Uses the exact same attributes. */
+/**
+ * Clear the session cookie (logout). Uses the exact same attributes plus an
+ * explicit `maxAge: 0`, so the response carries BOTH `Max-Age=0` and an
+ * `Expires` in the past — the two signals every browser honours. The BFF route
+ * handler re-emits this as a host-only clearing cookie on the frontend origin.
+ */
 export function clearAuthCookie(res) {
-  res.clearCookie(AUTH_COOKIE_NAME, authCookieOptions());
+  // Written through the same helper path as login (not `res.clearCookie`) so the
+  // clearing response carries BOTH `Max-Age=0` and an `Expires` in the past —
+  // the two signals every browser honours — with identical flags and no Domain.
+  res.cookie(AUTH_COOKIE_NAME, "", {
+    ...authCookieOptions(),
+    maxAge: 0,
+    expires: new Date(1),
+  });
 }

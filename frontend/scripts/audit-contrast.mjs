@@ -160,7 +160,24 @@ const EXEMPT = [
   ["border", "hairlines and dividers"],
   ["border-strong", "hairlines and dividers"],
   ["grid-tick", "blueprint crosshair colour (delegates to --slate)"],
+  // Discipline Atlas (Task K) — micro-accent dots and node marks, never text.
+  ["growth", "atlas active tick + one packet head — Growth Green micro accent, not text"],
+  ["accent", "atlas node marks / selected tick / capacity gauge — decorative graphics"],
 ];
+
+/*
+ * Discipline Atlas (Task K) text pairs.
+ *
+ * The atlas renders text ONLY on the tokens already audited above:
+ *   · discipline title          → foreground on surface
+ *   · rail short line / index   → muted on surface
+ *   · stage description / chips → muted on surface
+ *   · stage CTA                 → accent on surface
+ *   · hovered/filled row copy   → white on the `--service-fill-c` worst-case
+ *     stop (the row reuses the exact same gradient as the previous card, so the
+ *     existing service-fill check covers it).
+ * No new text-on-background token pair is introduced, so PAIRS is unchanged.
+ */
 
 /* -------------------------------------------------------------------- run */
 

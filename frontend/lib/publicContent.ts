@@ -80,12 +80,28 @@ function isValidProduct(value: unknown): value is Product {
 
 function isValidService(value: unknown): value is Service {
   if (!isRecord(value)) return false;
-  return (
-    isNonEmptyString(value._id) &&
-    isNonEmptyString(value.title) &&
-    isNonEmptyString(value.slug) &&
-    typeof value.description === "string"
-  );
+  if (
+    !(
+      isNonEmptyString(value._id) &&
+      isNonEmptyString(value.title) &&
+      isNonEmptyString(value.slug) &&
+      typeof value.description === "string"
+    )
+  ) {
+    return false;
+  }
+  // New OPTIONAL fields (Discipline Atlas) are accepted when absent (old cached
+  // and snapshotted records stay valid). When present they must be strings —
+  // the enum itself is enforced server-side, and the UI normalises an unknown
+  // accent to `blue` rather than rejecting the whole collection (one bad label
+  // must never blank the public site).
+  if (value.category !== undefined && value.category !== null && typeof value.category !== "string") {
+    return false;
+  }
+  if (value.accent !== undefined && value.accent !== null && typeof value.accent !== "string") {
+    return false;
+  }
+  return true;
 }
 
 const VALIDATORS: Record<PublicResource, (value: unknown) => boolean> = {

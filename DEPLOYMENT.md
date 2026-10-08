@@ -271,7 +271,7 @@ public domain — do not rely on a domain the company does not own.
 | `SENSITIVE_RATE_LIMIT_MAX` | no | Team + password operations |
 | `VISITOR_DEDUPE_HOURS` | no | Visitor dedupe window |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | for push | Web Push key pair (`npx web-push generate-vapid-keys`) |
-| `VAPID_SUBJECT` | no | Contact for the push service (default `mailto:hello@jazaritech.com`) |
+| `VAPID_SUBJECT` | no | Contact for the push service (default `mailto:jazaritechofficial@gmail.com`) |
 | `PUSH_RATE_LIMIT_MAX` | no | Subscribe/unsubscribe beacons per window |
 | `PUSH_MAX_FAILURES` | no | Consecutive failures before a device is deactivated |
 
@@ -645,3 +645,26 @@ device.
 3. Compose a message (or pick a service to prefill it) → **Send now** → the device receives it and the
    history row reports the delivered count.
 4. If a send fails with `503`, the keys from step 2 are missing — add them and redeploy.
+**Where the keys actually live (read this before editing anything).** `Backend/.env` is **local only**
+— it is gitignored and it is never read by a deployed function. Vercel runs the backend with the
+variables configured in the **Vercel dashboard** for that project (Settings → Environment Variables,
+Production). A change made only to your local `.env` therefore has **no effect on production**, and a
+change made in the dashboard has no effect until the project is **redeployed**. The same is true on the
+frontend for `BACKEND_ORIGIN` / `NEXT_PUBLIC_*` (and `NEXT_PUBLIC_*` is inlined at build time, so it
+needs a fresh build — redeploy **without** the build cache after changing it).
+
+**Rotating the VAPID keys.** Generate a new pair with `npx web-push generate-vapid-keys` and put the
+new `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` into the backend project's dashboard variables, then
+redeploy the backend. Notes:
+
+- Generating a new pair **invalidates every existing subscription**. They do not throw an error — they
+  simply stop delivering; the first push attempt to a stale endpoint returns `404`/`410`, the backend
+  prunes it, and the device is offered the opt-in card again on its next visit. No data migration is
+  needed and nothing breaks.
+- The public key is fetched by the browser at runtime from `GET /api/push/public-key`, so the
+  **frontend needs no redeploy** after a rotation. Only the backend project changes.
+- The contact address (`VAPID_SUBJECT`) is a **public** email used by push services, never a secret. If
+  you add it explicitly, set `VAPID_SUBJECT=mailto:jazaritechofficial@gmail.com` (the code default).
+- Never paste key values into `Backend/.env.example`, this document, a commit, or any chat. The
+  `.env.example` holds angle-bracket placeholders only, and `npm run check:secrets` (in `frontend/`)
+  fails on any real-looking secret in a tracked file.

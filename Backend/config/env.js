@@ -100,6 +100,18 @@ if (!["lax", "strict", "none"].includes(cookieSameSite)) {
   problems.push('COOKIE_SAMESITE must be "lax", "strict" or "none".');
 }
 
+// --- Auth diagnostics ---------------------------------------------------------
+// Adds an internal `X-Auth-Reason` header (no-token | invalid-token | no-admin |
+// inactive) to failed-auth responses so a deploy can be diagnosed without
+// guessing. OFF by default and never part of the public contract; the response
+// body stays generic. Enabled only by an explicit opt-in.
+const authDebugHeaders = readBool("AUTH_DEBUG_HEADERS", false);
+if (authDebugHeaders && isProd) {
+  warnings.push(
+    "AUTH_DEBUG_HEADERS=true in production exposes WHY authentication failed (no values, no tokens) — set it back to false once diagnosis is done.",
+  );
+}
+
 // --- Web Push (VAPID) ---------------------------------------------------------
 // Optional. When BOTH keys are present the API can send push notifications;
 // when either is missing the API still stores device subscriptions but sending
@@ -133,6 +145,8 @@ const config = {
   port,
   clientOrigins,
   mongoUri,
+  // Opt-in internal auth diagnostics — see the AUTH_DEBUG_HEADERS block above.
+  authDebugHeaders,
   jwt: {
     secret: jwtSecret,
     expiresIn: readOptional("JWT_EXPIRES_IN", "7d"),
@@ -148,7 +162,9 @@ const config = {
     publicKey: pushPublicKey,
     privateKey: pushPrivateKey,
     // Contact address web-push sends to the push service (mailto: or https:).
-    subject: readOptional("VAPID_SUBJECT", "mailto:hello@jazaritech.com"),
+    // The default is the project's public contact mailbox — a public address,
+    // never a secret.
+    subject: readOptional("VAPID_SUBJECT", "mailto:jazaritechofficial@gmail.com"),
     // True only when both keys are configured.
     enabled: pushEnabled,
     // A subscription that fails this many times (and is not reported gone) is

@@ -1,22 +1,29 @@
 /**
- * Hero shatter field — ~1000 instanced neon shards that tile the REAL logo
- * silhouette and blow apart into a floating cloud, then reassemble.
+ * Hero explosion field — TWO layers that read as one break-apart of the real
+ * mark (Task 2: exploded view + Voronoi fracture).
  *
- * Design (GPU-driven, zero per-frame CPU work):
+ *  1. **Fracture fragments** (`fracture.ts`) — the logo itself, cut into
+ *     100/50/20 real Voronoi slabs by tier. They carry the artwork gradients,
+ *     run stage A (piece-level exploded view) and stage B (cracks opening),
+ *     and their fracture faces glow Technology Blue. One merged mesh, one draw
+ *     call, fully GPU-driven.
+ *  2. **Neon dust** — the original instanced ember layer (1000/500/200 by
+ *     tier, `data-shards`), released only once the fracture opens, so it reads
+ *     as energy escaping the break instead of as the logo itself.
+ *
+ * Dust design (GPU-driven, zero per-frame CPU work, unchanged from Task I):
  *  - The silhouette is rasterised ONCE from the traced `LOGO_PIECES` paths into
  *    an offscreen id-map (which piece owns each pixel).
  *  - A jittered grid samples points inside the mask; each sample becomes one
  *    instance with baked attributes (origin, real-gradient colour, outward
- *    direction, delay, spin, scale). After this, nothing on the CPU touches the
- *    particles again.
- *  - One `uProgress` uniform (0 assembled → 1 shattered) drives position,
- *    rotation and fade entirely in the vertex shader. `uTime` drives the
- *    floating wobble/spin.
+ *    direction, delay, spin, scale). Nothing on the CPU touches them again.
+ *  - One `uProgress` uniform drives position, rotation and fade in the vertex
+ *    shader; `uTime` drives the floating wobble/spin.
  *  - A second, additive instanced layer of billboarded soft quads supplies the
  *    cheap neon halo (no post-processing / bloom pass).
  *
- * Growth Green appears only on shards sampled from the leaf, because colours
- * come from the real per-piece artwork gradients.
+ * Growth Green appears only on leaf-derived colour, because both layers take
+ * their colours from the real per-piece artwork gradients.
  */
 
 import {
@@ -32,10 +39,14 @@ import {
 } from "three";
 import { LOGO_PIECES, type LogoGradient } from "@/components/services/logoGeometry";
 import { SOURCE_CENTER, sampleLogoGradient } from "./createLogoPieces";
+import { createFracture, type FractureField, type FractureMetrics } from "./fracture";
+import { clamp } from "./helpers/math";
 
 const MASK_SIZE = 256; // offscreen mask resolution (source 4096 → 256)
 const SHARD_TILE = 1.25; // shard footprint vs cell size at progress 0 (no holes)
 const DRIFT = 1.05; // outward travel at progress 1 (scene units)
+/** Progress at which the dust layer wakes up — stage A stays a clean diagram. */
+const DUST_START = 0.35;
 
 /** Deterministic RNG — identical shard layout every reload. */
 function mulberry32(seed: number): () => number {
@@ -278,60 +289,74 @@ const GLOW_FRAGMENT = /* glsl */ `
 `;
 
 export interface ShatterField {
-  /** Group added to the ribbon so shards share the logo's frame. */
+  /** Group added to the ribbon so both layers share the logo's frame. */
   group: Group;
-  /** Number of live shards (after the tier budget / sampling trim). */
+  /** Number of live dust shards (after the tier budget / sampling trim). */
   readonly count: number;
-  /** 0 = assembled (tiles the silhouette) → 1 = fully shattered. */
+  /** Number of Voronoi fragments (tier budget); 0 when the fracture is off. */
+  readonly fragmentCount: number;
+  /** Per-fragment rest bboxes (scene units) — null when there is no fracture. */
+  readonly restBoxes: Float32Array | null;
+  /** 0 = assembled (tiles the silhouette) → 1 = fully exploded. */
   setProgress(progress: number): void;
+  /** True while stage D runs — the fragments settle with a magnetic overshoot. */
+  setMagnetic(value: boolean): void;
   /** Idle clock for the floating wobble/spin. */
   setTime(time: number): void;
   /** Neon strength (dialled down in light mode so it never blows out). */
   setGlow(glow: number): void;
-  /** Draw only the first `next` shards (tier downgrade — no rebuild). */
-  setBudget(next: number): void;
+  /** Hide/show the dust layer (screenshot isolation — fragments only). */
+  setDustVisible(visible: boolean): void;
+  /** Test hook: hide/show the fragments (screenshot A/B isolation). */
+  setFragmentsVisible(visible: boolean): void;
+  /** Measured fracture fidelity (IoU, overlap, median fragment size). */
+  metrics(): FractureMetrics | null;
   dispose(): void;
 }
 
 /**
- * Build the shatter field. `count === 0` returns an inert empty field (static /
- * reduced-motion), so the engine can call it unconditionally.
+ * Build the explosion field. `fragmentCount === 0` still returns an inert
+ * empty field (static / reduced-motion), so the engine can call it
+ * unconditionally.
  */
 export function createShatterField(
   count: number,
+  fragmentCount: number,
   logoScale: number,
   glow: number,
+  neon: string,
 ): ShatterField {
   const group = new Group();
-  group.name = "jazari-shatter";
+  group.name = "jazari-explosion";
   group.userData.noPick = true; // never a hover target
 
-  if (count <= 0) {
-    return {
-      group,
-      count: 0,
-      setProgress: () => {},
-      setTime: () => {},
-      setGlow: () => {},
-      setBudget: () => {},
-      dispose: () => {},
-    };
-  }
+  const inert = (): ShatterField => ({
+    group,
+    count: 0,
+    fragmentCount: 0,
+    restBoxes: null,
+    setProgress: () => {},
+    setMagnetic: () => {},
+    setTime: () => {},
+    setGlow: () => {},
+    setDustVisible: () => {},
+    setFragmentsVisible: () => {},
+    metrics: () => null,
+    dispose: () => {},
+  });
 
-  const idMap = buildIdMap();
-  if (!idMap) {
-    return {
-      group,
-      count: 0,
-      setProgress: () => {},
-      setTime: () => {},
-      setGlow: () => {},
-      setBudget: () => {},
-      dispose: () => {},
-    };
-  }
+  if (count <= 0 && fragmentCount <= 0) return inert();
 
-  const { points, cellScene } = sampleSilhouette(count, idMap, logoScale);
+  /* --- Layer 1: the real logo, fractured ------------------------------ */
+  const fracture: FractureField | null =
+    fragmentCount > 0 ? createFracture(fragmentCount, logoScale, glow, neon) : null;
+  if (fracture) group.add(fracture.mesh);
+
+  const idMap = count > 0 ? buildIdMap() : null;
+
+  const { points, cellScene } = idMap
+    ? sampleSilhouette(count, idMap, logoScale)
+    : { points: [], cellScene: 0 };
   const total = points.length;
   const shardScale = cellScene * SHARD_TILE;
 
@@ -400,7 +425,6 @@ export function createShatterField(
   shards.name = "jazari-shards";
   shards.userData.noPick = true;
   group.add(shards);
-
   /* --- Additive halo layer (billboarded soft quads) ---------------------- */
   const glowGeometry = new PlaneGeometry(1, 1);
   glowGeometry.setAttribute("aOrigin", new InstancedBufferAttribute(origins, 3));
@@ -432,30 +456,54 @@ export function createShatterField(
   halo.userData.noPick = true;
   group.add(halo);
 
+  let dustEnabled = true;
+
   const setProgress = (progress: number): void => {
-    shardMaterial.uniforms.uProgress.value = progress;
-    glowMaterial.uniforms.uProgress.value = progress;
+    // Fragments own the whole timeline; the dust only wakes once the cracks open.
+    fracture?.setProgress(progress);
+    const dust = clamp((progress - DUST_START) / (1 - DUST_START), 0, 1);
+    shardMaterial.uniforms.uProgress.value = dust;
+    glowMaterial.uniforms.uProgress.value = dust;
+    const showDust = dustEnabled && dust > 0.002;
+    shards.visible = showDust;
+    halo.visible = showDust;
     // Hidden entirely at rest so the assembled solid logo is clean.
     group.visible = progress > 0.002;
   };
 
+  const setMagnetic = (value: boolean): void => {
+    fracture?.setMagnetic(value);
+  };
+
   const setTime = (time: number): void => {
+    fracture?.setTime(time);
     shardMaterial.uniforms.uTime.value = time;
     glowMaterial.uniforms.uTime.value = time;
   };
 
   const setGlow = (next: number): void => {
+    fracture?.setGlow(next);
     shardMaterial.uniforms.uGlow.value = next;
     glowMaterial.uniforms.uGlow.value = next;
   };
 
-  const setBudget = (next: number): void => {
-    const draw = Math.max(0, Math.min(next, total));
-    shards.count = draw;
-    halo.count = draw;
+  const setDustVisible = (visible: boolean): void => {
+    dustEnabled = visible;
+    const dust = clamp(
+      (shardMaterial.uniforms.uProgress.value - DUST_START) / (1 - DUST_START),
+      0,
+      1,
+    );
+    shards.visible = visible && dust > 0.002;
+    halo.visible = visible && dust > 0.002;
+  };
+
+  const setFragmentsVisible = (visible: boolean): void => {
+    fracture?.setVisible(visible);
   };
 
   const dispose = (): void => {
+    fracture?.dispose();
     geometry.dispose();
     glowGeometry.dispose();
     shardMaterial.dispose();
@@ -465,6 +513,19 @@ export function createShatterField(
 
   group.visible = false;
 
-  return { group, count: total, setProgress, setTime, setGlow, setBudget, dispose };
+  return {
+    group,
+    count: total,
+    fragmentCount: fracture ? fracture.count : 0,
+    restBoxes: fracture ? fracture.restBoxes : null,
+    setProgress,
+    setMagnetic,
+    setTime,
+    setGlow,
+    setDustVisible,
+    setFragmentsVisible,
+    metrics: () => (fracture ? fracture.metrics() : null),
+    dispose,
+  };
 }
 

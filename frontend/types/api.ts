@@ -174,6 +174,19 @@ export interface Service {
   shortDescription?: string;
   /** Optional list of up to 3 short tag chips (≤ 24 chars each). */
   highlights?: string[];
+  /**
+   * Optional discipline grouping for the Services "Discipline Atlas"
+   * (`engineering | growth | design | security | operations`). Empty/absent
+   * means ungrouped — the atlas then renders one ring and never invents a
+   * category. Backward compatible: the enum is enforced by the backend.
+   */
+  category?: string;
+  /**
+   * Optional MICRO accent hint (`blue | navy | green-micro`). Growth Green is
+   * only ever a dot/crest/spark, never a large fill. Unknown values fall back
+   * to `blue` in the UI.
+   */
+  accent?: "blue" | "navy" | "green-micro" | string;
   sortOrder: number;
   /** 0..4 when this service is featured in the Exploded Logo Services Hub, else null. */
   hubSlot?: number | null;

@@ -39,6 +39,37 @@ const serviceSchema = new mongoose.Schema(
       trim: true,
       maxlength: [90, "shortDescription must be 90 characters or fewer."],
     },
+    // Optional, backward-compatible discipline grouping for the frontend
+    // "Discipline Atlas" (which groups its orbit nodes by category). Empty string
+    // means "ungrouped" — the frontend then renders one ungrouped ring and never
+    // invents a category. Older records without it stay valid.
+    category: {
+      type: String,
+      default: "",
+      trim: true,
+      lowercase: true,
+      validate: {
+        validator: (value) =>
+          value === "" ||
+          value === null ||
+          value === undefined ||
+          ["engineering", "growth", "design", "security", "operations"].includes(value),
+        message:
+          "category must be one of engineering, growth, design, security, operations (or empty).",
+      },
+    },
+    // Optional accent hint for the atlas: a MICRO accent only (dots, crests,
+    // tiny sparks). Growth Green is never used as a large fill.
+    accent: {
+      type: String,
+      default: "blue",
+      trim: true,
+      lowercase: true,
+      validate: {
+        validator: (value) => ["blue", "navy", "green-micro"].includes(value),
+        message: "accent must be blue, navy or green-micro.",
+      },
+    },
     // Optional, backward-compatible list of up to 3 short tag chips.
     highlights: {
       type: [String],

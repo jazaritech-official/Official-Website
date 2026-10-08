@@ -20,21 +20,46 @@ function extractToken(req) {
  * request, so demotions, deactivations and deletions take effect immediately.
  * The admin UI route being hidden is never treated as protection.
  */
-export async function requireAuth(req, _res, next) {
+/**
+ * Opt-in internal diagnostic header.
+ *
+ * When `AUTH_DEBUG_HEADERS=true`, a failed-auth response carries
+ * `X-Auth-Reason: no-token | invalid-token | no-admin | inactive` so a deployed
+ * sign-in problem can be located exactly ("cookie never arrived" vs "token
+ * rejected" vs "account gone") without guessing. OFF by default; it carries an
+ * enum only — never a token, a claim, an email or any value — and the public
+ * response body is unchanged. Never an authorization input.
+ */
+function markAuthReason(res, reason) {
+  if (!env.authDebugHeaders) return;
+  if (res && typeof res.setHeader === "function" && !res.headersSent) {
+    res.setHeader("X-Auth-Reason", reason);
+  }
+}
+
+export async function requireAuth(req, res, next) {
   try {
     const token = extractToken(req);
-    if (!token) throw ApiError.unauthorized("Please sign in to continue.");
+    if (!token) {
+      markAuthReason(res, "no-token");
+      throw ApiError.unauthorized("Please sign in to continue.");
+    }
 
     let payload;
     try {
       payload = jwt.verify(token, env.jwt.secret);
     } catch {
+      markAuthReason(res, "invalid-token");
       throw ApiError.unauthorized("Your session has expired. Please sign in again.");
     }
 
     const admin = await Admin.findById(payload.sub).lean();
-    if (!admin) throw ApiError.unauthorized("Your account is no longer active.");
+    if (!admin) {
+      markAuthReason(res, "no-admin");
+      throw ApiError.unauthorized("Your account is no longer active.");
+    }
     if (admin.isActive === false) {
+      markAuthReason(res, "inactive");
       throw ApiError.forbidden("This account has been deactivated. Contact a Super Admin.");
     }
 

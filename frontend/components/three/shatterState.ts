@@ -1,29 +1,68 @@
 /**
- * Hero shatter state machine — pure logic, no Three.js, no DOM.
+ * Hero explosion state machine — pure logic, no Three.js, no DOM.
  *
- *   assembled → shattering → floating → reassembling → assembled
+ *   assembled → separating → fracturing → floating → reassembling → assembled
  *
- * Triggers (any one starts a shatter):
+ *   A separating   the five real logo parts pull apart as one exploded diagram
+ *   B fracturing   each fragment takes its own path — the Voronoi cracks open
+ *   C floating     full drift + tumble (dwell, then auto-return)
+ *   D reassembling magnetic snap home (slight overshoot, then settle)
+ *
+ * The progress scale stays 0 → 1 (assembled → fully exploded) so the render
+ * loop, the solid-logo cross-fade and every existing hook keep their meaning:
+ *   0 … SEPARATE_END   stage A
+ *   SEPARATE_END … 1   stage B
+ *   1                  stage C
+ *   1 → 0              stage D
+ *
+ * The DOM keeps TWO views of it:
+ *   `canvas.dataset.stage`   the five new names, verbatim
+ *   `canvas.dataset.explode` the legacy names (see `legacyExplodeState`), so
+ *                            every pre-existing assertion and integration keeps
+ *                            working unchanged.
+ *
+ * Triggers (any one starts an explosion):
  *   a. a fine pointer enters the hero visual column,
  *   b. idle dwell — the hero is at least ~50% in view, the tab is visible and
  *      there has been no pointer/scroll/key input for ~3 s,
  *   c. a touch tap on the visual column (toggles).
  *
  * It reassembles on pointer leave, on scroll, or after a max hold (~8 s); a
- * ~10 s cool-down prevents an idle-triggered shatter from looping annoyingly.
- * Reduced motion never shatters.
+ * ~10 s cool-down prevents an idle-triggered explosion from looping annoyingly.
+ * Reduced motion never explodes.
  *
  * TUNING: all timings below.
  */
 
 import { clamp } from "./helpers/math";
-import type { ShatterState } from "./types";
+import type { LegacyShatterState, ShatterState, ShatterStateInput } from "./types";
 
-export const SHATTER_DURATION = 0.75; // s — assembled → floating
-export const REASSEMBLE_DURATION = 0.85; // s — floating → assembled
+export const SHATTER_DURATION = 0.75; // s — assembled → floating (stages A + B)
+export const REASSEMBLE_DURATION = 0.85; // s — floating → assembled (stage D)
+/** Fraction of `SHATTER_DURATION` spent in stage A (the exploded diagram). */
+export const SEPARATE_END = 0.42;
 export const IDLE_DWELL = 3; // s of no input before the idle trigger
-export const MAX_HOLD = 8; // s a shatter may stay open before auto-reassembly
-export const SHATTER_COOLDOWN = 10; // s after an idle/touch shatter
+export const MAX_HOLD = 8; // s an explosion may stay open before auto-return
+export const SHATTER_COOLDOWN = 10; // s after an idle/touch explosion
+
+/** Where a forced (test) state parks the timeline — deterministic captures. */
+const FORCED_PROGRESS: Record<ShatterState, number> = {
+  assembled: 0,
+  separating: 0.3,
+  fracturing: 0.75,
+  floating: 1,
+  reassembling: 0.5,
+};
+
+/** Legacy `shattering` still means "in transition" — park it in stage B. */
+export function canonicalState(input: ShatterStateInput): ShatterState {
+  return input === "shattering" ? "fracturing" : input;
+}
+
+/** The value written to `canvas.dataset.explode` (pre-rebuild vocabulary). */
+export function legacyExplodeState(state: ShatterState): LegacyShatterState {
+  return state === "separating" || state === "fracturing" ? "shattering" : state;
+}
 
 export type ShatterReason = "pointer" | "idle" | "touch";
 
@@ -47,12 +86,12 @@ export interface ShatterController {
   setReducedMotion(value: boolean): void;
   /** Any pointer/key input — resets the idle dwell timer only. */
   noteActivity(time: number): void;
-  /** A scroll past the small threshold — resets idle AND closes an open shatter. */
+  /** A scroll past the small threshold — resets idle AND closes an open explosion. */
   scroll(time: number): void;
   /** Touch tap on the visual column (toggle). */
   tap(time: number): void;
-  /** Debug/test override; `null` releases it. */
-  force(state: ShatterState | null): void;
+  /** Debug/test override; `null` releases it. Legacy `shattering` accepted. */
+  force(state: ShatterStateInput | null): void;
   /** Read-only diagnostic snapshot (no secrets, test/tuning aid). */
   snapshot(time: number): ShatterSnapshot;
 }
@@ -79,7 +118,7 @@ export function createShatterController(): ShatterController {
   let forced: ShatterState | null = null;
   /** Set by a touch tap; consumed on the next update. */
   let tapPending = false;
-  /** A pointer/touch shatter that the user explicitly asked to release. */
+  /** A pointer/touch explosion that the user explicitly asked to release. */
   let releaseRequested = false;
   let scrollRelease = false;
 
@@ -87,7 +126,7 @@ export function createShatterController(): ShatterController {
     if (state !== "assembled") return;
     reason = next;
     beginTime = time;
-    state = "shattering";
+    state = "separating";
     releaseRequested = false;
     scrollRelease = false;
   };
@@ -96,7 +135,7 @@ export function createShatterController(): ShatterController {
     forced = next;
     state = next;
     reason = "pointer";
-    progress = next === "assembled" ? 0 : next === "floating" ? 1 : progress;
+    progress = FORCED_PROGRESS[next];
     releaseRequested = false;
     scrollRelease = false;
   };
@@ -106,18 +145,20 @@ export function createShatterController(): ShatterController {
     reduced = frame.reduced;
 
     if (forced) {
-      // A forced state holds the timeline where the caller put it.
-      if (forced === "shattering") progress = clamp(progress + dt / SHATTER_DURATION, 0, 1);
-      else if (forced === "reassembling") progress = clamp(progress - dt / REASSEMBLE_DURATION, 0, 1);
+      // A forced state holds the timeline exactly where the caller put it, so
+      // stage captures are deterministic instead of racing the clock.
+      progress = FORCED_PROGRESS[forced];
       return;
     }
 
-    // Advance the transition currently in flight.
-    if (state === "shattering") {
+    // Advance the transition currently in flight (stages A → B → C, then D).
+    if (state === "separating" || state === "fracturing") {
       progress += dt / SHATTER_DURATION;
       if (progress >= 1) {
         progress = 1;
         state = "floating";
+      } else {
+        state = progress >= SEPARATE_END ? "fracturing" : "separating";
       }
     } else if (state === "reassembling") {
       progress -= dt / REASSEMBLE_DURATION;
@@ -129,7 +170,7 @@ export function createShatterController(): ShatterController {
     }
 
     if (reduced) {
-      // Never shatter: collapse to assembled immediately and stop.
+      // Never explode: collapse to assembled immediately and stop.
       if (state !== "assembled") {
         state = "reassembling";
         progress = clamp(progress, 0, 1);
@@ -153,12 +194,12 @@ export function createShatterController(): ShatterController {
       return;
     }
 
-    // shattering | floating — decide whether to reassemble.
+    // separating | fracturing | floating — decide whether to go home.
     const held = time - beginTime;
     const pointerGone = reason === "pointer" && !pointerInside;
     const idleDone = reason === "idle" && (!heroInView || !pageVisible);
     if (pointerGone || idleDone || releaseRequested || scrollRelease || held >= MAX_HOLD) {
-      if (state === "shattering" || state === "floating") {
+      if (state === "separating" || state === "fracturing" || state === "floating") {
         state = "reassembling";
         if (reason !== "pointer") cooldownUntil = time + SHATTER_COOLDOWN;
       }
@@ -186,18 +227,20 @@ export function createShatterController(): ShatterController {
       lastActivity = time;
       // A real scroll always wins — it also releases a forced (test) state.
       forced = null;
-      if (state === "shattering" || state === "floating") scrollRelease = true;
+      if (state === "separating" || state === "fracturing" || state === "floating") {
+        scrollRelease = true;
+      }
     },
     tap(time: number): void {
       lastActivity = time;
       tapPending = true;
     },
-    force(next: ShatterState | null): void {
+    force(next: ShatterStateInput | null): void {
       if (next === null) {
         forced = null;
         return;
       }
-      setForced(next);
+      setForced(canonicalState(next));
     },
     snapshot(time: number): ShatterSnapshot {
       return {

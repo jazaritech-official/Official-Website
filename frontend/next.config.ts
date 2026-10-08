@@ -72,6 +72,22 @@ const nextConfig: NextConfig = {
     if (!backendOrigin) return [];
     return [{ source: "/api/:path*", destination: `${backendOrigin}/api/:path*` }];
   },
+  async headers() {
+    // Session state must never be cached anywhere: a cached `/api/auth/me` or
+    // `/api/auth/logout` keeps an admin signed in after signing out, and a cached
+    // login response could replay a stale cookie. Applies to the BFF route
+    // handlers (filesystem) and to the rewritten `/api/auth/*` paths alike.
+    return [
+      {
+        source: "/api/auth/:path*",
+        headers: [{ key: "Cache-Control", value: "no-store" }],
+      },
+      {
+        source: "/api/diag-session",
+        headers: [{ key: "Cache-Control", value: "no-store" }],
+      },
+    ];
+  },
   images: {
     // Product/logo artwork comes from the API (local dev driver or Cloudinary).
     remotePatterns: [
