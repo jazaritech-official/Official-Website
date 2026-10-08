@@ -46,7 +46,6 @@ if (!env.isTest) app.use(morgan(env.logFormat));
 app.use(express.json({ limit: env.jsonBodyLimit }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(cookieParser());
-
 // --- Routes -------------------------------------------------------------------
 app.use("/api", generalLimiter, apiRouter);
 
