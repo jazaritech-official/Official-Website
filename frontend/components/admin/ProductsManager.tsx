@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import Image from "next/image";
 import { api, ApiError } from "@/lib/api";
@@ -8,16 +10,17 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Spinner, Skeleton } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { productLogoAlt, productLogoUrl } from "@/lib/productLogo";
 import { Pagination } from "./Pagination";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ProductEditor } from "./ProductEditor";
-import { TemplatesPanel } from "./TemplatesPanel";
 import {
   ChevronRightIcon,
   EditIcon,
   EyeIcon,
   EyeOffIcon,
   LayersIcon,
+  LightbulbIcon,
   PlusIcon,
   RefreshIcon,
   SearchIcon,
@@ -55,14 +58,13 @@ function RowSkeleton() {
   );
 }
 
-/** Product catalogue management + the smart template library. */
+/**
+ * Product catalogue management. Product Presets lives on its own route
+ * (/admin/product-presets); this page still loads the presets so the product
+ * editor can suggest highlight points from the chosen type.
+ */
 export function ProductsManager() {
-  // Deep link from the sidebar's "Product Presets" item (same route, #anchor).
-  // Initialised lazily: AdminShell only renders children after the session
-  // check, so this component never participates in SSR hydration.
-  const [tab, setTab] = useState<"products" | "templates">(() =>
-    typeof window !== "undefined" && window.location.hash === "#product-presets" ? "templates" : "products",
-  );
+  const router = useRouter();
   const [draftQuery, setDraftQuery] = useState("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -79,6 +81,11 @@ export function ProductsManager() {
     }, 350);
     return () => window.clearTimeout(timer);
   }, [draftQuery]);
+
+  // Legacy bookmarks: “Product Presets” used to be an in-page anchor here.
+  useEffect(() => {
+    if (window.location.hash === "#product-presets") router.replace("/admin/product-presets");
+  }, [router]);
 
   const templatesState = useApiData<ProductTypeTemplate[]>(() => api.admin.templates.list(), "templates");
   const templates = templatesState.data ?? [];
@@ -180,41 +187,18 @@ export function ProductsManager() {
 
   return (
     <div className="space-y-6">
-      {/* Tabs */}
+      {/* Actions */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div
-          id="product-presets"
-          role="tablist"
-          aria-label="Product management views"
-          className="inline-flex rounded-full border border-line bg-surface p-1"
+        <Link
+          href="/admin/product-presets"
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-muted transition-colors hover:text-accent"
         >
-          {(
-            [
-              { id: "products", label: "Products" },
-              { id: "templates", label: "Product Presets" },
-            ] as const
-          ).map((item) => (
-            <button
-              key={item.id}
-              role="tab"
-              type="button"
-              data-admin-tab={item.id}
-              aria-selected={tab === item.id}
-              onClick={() => setTab(item.id)}
-              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
-                tab === item.id ? "bg-primary text-primary-contrast shadow-[var(--shadow-subtle)]" : "text-muted hover:text-foreground"
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
-        {tab === "products" && (
-          <Button size="sm" onClick={() => setEditing(null)} iconLeft={<PlusIcon size={14} />}>
-            New product
-          </Button>
-        )}
+          <LightbulbIcon size={15} />
+          Manage Product Presets
+        </Link>
+        <Button size="sm" onClick={() => setEditing(null)} iconLeft={<PlusIcon size={14} />}>
+          New product
+        </Button>
       </div>
 
       {actionError && (
@@ -223,165 +207,153 @@ export function ProductsManager() {
         </p>
       )}
 
-      {tab === "templates" ? (
-        <TemplatesPanel
-          templates={templates}
-          loading={templatesState.loading}
-          error={templatesState.error?.message ?? null}
-          onRetry={templatesState.reload}
-          onChanged={templatesState.reload}
+      {/* Search */}
+      <div className="relative max-w-md">
+        <SearchIcon size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
+        <input
+          type="search"
+          className="field pl-10"
+          placeholder="Search by name or category…"
+          value={draftQuery}
+          onChange={(event) => setDraftQuery(event.target.value)}
+          aria-label="Search products"
+        />
+      </div>
+
+      {/* List */}
+      {listState.loading ? (
+        <div className="space-y-3">
+          {Array.from({ length: 4 }, (_, index) => (
+            <RowSkeleton key={index} />
+          ))}
+        </div>
+      ) : listState.error ? (
+        <EmptyState
+          title="Products could not be loaded"
+          description={listState.error.message}
+          icon={<RefreshIcon size={22} />}
+          action={
+            <Button variant="outline" size="sm" onClick={listState.reload}>
+              Try again
+            </Button>
+          }
+        />
+      ) : items.length === 0 ? (
+        <EmptyState
+          title={hasFilters ? "No products match your search" : "No products yet"}
+          description={
+            hasFilters
+              ? "Try a different name or category."
+              : "Create your first product — the smart templates will suggest highlight points for it."
+          }
+          icon={<LayersIcon size={22} />}
+          action={
+            hasFilters ? (
+              <Button variant="outline" size="sm" onClick={() => setDraftQuery("")}>
+                Clear search
+              </Button>
+            ) : (
+              <Button size="sm" onClick={() => setEditing(null)} iconLeft={<PlusIcon size={14} />}>
+                New product
+              </Button>
+            )
+          }
         />
       ) : (
-        <>
-          {/* Search */}
-          <div className="relative max-w-md">
-            <SearchIcon size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
-            <input
-              type="search"
-              className="field pl-10"
-              placeholder="Search by name or category…"
-              value={draftQuery}
-              onChange={(event) => setDraftQuery(event.target.value)}
-              aria-label="Search products"
-            />
-          </div>
-
-          {/* List */}
-          {listState.loading ? (
-            <div className="space-y-3">
-              {Array.from({ length: 4 }, (_, index) => (
-                <RowSkeleton key={index} />
-              ))}
-            </div>
-          ) : listState.error ? (
-            <EmptyState
-              title="Products could not be loaded"
-              description={listState.error.message}
-              icon={<RefreshIcon size={22} />}
-              action={
-                <Button variant="outline" size="sm" onClick={listState.reload}>
-                  Try again
-                </Button>
-              }
-            />
-          ) : items.length === 0 ? (
-            <EmptyState
-              title={hasFilters ? "No products match your search" : "No products yet"}
-              description={
-                hasFilters
-                  ? "Try a different name or category."
-                  : "Create your first product — the smart templates will suggest highlight points for it."
-              }
-              icon={<LayersIcon size={22} />}
-              action={
-                hasFilters ? (
-                  <Button variant="outline" size="sm" onClick={() => setDraftQuery("")}>
-                    Clear search
-                  </Button>
+        <ul className="space-y-3">
+          {items.map((product, index) => (
+            <li key={product._id} className="card flex flex-wrap items-center gap-4 p-4">
+              <div className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-line bg-surface">
+                {productLogoUrl(product.logo) ? (
+                  <Image
+                    src={productLogoUrl(product.logo) as string}
+                    alt={productLogoAlt(product.logo, product.name)}
+                    width={48}
+                    height={48}
+                    sizes="48px"
+                    className="size-full object-contain p-1"
+                  />
                 ) : (
-                  <Button size="sm" onClick={() => setEditing(null)} iconLeft={<PlusIcon size={14} />}>
-                    New product
-                  </Button>
-                )
-              }
-            />
-          ) : (
-            <ul className="space-y-3">
-              {items.map((product, index) => (
-                <li key={product._id} className="card flex flex-wrap items-center gap-4 p-4">
-                  <div className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-line bg-surface">
-                    {product.logo ? (
-                      <Image
-                        src={product.logo}
-                        alt={`${product.name} logo`}
-                        width={48}
-                        height={48}
-                        sizes="48px"
-                        className="size-full object-contain p-1"
-                      />
-                    ) : (
-                      <span className="text-gradient text-sm font-semibold">{monogram(product.name)}</span>
-                    )}
-                  </div>
+                  <span className="text-gradient text-sm font-semibold">{monogram(product.name)}</span>
+                )}
+              </div>
 
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-foreground">{product.name}</p>
-                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                      <Badge tone="info">{product.category}</Badge>
-                      <Badge tone="neutral">{product.highlightPoints.length} points</Badge>
-                      <Badge tone={product.isPublished ? "success" : "warning"}>
-                        {product.isPublished ? "Published" : "Draft"}
-                      </Badge>
-                    </div>
-                  </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-foreground">{product.name}</p>
+                <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                  <Badge tone="info">{product.category}</Badge>
+                  <Badge tone="neutral">{product.highlightPoints.length} points</Badge>
+                  <Badge tone={product.isPublished ? "success" : "warning"}>
+                    {product.isPublished ? "Published" : "Draft"}
+                  </Badge>
+                </div>
+              </div>
 
-                  <div className="flex items-center gap-1.5">
-                    {busyId === product._id && <Spinner label="Working" />}
+              <div className="flex items-center gap-1.5">
+                {busyId === product._id && <Spinner label="Working" />}
 
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-icon"
-                      aria-label={`Move ${product.name} earlier`}
-                      disabled={index === 0 || busyId === product._id}
-                      onClick={() => void move(index, -1)}
-                    >
-                      <ChevronRightIcon size={15} className="rotate-[-90deg]" />
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-icon"
-                      aria-label={`Move ${product.name} later`}
-                      disabled={index === items.length - 1 || busyId === product._id}
-                      onClick={() => void move(index, 1)}
-                    >
-                      <ChevronRightIcon size={15} className="rotate-90" />
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-icon"
-                      role="switch"
-                      aria-checked={product.isPublished}
-                      aria-label={`${product.isPublished ? "Unpublish" : "Publish"} ${product.name}`}
-                      title={product.isPublished ? "Unpublish" : "Publish"}
-                      disabled={busyId === product._id}
-                      onClick={() => void togglePublished(product)}
-                    >
-                      {product.isPublished ? <EyeIcon size={16} /> : <EyeOffIcon size={16} />}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-icon"
-                      aria-label={`Edit ${product.name}`}
-                      onClick={() => setEditing(product)}
-                    >
-                      <EditIcon size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-icon text-danger hover:text-danger"
-                      aria-label={`Delete ${product.name}`}
-                      disabled={busyId === product._id}
-                      onClick={() => setPendingDelete(product)}
-                    >
-                      <TrashIcon size={16} />
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-icon"
+                  aria-label={`Move ${product.name} earlier`}
+                  disabled={index === 0 || busyId === product._id}
+                  onClick={() => void move(index, -1)}
+                >
+                  <ChevronRightIcon size={15} className="rotate-[-90deg]" />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-icon"
+                  aria-label={`Move ${product.name} later`}
+                  disabled={index === items.length - 1 || busyId === product._id}
+                  onClick={() => void move(index, 1)}
+                >
+                  <ChevronRightIcon size={15} className="rotate-90" />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-icon"
+                  role="switch"
+                  aria-checked={product.isPublished}
+                  aria-label={`${product.isPublished ? "Unpublish" : "Publish"} ${product.name}`}
+                  title={product.isPublished ? "Unpublish" : "Publish"}
+                  disabled={busyId === product._id}
+                  onClick={() => void togglePublished(product)}
+                >
+                  {product.isPublished ? <EyeIcon size={16} /> : <EyeOffIcon size={16} />}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-icon"
+                  aria-label={`Edit ${product.name}`}
+                  onClick={() => setEditing(product)}
+                >
+                  <EditIcon size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-icon text-danger hover:text-danger"
+                  aria-label={`Delete ${product.name}`}
+                  disabled={busyId === product._id}
+                  onClick={() => setPendingDelete(product)}
+                >
+                  <TrashIcon size={16} />
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
 
-          {meta && (
-            <Pagination
-              page={page}
-              totalPages={meta.totalPages}
-              total={meta.total}
-              label="products"
-              busy={listState.loading}
-              onPageChange={setPage}
-            />
-          )}
-        </>
+      {meta && (
+        <Pagination
+          page={page}
+          totalPages={meta.totalPages}
+          total={meta.total}
+          label="products"
+          busy={listState.loading}
+          onPageChange={setPage}
+        />
       )}
 
       {editing !== undefined && (

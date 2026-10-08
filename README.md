@@ -510,3 +510,18 @@ Setup: add `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` to the bac
 
 Architecture + tuning: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §37 · deploy steps:
 [`DEPLOYMENT.md`](./DEPLOYMENT.md) §15.
+### Product logos, Product Presets and the Specimen Plate
+
+- **Product → logo reference.** A product can reference one of the **Homepage Logos** (`Product.logoId`, an
+  ObjectId ref — *referenced*, never copied). The public API returns
+  `logo: { id, url, displayName, alt, tone, hasAlpha, aspectRatio } | null`; `null` renders the designed
+  monogram. Deleting a logo that products use returns **409** with the product names;
+  `DELETE /api/admin/logos/:id?detach=true` unlinks them (monogram fallback) and then deletes.
+- **Product Presets is its own page** at `/admin/product-presets` — its own header, browser title, active
+  sidebar state, deep link and back/forward. The old `/admin/products#product-presets` anchor redirects there.
+- **Specimen Plate product cards.** Products render as mounted specimens on a blueprint plate: a tone-aware
+  gridded *specimen window* with corner ticks, a mono plate id (`PRD-00N`), spec ticks that draw in on reveal,
+  exactly one Growth-Green status node and a brand-spectrum trace to the Visit action. The first plate is wide
+  ("featured") at three or more products; mobile stays one equal-quality column.
+- **Brand spectrum tokens** `--spectrum-1..5` (navy → blue → sky → teal-blue → green), light and dark, live in
+  `app/globals.css` — graphics only (lines, ticks, traces), never text.

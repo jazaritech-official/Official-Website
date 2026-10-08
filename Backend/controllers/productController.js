@@ -1,17 +1,104 @@
+import mongoose from "mongoose";
 import Product from "../models/Product.js";
+import Logo from "../models/Logo.js";
 import { sendData, paginationMeta } from "../utils/apiResponse.js";
 import { ApiError } from "../utils/errors.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
-const PUBLIC_FIELDS = "name logo productUrl category highlightPoints sortOrder createdAt";
+const PUBLIC_FIELDS = "name logo logoId productUrl category highlightPoints sortOrder createdAt";
+/** Safe logo projection — never publicId, originalUrl or other internal refs. */
+const LOGO_FIELDS = "name displayName secureUrl alt tone hasAlpha aspectRatio";
+
+/**
+ * Shape a product's logo into the public contract.
+ *
+ * `logoId` is referenced (never copied) from the Logo collection. A legacy
+ * non-empty `logo` URL string is still honoured so old documents keep working.
+ * Always returns `{ id, url, displayName, alt, tone, hasAlpha, aspectRatio }`
+ * or `null` — never internal storage identifiers.
+ */
+function projectProductLogo(doc) {
+  const ref = doc.logoId;
+  if (ref && typeof ref === "object") {
+    return {
+      id: String(ref._id),
+      url: ref.secureUrl ?? "",
+      displayName: ref.displayName || ref.name || "",
+      alt: ref.alt || ref.displayName || ref.name || "",
+      tone: ref.tone ?? "light",
+      hasAlpha: ref.hasAlpha ?? null,
+      aspectRatio: ref.aspectRatio ?? null,
+    };
+  }
+  if (typeof doc.logo === "string" && doc.logo.trim()) {
+    return {
+      id: null,
+      url: doc.logo.trim(),
+      displayName: doc.name,
+      alt: doc.name,
+      tone: null,
+      hasAlpha: null,
+      aspectRatio: null,
+    };
+  }
+  return null;
+}
+
+function toPublicProduct(doc) {
+  return {
+    _id: doc._id,
+    name: doc.name,
+    logo: projectProductLogo(doc),
+    productUrl: doc.productUrl,
+    category: doc.category,
+    highlightPoints: doc.highlightPoints,
+    sortOrder: doc.sortOrder,
+    createdAt: doc.createdAt,
+  };
+}
+
+/** Admin projection: the raw reference id PLUS the resolved logo object. */
+function toAdminProduct(doc) {
+  const ref = doc.logoId;
+  const logoId = ref && typeof ref === "object" ? String(ref._id) : ref ? String(ref) : null;
+  return { ...doc, logoId, logo: projectProductLogo(doc) };
+}
+
+/** Reload a saved product with its logo reference populated (admin responses). */
+async function loadAdminProduct(id) {
+  const doc = await Product.findById(id).populate("logoId", LOGO_FIELDS).lean();
+  return doc ? toAdminProduct(doc) : null;
+}
+
+/**
+ * Validate an incoming `logoId`. `undefined` = leave unchanged; `null`/"" =
+ * detach; otherwise it must be a real ObjectId that exists. Field-level errors
+ * always carry a `logoId` detail so the editor can surface it inline.
+ */
+async function resolveLogoId(raw) {
+  if (raw === undefined) return undefined;
+  if (raw === null || raw === "") return null;
+  const value = String(raw);
+  if (!mongoose.isValidObjectId(value)) {
+    throw ApiError.badRequest("Choose a logo from the list.", { logoId: "Invalid logo reference." });
+  }
+  const exists = await Logo.exists({ _id: value });
+  if (!exists) {
+    throw ApiError.badRequest("That logo no longer exists.", {
+      logoId: "The selected logo was removed. Pick another or use the monogram.",
+    });
+  }
+  return value;
+}
 
 /** GET /api/products — published products only. */
 export const listPublicProducts = asyncHandler(async (_req, res) => {
   const products = await Product.find({ isPublished: true })
     .sort({ sortOrder: 1, createdAt: -1 })
     .select(PUBLIC_FIELDS)
+    .populate("logoId", LOGO_FIELDS)
     .lean();
-  sendData(res, products);
+  sendData(res, products.map(toPublicProduct));
 });
 
 /** GET /api/admin/products */
@@ -33,35 +120,49 @@ export const listAdminProducts = asyncHandler(async (req, res) => {
       .sort({ sortOrder: 1, createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
+      .populate("logoId", LOGO_FIELDS)
       .lean(),
     Product.countDocuments(filter),
   ]);
 
-  sendData(res, items, 200, paginationMeta({ page, limit, total }));
+  sendData(
+    res,
+    items.map(toAdminProduct),
+    200,
+    paginationMeta({ page, limit, total }),
+  );
 });
 
 /** GET /api/admin/products/:id */
 export const getProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id).lean();
+  const product = await loadAdminProduct(req.params.id);
   if (!product) throw ApiError.notFound("Product not found.");
   sendData(res, product);
 });
 
 /** POST /api/admin/products */
 export const createProduct = asyncHandler(async (req, res) => {
-  const product = await Product.create(sanitizeProductInput(req.body));
-  sendData(res, product, 201);
+  const input = sanitizeProductInput(req.body);
+  const logoId = await resolveLogoId(req.body.logoId);
+  if (logoId !== undefined) input.logoId = logoId;
+
+  const product = await Product.create(input);
+  sendData(res, await loadAdminProduct(product._id), 201);
 });
 
 /** PUT /api/admin/products/:id */
 export const updateProduct = asyncHandler(async (req, res) => {
+  const input = sanitizeProductInput(req.body);
+  const logoId = await resolveLogoId(req.body.logoId);
+  if (logoId !== undefined) input.logoId = logoId;
+
   const product = await Product.findByIdAndUpdate(
     req.params.id,
-    { $set: sanitizeProductInput(req.body) },
+    { $set: input },
     { new: true, runValidators: true },
   );
   if (!product) throw ApiError.notFound("Product not found.");
-  sendData(res, product);
+  sendData(res, await loadAdminProduct(product._id));
 });
 
 /** DELETE /api/admin/products/:id */
@@ -89,7 +190,16 @@ export const reorderProducts = asyncHandler(async (req, res) => {
 
 /** Whitelist + normalize client input (never trust the payload shape). */
 function sanitizeProductInput(body = {}) {
-  const allowed = ["name", "logo", "productUrl", "category", "highlightPoints", "isPublished", "sortOrder"];
+  const allowed = [
+    "name",
+    "logo",
+    "logoId",
+    "productUrl",
+    "category",
+    "highlightPoints",
+    "isPublished",
+    "sortOrder",
+  ];
   const input = {};
   for (const key of allowed) {
     if (body[key] !== undefined) input[key] = body[key];

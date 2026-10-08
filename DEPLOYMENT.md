@@ -668,3 +668,21 @@ redeploy the backend. Notes:
 - Never paste key values into `Backend/.env.example`, this document, a commit, or any chat. The
   `.env.example` holds angle-bracket placeholders only, and `npm run check:secrets` (in `frontend/`)
   fails on any real-looking secret in a tracked file.
+### Product logo references — deploy order matters
+
+Deploy the **backend first**. Two API contracts changed:
+
+- `GET /api/products` now returns `logo: { id, url, displayName, alt, tone, hasAlpha, aspectRatio } | null`
+  instead of a plain URL string. The frontend tolerates the legacy string shape (`lib/productLogo.ts`), so a
+  short overlap window is safe — but the new Specimen-Plate card needs the object to pick the tone-aware
+  specimen window.
+- `DELETE /api/admin/logos/:id` returns **409** with `{ products: [...] }` when one or more products reference
+  the logo. Pass `?detach=true` to unlink them (they fall back to the monogram) and delete in one step. The
+  admin Logos manager shows a confirm dialog for this.
+
+Admin product create/update now accepts `logoId` (an ObjectId or `null`); an invalid or missing id is a
+**400** with a `logoId` field detail.
+
+The public-content cache schema version moved to **2**. Stale `jazari:public-content:v1:*` entries are
+discarded on read (never crashed on) — no user action required. Re-run `npm run snapshot:content` after the
+backend is live and logos/products exist so the offline fallback snapshot carries the new `logo` object.

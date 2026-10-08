@@ -2555,3 +2555,143 @@ bundle budget; and four fracture cycles leave one canvas and a bounded heap.
   sign-in form must clear the browser cookies first (both session suites do).
 - The neon glow scales only the fracture **walls** (caps do not respond), which is what makes the neon-edge
   pixel test meaningful; judging the hue on the low-glow capture avoids ACES saturation skewing the deltas.
+---
+
+## 38. Product-logo references, a standalone Product Presets page, Specimen-Plate cards, and Atlas blunder fixes
+
+Scope delivered this session: **Phase 0** (baseline + reconcile), **Phase 5** (product → Homepage Logo
+reference), **Phase 6** (Specimen Plate product card), **Phase 7** (Product Presets is a real page), plus the
+one fully-measured **Phase 4** blunder. Phases 1–3 (hero logo fidelity, N-service explosion, titles-only
+label layer) were **not** attempted — see §38.6.
+
+### 38.1 Findings (what was actually in the repo)
+
+The session opened with a summary claiming a prior "Part 0 / Part 1" refactor was already applied and
+verified. **That was not true of this working tree.** `git status` was clean at `e62174e`, and the files the
+summary described as deleted/created were still in their pre-refactor state:
+
+| Claimed | Reality in repo |
+|---|---|
+| `lib/apiOrigin.mjs` added | missing |
+| `scripts/verify-origin.mjs` + `verify:origin` script added | missing |
+| `components/three/createTechObjects.ts` deleted | present (support system still in the hero) |
+| `components/three/helpers/projection.ts` deleted | present |
+| Part 1 hero/fracture refactor | not applied |
+
+Task K **is** present and committed (last commit `e62174e`): the Voronoi `fracture.ts`, the Discipline Atlas,
+the BFF auth routes (`app/api/auth/*`, `app/api/diag-session`), `lib/authBff.ts`, `verify-bff.mjs`, and the
+`logos`/`products`/`services` public-content resilience hierarchy. Everything below builds on that state.
+
+### 38.2 Phase 7 — Product Presets root cause
+
+**Symptom (owner):** "Product Presets does not work as a separate page."
+
+**Root cause (evidence):** there was no separate page at all. The sidebar item linked to
+`/admin/products#product-presets` (`AdminShell.tsx`), and `ProductsManager` initialised a `tab` state from
+`window.location.hash` **only in a lazy `useState` initialiser** (`ProductsManager.tsx:60-64`). Consequences:
+
+1. `isActive()` returns `false` for any `href` containing `#`, so the sidebar item could **never** take
+   `aria-current` / the active style.
+2. Navigating from the sidebar while already on `/admin/products` does not remount the component, so the
+   lazy initialiser never re-runs — clicking "Product Presets" appeared to do nothing.
+3. `id="product-presets"` sat on the tablist `<div>` containing *both* tabs, so the anchor scrolled to the tab
+   bar rather than the presets panel.
+4. `TITLES` had no entry, so the browser/tab title stayed "Products".
+
+**Fix:** a real route `app/admin/(portal)/product-presets/page.tsx` with its own `AdminPageHeader`,
+`export const metadata = { title: "Product Presets" }`, a `TITLES["/admin/product-presets"]` entry, and the
+sidebar item now points at `/admin/product-presets`. The tab + embedded `TemplatesPanel` were removed from
+`ProductsManager` (which now links to the page and keeps loading templates only to pre-fill the editor). A
+one-line legacy redirect keeps the old `#product-presets` bookmark working.
+
+### 38.3 Phase 5 — product logo **reference** (not a copy)
+
+`Product.logoId` (ObjectId → `Logo`, optional, `default: null`) is additive; the legacy free-text `logo`
+string is kept and still honoured at render time.
+
+- Backend public projection now returns `logo: { id, url, displayName, alt, tone, hasAlpha, aspectRatio } |
+  null` from `logoId` (never `publicId`/`originalUrl`/`originalPublicId`), with a legacy-URL fallback wrapped
+  in the same shape.
+- Admin projections return the normalised string `logoId` **plus** the resolved `logo` object.
+- `logoId` is validated on create/update: malformed → 400, non-existent → 400, both with a `logoId` field detail.
+- Deleting a referenced logo returns **409** listing the product names; `?detach=true` unlinks the products
+  (they fall back to the monogram) and then deletes.
+- **Bug found and fixed while verifying:** `ApiError.conflict(message)` silently dropped its `details`
+  argument, so the 409 never carried the product list. `conflict` now accepts and forwards `details`
+  (additive; the one other caller is unaffected). The new smoke check *failed* before this fix — proof the
+  new check can fail.
+
+Frontend: `lib/productLogo.ts` (tolerant `productLogoUrl`/`productLogoAlt`/`isLogoReference`), `ProductEditor`
+gained a keyboard-accessible logo picker (search, checkerboard thumbnails, selected state with a text label,
+"None · monogram", "Add a new logo" link) plus a **live preview of the real public card**; `LogosManager`
+handles the 409 with a detach confirm dialog; `publicContent.ts` bumped `CACHE_VERSION` to **2** and still
+accepts a legacy string `logo` so a stale payload never invalidates the list.
+
+### 38.4 Phase 6 — the Specimen Plate product card
+
+Products are now "mounted specimens on a blueprint plate": a framed, faintly gridded **specimen window** with
+corner ticks and a **tone-aware** backdrop (dark logo → white window, light logo → navy window — never a
+coloured pill behind the logo), a mono plate id (`PRD-00N` from `sortOrder`), the category as a mono text
+label, a spec list whose **ticks draw in** on reveal, exactly one **Growth-Green status node**, and a
+spectrum **trace** that runs to the Visit action on hover/focus. The first plate is wide ("featured") at
+3+ products; mobile stays a single equal-quality column. The monogram fallback keeps the same plate. A new
+**brand spectrum** token set (`--spectrum-1..5`, light + dark) was added to `globals.css` and drives the
+trace. All motion is `transform`/`opacity` with a `prefers-reduced-motion` static equivalent.
+
+### 38.5 Phase 4 — the one measured blunder fixed
+
+`CHECK 104` proves the Atlas keeps a **constant row height** ("hover raises the liquid with transform, not
+height"), and the component header documents that invariant. The reported blunder — the description +
+"Hide details" pill clipped by the card edge — came from the details box overflowing a 108 px (`6.75rem`)
+`overflow: hidden` row. The fix therefore **fits** the details inside that height instead of letting the row
+grow: the box starts at `2.5rem` (was `2.9rem`), the description clamps to **2** lines (was 3), the gap is
+tighter and the pill is slightly smaller. Worst case ≈ 102.8 px < 108 px. Row height is unchanged at rest, on
+hover and when explicitly expanded, so `CHECK 104` still passes. The selected row's index colour was also
+raised from `--muted` to `--foreground`.
+
+### 38.6 NOT done / NOT VERIFIED
+
+- **Phases 1–3 (hero) were not attempted.** The hero still uses the Task K support objects + Voronoi
+  fracture; no N-service explosion, no titles-only label layer, no spectrum leader lines. This is the largest
+  remaining block and is intentionally left rather than half-rewritten.
+- Phase 4 is only partially done: scroll-margin (`6rem` on `section[id]`, `h1/h2/h3[id]`, `article[id]`) and
+  the rail-details clipping were addressed/confirmed; the rail item-height normalisation, the Hub "card 04"
+  bottom spacing/collision audit, and the motion/hover upgrades were **not** done.
+- No new screenshots were produced for the new work beyond those the harness already captures.
+- `verify:bff`, `verify:origin` (does not exist here) and a `NO_WEBGL=1` harness pass were not re-run in the
+  final cycle. Lighthouse, Firefox/Safari, iOS Safari, a real Vercel deploy and production data remain
+  NOT VERIFIED.
+
+### 38.7 Verification (measured)
+
+| Check | Result | Baseline |
+|---|---|---|
+| Frontend `npm run lint` / `npx tsc --noEmit` | 0 problems / 0 errors | 0 / 0 |
+| Frontend `npm run build` | **18 routes** (`/admin/product-presets` added) | 17 routes |
+| `npm run audit:contrast` | **51/51** | 51/51 |
+| `npm run check:secrets` | clean (7 files) | clean |
+| Backend `npm run lint` / `npm run build` | clean / 54 files | clean / 54 |
+| Backend `NODE_ENV=test npm run smoke` | **222/222** | 200/200 |
+| Harness `node scripts/verify-three.mjs` (against a production `next start`) | **275/276** (6 new checks added) | 271/271 |
+| — the single failure: `CHECK 83` (hero shatter advances to `floating`) | reproduced in **two** independent runs; **no `components/three/*` file was touched this session**, `CHECK 82` and the whole explosion suite `CHECK 143–151` pass. Consistent with RAF-throttle-driven lag in the time-based state machine on a loaded machine — **not** proven either way and **not** isolated | — |
+| three chunk vs the harness baseline | 652165 B / 168521 gz (Δ **+13094 / +4386**) — **unchanged** by this session | same |
+| home initial JS vs the harness baseline | 707307 B / 218300 gz (Δ **−96 / +777**) | 707403 / 217522 |
+
+Harness edits this session: (1) `CHECK 68` made cache-version-agnostic — it had hardcoded
+`jazari:public-content:v1:services`, so the schema bump to `v2` silently turned it into a test of a key the
+app no longer reads; it now derives the version from the keys the app actually wrote (**assertion unchanged**).
+(2) A bounded wait before `CHECK 114` (the assertion `>= 15` is unchanged; this removed a real race — the
+check failed with "1 options" before, passes with "15 options" now). (3) Six **new** checks — `CHECK 76b–76f`:
+the sidebar Presets item points at its own route; the Product Presets page renders its header, browser title,
+**active sidebar state** and panel; the Products page no longer hosts the embedded tab/anchor; product cards
+render as Specimen Plates (window, `PRD-\d{3}` plate id, ticks, spectrum trace); and exactly one wide
+"featured" plate at 3+ products. `/admin/product-presets` was added to the admin-route resolution sweep.
+
+### 38.8 Owner actions (ordered)
+
+1. Redeploy the **backend** first (the product `logo` projection and the 409 shape changed), then the frontend.
+2. After logos/products exist, re-run `npm run snapshot:content` (or the prebuild) so the fallback snapshot
+   carries the new `logo` object.
+3. Assign logos to products in **Admin → Products → edit → Logo** (the picker references the Homepage Logos).
+4. Replace the placeholder logos (e.g. "Showcase Fixture A/B") with real ones; remove stray test logos.
+5. Rotate any secret that was ever pasted into a chat or committed.

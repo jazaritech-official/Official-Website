@@ -137,10 +137,29 @@ export interface BulkFixResponse {
   items: BulkFixItem[];
 }
 
+/** Resolved, safe logo reference attached to a product (never internal ids). */
+export interface ProductLogo {
+  /** Logo id when referenced from the Logo collection, else null (legacy URL). */
+  id: string | null;
+  url: string;
+  displayName: string;
+  alt: string;
+  tone: LogoTone | null;
+  hasAlpha: boolean | null;
+  aspectRatio: number | null;
+}
+
 export interface Product {
   _id: string;
   name: string;
-  logo: string;
+  /**
+   * The product's logo reference. `null` means “use the designed monogram”.
+   * A legacy plain-URL string is still tolerated at runtime (see
+   * `lib/productLogo.ts`) so an old cached/snapshotted payload never blanks.
+   */
+  logo: ProductLogo | null;
+  /** Reference id into the Logo collection (admin responses). */
+  logoId?: string | null;
   productUrl: string;
   category: string;
   highlightPoints: string[];

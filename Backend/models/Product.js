@@ -22,10 +22,21 @@ const productSchema = new mongoose.Schema(
       minlength: [2, "Product name is too short."],
       maxlength: [120, "Product name is too long."],
     },
+    /** Legacy free-text logo URL. Kept for backward compatibility. */
     logo: {
       type: String,
       default: "",
       trim: true,
+    },
+    /**
+     * Optional reference to a Homepage Logo (the Logo collection). Referenced,
+     * never copied. Backward compatible: legacy products without `logoId` stay
+     * valid and fall back to the designed monogram on the public card.
+     */
+    logoId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Logo",
+      default: null,
     },
     productUrl: {
       type: String,

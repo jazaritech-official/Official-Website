@@ -1,4 +1,5 @@
 import Logo from "../models/Logo.js";
+import Product from "../models/Product.js";
 import {
   storeOriginal,
   storeProcessed,
@@ -431,10 +432,33 @@ export const bulkFixLogos = asyncHandler(async (req, res) => {
   sendData(res, { summary, items });
 });
 
-/** DELETE /api/admin/logos/:id — remove processed + original assets, then the record. */
+/**
+ * DELETE /api/admin/logos/:id — remove processed + original assets, then the record.
+ *
+ * Referential safety: a logo referenced by products is NOT deleted silently.
+ * Without an explicit `?detach=true` the request is refused with 409 and the
+ * names of the products that use it. With `detach=true` those products are
+ * unlinked first (they fall back to the designed monogram) and the logo is then
+ * removed.
+ */
 export const deleteLogo = asyncHandler(async (req, res) => {
   const logo = await Logo.findById(req.params.id);
   if (!logo) throw ApiError.notFound("Logo not found.");
+
+  const detach = req.query.detach === "true" || req.query.detach === "1" || req.body?.detach === true;
+  const referencedBy = await Product.find({ logoId: logo._id }).select("name").lean();
+
+  if (referencedBy.length > 0 && !detach) {
+    const count = referencedBy.length;
+    throw ApiError.conflict(
+      `This logo is used by ${count} product${count === 1 ? "" : "s"}. Detach it to continue — those products will fall back to their monogram.`,
+      { products: referencedBy.map((product) => product.name) },
+    );
+  }
+
+  if (referencedBy.length > 0) {
+    await Product.updateMany({ logoId: logo._id }, { $set: { logoId: null } });
+  }
 
   // Storage first: if cleanup fails we abort, keeping storage and DB consistent.
   const failures = await deleteLogoAssets(logo);

@@ -575,6 +575,96 @@ console.log("[smoke] 6. admin content management");
   check("delete product", del.status === 200);
 }
 
+console.log("[smoke] 6b. product logo reference");
+{
+  const tinyPng =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+  // A logo to reference (uploaded, then hidden later to prove hidden logos work).
+  const logoUpload = await json("/admin/logos", {
+    method: "POST",
+    cookie,
+    body: { name: "Referenced Logo", displayName: "RefLogo", image: tinyPng },
+  });
+  check("setup: logo uploaded for reference", logoUpload.status === 201, JSON.stringify(logoUpload.body));
+  const logoRefId = logoUpload.body?.data?._id;
+  const logoRefUrl = logoUpload.body?.data?.secureUrl;
+
+  // Create a product that references the logo.
+  const created = await json("/admin/products", {
+    method: "POST",
+    cookie,
+    body: {
+      name: "Logo Ref Product",
+      category: "Website",
+      productUrl: "",
+      highlightPoints: ["Referenced logo", "Still watertight"],
+      logoId: logoRefId,
+    },
+  });
+  check("create product with logoId → 201", created.status === 201, JSON.stringify(created.body));
+  const productId = created.body?.data?._id;
+  check("admin response normalises logoId to a string", created.body?.data?.logoId === logoRefId);
+  check("admin response includes the resolved logo object", created.body?.data?.logo?.url === logoRefUrl && created.body?.data?.logo?.id === logoRefId);
+  check("admin response never leaks publicId/originalUrl", !JSON.stringify(created.body?.data).match(/publicId|originalUrl/));
+
+  // Public projection exposes the safe logo object.
+  const publicList = await json("/products");
+  const publicProduct = publicList.body?.data?.find((p) => p._id === productId);
+  check("public product carries logo.url/id", publicProduct?.logo?.url === logoRefUrl && publicProduct?.logo?.id === logoRefId, JSON.stringify(publicProduct?.logo));
+  check("public product logo has alt/displayName/tone fields", typeof publicProduct?.logo?.alt === "string" && typeof publicProduct?.logo?.displayName === "string" && "tone" in (publicProduct?.logo ?? {}));
+  check("public products never leak publicId/originalUrl", !JSON.stringify(publicList.body?.data).match(/publicId|originalUrl|originalPublicId/));
+
+  // Invalid / missing references are rejected with a field error.
+  const invalid = await json("/admin/products", {
+    method: "POST",
+    cookie,
+    body: { name: "Bad Ref", category: "Website", highlightPoints: ["One"], logoId: "not-an-id" },
+  });
+  check("invalid logoId → 400", invalid.status === 400, `got ${invalid.status}`);
+  check("invalid logoId carries a field detail", Boolean(invalid.body?.error?.details?.logoId) || invalid.body?.error?.details?.logoId === "");
+
+  const missing = await json("/admin/products", {
+    method: "POST",
+    cookie,
+    body: { name: "Missing Ref", category: "Website", highlightPoints: ["One"], logoId: "000000000000000000000000" },
+  });
+  check("non-existent logoId → 400", missing.status === 400, `got ${missing.status}`);
+  check("non-existent logoId carries a field detail", Boolean(missing.body?.error?.details?.logoId));
+
+  // Backward compatibility: a product with no logoId is valid and projects null.
+  const plain = await json("/admin/products", {
+    method: "POST",
+    cookie,
+    body: { name: "No Logo Product", category: "Website", highlightPoints: ["One"] },
+  });
+  check("product without logoId is valid", plain.status === 201);
+  const plainPublic = (await json("/products")).body?.data?.find((p) => p._id === plain.body?.data?._id);
+  check("product without logoId projects logo === null", plainPublic?.logo === null, JSON.stringify(plainPublic?.logo));
+  await json(`/admin/products/${plain.body?.data?._id}`, { method: "DELETE", cookie });
+
+  // A logo hidden from the slideshow can still be referenced by a product.
+  await json(`/admin/logos/${logoRefId}/visibility`, { method: "PATCH", cookie, body: { isVisible: false } });
+  const afterHide = (await json("/products")).body?.data?.find((p) => p._id === productId);
+  check("hidden logo is still usable on a product", afterHide?.logo?.url === logoRefUrl);
+  check("hidden logo excluded from the public slideshow", !(await json("/logos")).body?.data?.some((l) => l._id === logoRefId));
+
+  // Delete protection: referenced logo refuses to delete without detach.
+  const blocked = await json(`/admin/logos/${logoRefId}`, { method: "DELETE", cookie });
+  check("deleting a referenced logo → 409", blocked.status === 409, `got ${blocked.status}`);
+  check("409 lists the referencing products", Array.isArray(blocked.body?.error?.details?.products) && blocked.body.error.details.products.includes("Logo Ref Product"));
+
+  // Explicit detach: unlinks the product (falls back to monogram) then deletes.
+  const detached = await json(`/admin/logos/${logoRefId}?detach=true`, { method: "DELETE", cookie });
+  check("detach + delete → 200", detached.status === 200, JSON.stringify(detached.body));
+  const afterDetach = (await json("/products")).body?.data?.find((p) => p._id === productId);
+  check("detached product falls back to logo === null", afterDetach?.logo === null, JSON.stringify(afterDetach?.logo));
+  check("detached logo is gone from admin list", !(await json("/admin/logos", { cookie })).body?.data?.logos?.some((l) => l._id === logoRefId));
+
+  await json(`/admin/products/${productId}`, { method: "DELETE", cookie });
+  check("cleanup: logo-ref product removed", !(await json("/products")).body?.data?.some((p) => p._id === productId));
+}
+
 console.log("[smoke] 7. submissions admin + CSV");
 {
   const list = await json("/admin/submissions", { cookie });

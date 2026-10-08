@@ -324,7 +324,16 @@ export const api = {
         requestWithProgress<AdminLogo>("/admin/logos", input, options),
       update: (id: string, input: Partial<LogoInput>) =>
         request<AdminLogo>(`/admin/logos/${id}`, { method: "PUT", body: input }),
-      remove: (id: string) => request<{ id: string }>(`/admin/logos/${id}`, { method: "DELETE" }),
+      /**
+       * `detach` unlinks the logo from any products that reference it (they fall
+       * back to the monogram). Without it the API answers 409 with the product
+       * names so the UI can confirm before detaching.
+       */
+      remove: (id: string, options?: { detach?: boolean }) =>
+        request<{ id: string }>(`/admin/logos/${id}`, {
+          method: "DELETE",
+          query: options?.detach ? { detach: "true" } : undefined,
+        }),
       reorder: (ids: string[]) => request<{ reordered: number }>("/admin/logos/reorder", { method: "PATCH", body: { ids } }),
       setVisibility: (id: string, isVisible: boolean) =>
         request<AdminLogo>(`/admin/logos/${id}/visibility`, { method: "PATCH", body: { isVisible } }),

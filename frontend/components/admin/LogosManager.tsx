@@ -87,6 +87,8 @@ export function LogosManager() {
 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<AdminLogo | null>(null);
+  /** Set when the API refuses a delete because products reference the logo. */
+  const [detachPrompt, setDetachPrompt] = useState<{ logo: AdminLogo; products: string[] } | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   const [bulkRunning, setBulkRunning] = useState(false);
@@ -347,17 +349,26 @@ export function LogosManager() {
     }
   };
 
-  const confirmDelete = async () => {
-    const target = pendingDelete;
+  const confirmDelete = async (detach = false) => {
+    const target = pendingDelete ?? detachPrompt?.logo;
     if (!target) return;
     setDeleting(true);
     try {
-      await api.admin.logos.remove(target._id);
+      await api.admin.logos.remove(target._id, { detach });
       setPendingDelete(null);
+      setDetachPrompt(null);
       await run({ silent: true });
     } catch (cause) {
-      setUploadError(cause instanceof ApiError ? cause.message : "Could not delete this logo.");
-      setPendingDelete(null);
+      if (cause instanceof ApiError && cause.status === 409) {
+        // Products reference this logo — ask before detaching them.
+        const details = (cause.details ?? {}) as unknown as { products?: string[] };
+        setPendingDelete(null);
+        setDetachPrompt({ logo: target, products: Array.isArray(details.products) ? details.products : [] });
+      } else {
+        setUploadError(cause instanceof ApiError ? cause.message : "Could not delete this logo.");
+        setPendingDelete(null);
+        setDetachPrompt(null);
+      }
     } finally {
       setDeleting(false);
     }
@@ -840,8 +851,22 @@ export function LogosManager() {
         message={`“${pendingDelete?.name ?? ""}” will be removed from storage (processed and original assets) and from the database. This cannot be undone.`}
         confirmLabel="Delete logo"
         busy={deleting}
-        onConfirm={() => void confirmDelete()}
+        onConfirm={() => void confirmDelete(false)}
         onCancel={() => setPendingDelete(null)}
+      />
+
+      <ConfirmDialog
+        open={detachPrompt !== null}
+        title="This logo is used by products"
+        message={
+          detachPrompt
+            ? `${detachPrompt.products.length ? `Used by: ${detachPrompt.products.join(", ")}. ` : ""}Deleting it will detach it from those products — they will fall back to their monogram. Continue?`
+            : ""
+        }
+        confirmLabel="Detach and delete"
+        busy={deleting}
+        onConfirm={() => void confirmDelete(true)}
+        onCancel={() => setDetachPrompt(null)}
       />
 
       <ConfirmDialog

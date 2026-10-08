@@ -28,6 +28,14 @@
   --accent-contrast: #ffffff; /* label on a solid accent fill — 5.6 */
   --growth: #95c93d; /* Growth Green — micro accent only */
   --growth-ink: #4b7d14;
+  /* Brand spectrum — ONE ordered ramp shared by the hero service lines, the
+     Atlas constellation wiring and the Specimen-Plate trace. Navy → blue → sky
+     → teal-blue → green. Never orange/pink/purple. Graphics only, never text. */
+  --spectrum-1: #212c65; /* Deep Navy */
+  --spectrum-2: #3769a9; /* Technology Blue */
+  --spectrum-3: #5f96cf; /* Sky */
+  --spectrum-4: #3f9fb3; /* Teal-blue */
+  --spectrum-5: #95c93d; /* Growth Green (terminal micro accent) */
   --success: #347a28; /* 5.3 on white, 4.5 on 12% tint */
   --warning: #8f5e0a; /* 5.6 on white, 4.7 on 12% tint */
   --danger: #bd3a3a; /* 4.9 on danger-soft, 5.5 on white */
@@ -179,6 +187,12 @@
   --accent-contrast: #0a0f24;
   --growth: #a8d75c;
   --growth-ink: #b7e072;
+  /* Brand spectrum — lifted for the dark canvas (same order). */
+  --spectrum-1: #6b7fd6; /* navy lifted */
+  --spectrum-2: #5d97da; /* Technology Blue */
+  --spectrum-3: #8fc0ee; /* Sky */
+  --spectrum-4: #5fc2d6; /* Teal-blue */
+  --spectrum-5: #a8d75c; /* Growth Green */
   --success: #7ec96a;
   --warning: #e0b054;
   --danger: #ef7a7a;
@@ -2160,6 +2174,11 @@ html:not(.js) .service-card__liquid {
   transition: color 260ms var(--ease-out);
 }
 
+/* The selected row's index must stay legible (was --muted on the tinted row). */
+.atlas-row[aria-selected="true"] .atlas-row__index {
+  color: var(--foreground);
+}
+
 .atlas-row__icon {
   flex: none;
   display: inline-flex;
@@ -2222,19 +2241,37 @@ html:not(.js) .service-card__liquid {
   background: var(--growth);
 }
 
+/*
+ * BUGFIX — the details box used to overflow the row and be clipped by
+ * `overflow: hidden` (the description plus the “Hide details” pill ran past the
+ * card edge).
+ *
+ * The atlas keeps a CONSTANT row height by design (see the component header),
+ * so the fix is to FIT the details inside that height rather than let the row
+ * grow:
+ *   · start higher (2.5rem instead of 2.9rem)
+ *   · clamp the description to 2 lines instead of 3
+ *   · tighter gap + a slightly smaller pill
+ * Worst case: 40px offset + 2(≈17.8px) description + 4.8px gap + ≈22px pill
+ * ≈ 102.8px < the 108px (6.75rem) row, so nothing is clipped and the row height
+ * is unchanged at rest, on hover AND when explicitly expanded.
+ */
 .atlas-row__details.service-card__details {
   position: absolute;
   left: 0.85rem;
   right: 0.85rem;
-  top: 2.9rem;
+  top: 2.5rem;
   bottom: auto;
   z-index: 2;
-  gap: 0.35rem;
+  gap: 0.3rem;
+  max-height: calc(100% - 2.5rem - 0.4rem);
+  overflow: hidden;
 }
 
+/* Clamped to 2 lines (was 3) so description + pill fit the constant row height. */
 .atlas-row__desc.service-card__desc {
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   font-size: 0.74rem;
   line-height: 1.5;
 }
@@ -2242,6 +2279,8 @@ html:not(.js) .service-card__liquid {
 .atlas-row__toggle.service-card__toggle {
   margin-top: 0;
   align-self: flex-start;
+  padding: 0.26rem 0.55rem;
+  font-size: 0.7rem;
 }
 
 /* --- Stage ------------------------------------------------------------- */
@@ -3627,5 +3666,272 @@ html:not(.dark) .logo-item[data-tone="light"] .logo-item__img {
 @media (prefers-reduced-motion: reduce) {
   .push-prompt__bell {
     animation: none;
+  }
+}
+/* ============================================================
+   7d. SPECIMEN PLATE — product cards
+   A product presented as a mounted specimen on a blueprint plate: a framed
+   specimen window + mono plate id + drawn-in spec ticks + one Growth-Green
+   status node + a spectrum trace to the Visit action. Deliberately different
+   from the services cards and the logo marquee.
+   ============================================================ */
+
+.plate {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background-color: var(--surface-elevated);
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--grid-tick) 26%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--grid-tick) 26%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+  transition:
+    transform var(--dur-normal) var(--ease-out),
+    box-shadow var(--dur-normal) var(--ease-out),
+    border-color var(--dur-normal) var(--ease-out);
+}
+
+.plate:hover,
+.plate:focus-within {
+  transform: translateY(-4px);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: var(--shadow-card);
+}
+
+.plate__body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  padding: 1.4rem 1.5rem 1.5rem;
+}
+
+.plate__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.plate__id {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
+}
+
+.plate__node {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.plate__node::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background-color: var(--growth);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--growth) 24%, transparent);
+}
+
+/* Specimen window — framed, faintly gridded, tone-aware backdrop. */
+.plate__window {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
+  margin-top: 1rem;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background-color: var(--surface);
+}
+
+.plate__window::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--grid-tick) 34%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--grid-tick) 34%, transparent) 1px, transparent 1px);
+  background-size: 16px 16px;
+  opacity: 0.55;
+}
+
+/* Tone-aware contrast aid: a dark logo sits on white, a light logo on navy. */
+.plate__window[data-tone="dark"] {
+  background-color: #ffffff;
+}
+.plate__window[data-tone="light"] {
+  background-color: #101a3d;
+}
+.plate__window[data-tone="colorful"] {
+  background-color: var(--surface-elevated);
+}
+
+.plate__corner {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+  border-style: solid;
+  border-width: 0;
+}
+.plate__corner--tl { top: 6px; left: 6px; border-top-width: 2px; border-left-width: 2px; }
+.plate__corner--tr { top: 6px; right: 6px; border-top-width: 2px; border-right-width: 2px; }
+.plate__corner--bl { bottom: 6px; left: 6px; border-bottom-width: 2px; border-left-width: 2px; }
+.plate__corner--br { bottom: 6px; right: 6px; border-bottom-width: 2px; border-right-width: 2px; }
+
+.plate__logo {
+  position: relative;
+  z-index: 1;
+  max-width: 62%;
+  max-height: 62%;
+  transition: transform var(--dur-normal) var(--ease-out);
+}
+.plate:hover .plate__logo,
+.plate:focus-within .plate__logo {
+  transform: translateY(-3px) scale(1.04);
+}
+
+.plate__monogram {
+  position: relative;
+  z-index: 1;
+  font-size: 1.9rem;
+  font-weight: 600;
+}
+
+.plate__title {
+  margin-top: 1.1rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+.plate__category {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.plate__category::before {
+  content: "";
+  width: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background-color: var(--spectrum-2);
+}
+
+.plate__specs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 1.1rem;
+}
+.plate__spec {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 0.86rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.plate__tick {
+  flex: none;
+  margin-top: 0.5rem;
+  width: 14px;
+  height: 2px;
+  border-radius: 999px;
+  background-color: var(--spectrum-2);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 460ms var(--ease-out);
+  transition-delay: calc(var(--spec-index, 0) * 70ms);
+}
+.reveal.is-visible .plate__tick {
+  transform: scaleX(1);
+}
+html:not(.js-intro) .plate__tick {
+  transform: scaleX(1);
+}
+
+.plate__foot {
+  margin-top: auto;
+  padding-top: 1.3rem;
+}
+
+/* Spectrum trace — runs from the specimen window to the Visit action. */
+.plate__trace {
+  height: 2px;
+  width: 100%;
+  border-radius: 999px;
+  background-image: linear-gradient(
+    90deg,
+    var(--spectrum-1),
+    var(--spectrum-2),
+    var(--spectrum-3),
+    var(--spectrum-4),
+    var(--spectrum-5)
+  );
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--dur-normal) var(--ease-out);
+}
+.plate:hover .plate__trace,
+.plate:focus-within .plate__trace {
+  transform: scaleX(1);
+}
+
+.plate__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.9rem;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+.plate__action:hover {
+  color: var(--accent-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plate,
+  .plate__logo,
+  .plate__trace,
+  .plate__tick {
+    transition: none;
+  }
+  .plate:hover,
+  .plate:focus-within,
+  .plate:hover .plate__logo,
+  .plate:focus-within .plate__logo {
+    transform: none;
+  }
+  .plate__trace,
+  .plate__tick {
+    transform: none;
   }
 }

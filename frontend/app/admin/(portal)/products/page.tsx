@@ -11,7 +11,7 @@ export default function ProductsPage() {
         group="Content"
         title="Products"
         purpose="Your published products. Add each product's name, logo, link and highlight points below."
-        where="Renders in the product cards on the homepage. “Product Presets” (below) pre-fill the highlights for a product type."
+        where="Renders in the product cards on the homepage. Choose a type in the editor and the matching Product Preset pre-fills its highlight points."
       />
       <ProductsManager />
     </>

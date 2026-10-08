@@ -2742,6 +2742,12 @@ async function main() {
       JSON.stringify(cacheKeys),
     );
 
+    // Derive the cache schema version from the keys the app ACTUALLY wrote, so
+    // the corruption check below never hardcodes a version (a schema bump must
+    // not silently turn it into a test of a key the app no longer reads).
+    const cacheVersion = (cacheKeys.keys[0]?.match(/:v(\d+):/) ?? [])[1];
+    const servicesCacheKey = `jazari:public-content:v${cacheVersion}:services`;
+
     // --- 15c. Cache fallback: block the API, reload -----------------------
     await cdp.send("Network.enable");
     await cdp.send("Network.setBlockedURLs", { urls: API_BLOCK_URLS });
@@ -2815,7 +2821,7 @@ async function main() {
     // --- 15f. Corrupted cache is ignored safely ---------------------------
     await evaluate(
       cdp,
-      `(() => { localStorage.setItem('jazari:public-content:v1:services', '{not-json'); return localStorage.getItem('jazari:public-content:v1:services') !== null; })()`,
+      `(() => { localStorage.setItem('${servicesCacheKey}', '{not-json'); return localStorage.getItem('${servicesCacheKey}') !== null; })()`,
     );
     await cdp.send("Page.navigate", { url: `${BASE}/?corrupt-cache=1` });
     await waitFor(cdp, `document.readyState === "complete"`, 12000, "home reload (corrupt cache)");
@@ -2824,7 +2830,7 @@ async function main() {
       cdp,
       `(() => ({
         state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state'),
-        discarded: localStorage.getItem('jazari:public-content:v1:services') === null,
+        discarded: localStorage.getItem('${servicesCacheKey}') === null,
       }))()`,
     );
     check(
@@ -2958,6 +2964,7 @@ async function main() {
         "/admin/dashboard",
         "/admin/logos",
         "/admin/products",
+        "/admin/product-presets",
         "/admin/submissions",
         "/admin/visitors",
         "/admin/notifications",
@@ -2973,6 +2980,98 @@ async function main() {
         "CHECK 76 — every admin route still resolves at the same path (bookmarks intact)",
         badRoutes.length === 0,
         JSON.stringify(badRoutes),
+      );
+
+      // --- Product Presets is a real standalone page ------------------------
+      // Regression guard: it used to be an in-page `#product-presets` tab whose
+      // lazy `useState` initialiser never re-ran on client-side navigation, so
+      // the sidebar item silently did nothing. It now has its own route.
+      const presetsHref = await evaluate(
+        cdp,
+        `(() => {
+          const link = [...document.querySelectorAll('a[data-admin-nav-label]')].find((a) => a.getAttribute('data-admin-nav-label') === 'Product Presets');
+          return link ? link.getAttribute('href') : null;
+        })()`,
+      );
+      check(
+        "CHECK 76b — the sidebar 'Product Presets' item points at its own route",
+        presetsHref === "/admin/product-presets",
+        String(presetsHref),
+      );
+
+      await cdp.send("Page.navigate", { url: `${BASE}/admin/product-presets` });
+      await waitFor(
+        cdp,
+        `document.querySelector('.admin-page-header h1')?.textContent?.trim() === 'Product Presets'`,
+        15000,
+        "product presets page",
+      );
+      const presetsPage = await evaluate(
+        cdp,
+        `(() => ({
+          header: document.querySelector('.admin-page-header h1')?.textContent?.trim() || '',
+          title: document.title,
+          active: document.querySelector('a[aria-current="page"]')?.getAttribute('data-admin-nav-label') || '',
+          hasPanel: [...document.querySelectorAll('button')].some((b) => /new template/i.test(b.textContent)),
+        }))()`,
+      );
+      check(
+        "CHECK 76c — Product Presets is its own page: header, browser title, active sidebar state and panel",
+        presetsPage.header === "Product Presets" &&
+          /Product Presets - Jazari Admin$/.test(presetsPage.title) &&
+          presetsPage.active === "Product Presets" &&
+          presetsPage.hasPanel === true,
+        JSON.stringify(presetsPage),
+      );
+
+      await cdp.send("Page.navigate", { url: `${BASE}/admin/products` });
+      await waitFor(
+        cdp,
+        `document.querySelector('.admin-page-header h1')?.textContent?.trim() === 'Products'`,
+        15000,
+        "products page",
+      );
+      const productsHosts = await evaluate(
+        cdp,
+        `(() => ({ anchor: Boolean(document.getElementById('product-presets')), tabs: document.querySelectorAll('[data-admin-tab]').length }))()`,
+      );
+      check(
+        "CHECK 76d — the Products page no longer hosts the embedded Presets tab/anchor",
+        productsHosts.anchor === false && productsHosts.tabs === 0,
+        JSON.stringify(productsHosts),
+      );
+
+      // --- Specimen Plate product cards -------------------------------------
+      await cdp.send("Page.navigate", { url: `${BASE}/` });
+      await waitFor(cdp, `document.querySelectorAll('[data-product-plate]').length > 0`, 15000, "product plates");
+      const plates = await evaluate(
+        cdp,
+        `(() => {
+          const nodes = [...document.querySelectorAll('[data-product-plate]')];
+          const first = nodes[0];
+          return {
+            count: nodes.length,
+            featured: nodes.filter((n) => n.getAttribute('data-featured') === 'true').length,
+            window: first ? Boolean(first.querySelector('.plate__window')) : false,
+            id: first ? (first.querySelector('.plate__id')?.textContent?.trim() || '') : '',
+            ticks: first ? first.querySelectorAll('.plate__tick').length : 0,
+            trace: first ? Boolean(first.querySelector('.plate__trace')) : false,
+          };
+        })()`,
+      );
+      check(
+        "CHECK 76e — product cards render as Specimen Plates (window, plate id, ticks, spectrum trace)",
+        plates.count >= 1 &&
+          plates.window === true &&
+          /^PRD-\d{3}$/.test(plates.id) &&
+          plates.ticks >= 1 &&
+          plates.trace === true,
+        JSON.stringify(plates),
+      );
+      check(
+        "CHECK 76f — exactly one wide 'featured' plate when there are 3+ products",
+        plates.count < 3 ? plates.featured === 0 : plates.featured === 1,
+        JSON.stringify({ count: plates.count, featured: plates.featured }),
       );
 
       // --- Push notifications admin page (Task J) --------------------------
@@ -2993,6 +3092,19 @@ async function main() {
         JSON.stringify(pushPage),
       );
 
+      // The service options arrive asynchronously; wait for the real load to
+      // settle before asserting (the assertion itself is unchanged — a genuine
+      // failure still leaves >1 unmet and fails the check below).
+      try {
+        await waitFor(
+          cdp,
+          `(document.getElementById("push-service")?.options.length ?? 0) > 1`,
+          8000,
+          "composer services",
+        );
+      } catch {
+        /* fall through — the check below reports the real count */
+      }
       const serviceOptions = await evaluate(cdp, `document.getElementById("push-service")?.options.length ?? 0`);
       check(
         "CHECK 114 — the composer can reference the real services (Task I data)",
@@ -3005,6 +3117,7 @@ async function main() {
         `(() => {
           const select = document.getElementById("push-service");
           const target = [...select.options].find((o) => o.value);
+          if (!target) return false; // no service loaded — do not throw the whole suite
           const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
           setter.call(select, target.value);
           select.dispatchEvent(new Event("change", { bubbles: true }));

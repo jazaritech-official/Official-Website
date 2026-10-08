@@ -1,11 +1,25 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState, type FormEvent } from "react";
+import Image from "next/image";
 import { api, ApiError } from "@/lib/api";
+import { useApiData } from "@/hooks/useApiData";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
-import { PlusIcon, TrashIcon, ChevronRightIcon, LightbulbIcon } from "@/components/icons";
-import type { Product, ProductTypeTemplate } from "@/types/api";
+import { Spinner } from "@/components/ui/Spinner";
+import { ProductCard } from "@/components/products/ProductCards";
+import { productLogoUrl } from "@/lib/productLogo";
+import {
+  PlusIcon,
+  TrashIcon,
+  ChevronRightIcon,
+  LightbulbIcon,
+  SearchIcon,
+  PaletteIcon,
+  CheckIcon,
+} from "@/components/icons";
+import type { AdminLogo, AdminLogosResponse, Product, ProductLogo, ProductTypeTemplate } from "@/types/api";
 
 interface ProductEditorProps {
   /** `null` creates a new product; an existing product edits it. */
@@ -22,19 +36,33 @@ const EMPTY_PRODUCT = {
   highlightPoints: [] as string[],
   isPublished: true,
   sortOrder: 0,
-  logo: "",
+  logoId: null as string | null,
 };
 
 const URL_RE = /^https?:\/\/[^\s]+$/i;
 
-type FormErrors = Partial<Record<"name" | "category" | "productUrl" | "highlightPoints", string>>;
+type FormErrors = Partial<Record<"name" | "category" | "productUrl" | "highlightPoints" | "logoId", string>>;
+
+/** Build the safe logo projection the public card renders from a chosen logo. */
+function toLogoRef(logo: AdminLogo | undefined, name: string): ProductLogo | null {
+  if (!logo) return null;
+  return {
+    id: logo._id,
+    url: logo.secureUrl,
+    displayName: logo.displayName || logo.name,
+    alt: logo.alt || name,
+    tone: logo.tone ?? null,
+    hasAlpha: logo.hasAlpha ?? null,
+    aspectRatio: logo.aspectRatio ?? null,
+  };
+}
 
 /**
  * Create / edit product dialog.
  *
  * Choosing a category pulls the matching ProductTypeTemplate from the backend
- * and suggests highlight points — always as *suggestions* the admin can edit,
- * reorder, clear or ignore.
+ * and suggests highlight points. Choosing a logo references an existing
+ * Homepage Logo (never copies it); “None” falls back to the monogram.
  */
 export function ProductEditor({ product, templates, onClose, onSaved }: ProductEditorProps) {
   const isEditing = product !== null;
@@ -55,9 +83,22 @@ export function ProductEditor({ product, templates, onClose, onSaved }: ProductE
   const [productUrl, setProductUrl] = useState(product?.productUrl ?? "");
   const [points, setPoints] = useState<string[]>(product?.highlightPoints ?? EMPTY_PRODUCT.highlightPoints);
   const [published, setPublished] = useState(product?.isPublished ?? true);
+  const [logoId, setLogoId] = useState<string | null>(product?.logoId ?? null);
+  const [logoQuery, setLogoQuery] = useState("");
   const [errors, setErrors] = useState<FormErrors>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  const logosState = useApiData<AdminLogosResponse>(() => api.admin.logos.list(), "admin-logos");
+  const logos = useMemo(() => logosState.data?.logos ?? [], [logosState.data]);
+  const selectedLogo = useMemo(() => logos.find((logo) => logo._id === logoId), [logos, logoId]);
+  const visibleLogos = useMemo(() => {
+    const needle = logoQuery.trim().toLowerCase();
+    if (!needle) return logos;
+    return logos.filter((logo) =>
+      `${logo.name} ${logo.displayName ?? ""}`.toLowerCase().includes(needle),
+    );
+  }, [logos, logoQuery]);
 
   const effectiveCategory = useCustomCategory ? customCategory.trim() : category;
   const activeTemplate = useMemo(
@@ -80,7 +121,6 @@ export function ProductEditor({ product, templates, onClose, onSaved }: ProductE
     setUseCustomCategory(false);
     setCategory(value);
 
-    // Suggest points when creating, or when none have been entered yet.
     const template = templates.find((entry) => entry.type === value);
     if (template && (!isEditing || points.filter((point) => point.trim()).length === 0)) {
       setPoints([...template.highlightPoints]);
@@ -143,7 +183,7 @@ export function ProductEditor({ product, templates, onClose, onSaved }: ProductE
       highlightPoints: points.map((point) => point.trim()).filter(Boolean),
       isPublished: published,
       sortOrder: product?.sortOrder ?? 0,
-      logo: product?.logo ?? "",
+      logoId,
     };
 
     try {
@@ -158,6 +198,7 @@ export function ProductEditor({ product, templates, onClose, onSaved }: ProductE
         if (cause.details.category) mapped.category = cause.details.category;
         if (cause.details.productUrl) mapped.productUrl = cause.details.productUrl;
         if (cause.details.highlightPoints) mapped.highlightPoints = cause.details.highlightPoints;
+        if (cause.details.logoId) mapped.logoId = cause.details.logoId;
         setErrors(mapped);
         if (Object.keys(mapped).length === 0) setSaveError(cause.message);
       } else {
@@ -166,6 +207,18 @@ export function ProductEditor({ product, templates, onClose, onSaved }: ProductE
     } finally {
       setSaving(false);
     }
+  };
+
+  const previewProduct: Product = {
+    _id: product?._id ?? "preview",
+    name: name.trim() || "Product name",
+    logo: toLogoRef(selectedLogo, name.trim() || "Product"),
+    logoId,
+    productUrl: productUrl.trim(),
+    category: effectiveCategory || "Category",
+    highlightPoints: points.map((point) => point.trim()).filter(Boolean),
+    isPublished: published,
+    sortOrder: product?.sortOrder ?? 0,
   };
 
   return (
@@ -183,7 +236,7 @@ export function ProductEditor({ product, templates, onClose, onSaved }: ProductE
           <p className="mt-1 text-sm text-muted">
             {isEditing
               ? "Update the presentation details shown on the public site."
-              : "Category templates suggest highlight points — edit them freely before saving."}
+              : "Pick a logo, choose a type for suggested highlights, then save."}
           </p>
         </div>
 
@@ -282,6 +335,109 @@ export function ProductEditor({ product, templates, onClose, onSaved }: ProductE
           </div>
         </div>
 
+        {/* Logo picker — references an existing Homepage Logo (never copies it). */}
+        <fieldset className="rounded-2xl border border-line p-4">
+          <legend className="px-1 text-sm font-semibold text-foreground">Logo</legend>
+          <p className="mb-3 text-xs text-muted">
+            Pick a logo from your Homepage Logos. It is referenced, not copied — updating the logo
+            updates every product that uses it. Choose “None” to show a monogram instead.
+          </p>
+
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[12rem] flex-1">
+              <SearchIcon size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+              <input
+                type="search"
+                className="field pl-9"
+                placeholder="Search logos by name…"
+                value={logoQuery}
+                onChange={(event) => setLogoQuery(event.target.value)}
+                aria-label="Search logos"
+                disabled={saving}
+              />
+            </div>
+            <Link
+              href="/admin/logos"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-accent hover:text-accent-hover"
+            >
+              <PaletteIcon size={14} />
+              Add a new logo
+            </Link>
+          </div>
+
+          {errors.logoId && <p className="error-text mb-2">{errors.logoId}</p>}
+
+          <div className="grid max-h-64 grid-cols-3 gap-2 overflow-y-auto pr-1 sm:grid-cols-4" role="radiogroup" aria-label="Product logo">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={logoId === null}
+              data-logo-choice="none"
+              onClick={() => {
+                setLogoId(null);
+                setErrors((current) => ({ ...current, logoId: undefined }));
+              }}
+              className={`flex flex-col items-center gap-1.5 rounded-xl border p-2 text-center transition-colors ${
+                logoId === null ? "border-accent bg-accent-soft" : "border-line hover:border-accent/50"
+              }`}
+            >
+              <span className="flex size-12 items-center justify-center rounded-lg border border-line bg-surface text-xs font-semibold text-muted">
+                Aa
+              </span>
+              <span className="flex items-center gap-1 text-[0.66rem] font-semibold">
+                {logoId === null && <CheckIcon size={11} className="text-accent" />}
+                None · monogram
+              </span>
+            </button>
+
+            {logosState.loading && <div className="col-span-3 flex items-center justify-center py-6 sm:col-span-4"><Spinner label="Loading logos" /></div>}
+
+            {!logosState.loading &&
+              visibleLogos.map((logo) => {
+                const selected = logo._id === logoId;
+                const url = productLogoUrl({ id: logo._id, url: logo.secureUrl, displayName: logo.name, alt: logo.alt, tone: logo.tone, hasAlpha: logo.hasAlpha ?? null, aspectRatio: logo.aspectRatio ?? null });
+                return (
+                  <button
+                    key={logo._id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    data-logo-choice={logo._id}
+                    onClick={() => {
+                      setLogoId(logo._id);
+                      setErrors((current) => ({ ...current, logoId: undefined }));
+                    }}
+                    className={`flex flex-col items-center gap-1.5 rounded-xl border p-2 text-center transition-colors ${
+                      selected ? "border-accent bg-accent-soft" : "border-line hover:border-accent/50"
+                    }`}
+                  >
+                    <span className="logo-checker flex size-12 items-center justify-center overflow-hidden rounded-lg border border-line">
+                      {url ? (
+                        <Image src={url} alt={logo.displayName || logo.name} width={48} height={48} sizes="48px" className="size-full object-contain p-1" />
+                      ) : (
+                        <span className="text-[0.62rem] text-muted">no image</span>
+                      )}
+                    </span>
+                    <span className="flex items-center gap-1 text-[0.66rem] font-semibold">
+                      {selected && <CheckIcon size={11} className="text-accent" />}
+                      <span className="max-w-[6rem] truncate">{logo.displayName || logo.name}</span>
+                    </span>
+                  </button>
+                );
+              })}
+          </div>
+
+          {!logosState.loading && logos.length === 0 && (
+            <p className="text-xs text-muted">
+              No Homepage Logos yet — products will use the monogram.{" "}
+              <Link href="/admin/logos" className="font-medium text-accent hover:text-accent-hover">
+                Upload one
+              </Link>
+              .
+            </p>
+          )}
+        </fieldset>
+
         {/* Highlight points */}
         <div>
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -358,9 +514,7 @@ export function ProductEditor({ product, templates, onClose, onSaved }: ProductE
         {/* Publish */}
         <div className="flex items-center justify-between gap-4 rounded-2xl border border-line bg-surface px-4 py-3">
           <div>
-            <p className="text-sm font-semibold text-foreground">
-              {published ? "Published" : "Draft"}
-            </p>
+            <p className="text-sm font-semibold text-foreground">{published ? "Published" : "Draft"}</p>
             <p className="text-xs text-muted">
               {published ? "Visible in the public product showcase." : "Hidden from the public site."}
             </p>
@@ -381,6 +535,17 @@ export function ProductEditor({ product, templates, onClose, onSaved }: ProductE
               }`}
             />
           </button>
+        </div>
+
+        {/* Live preview of the real public card */}
+        <div>
+          <p className="label mb-0">Live preview</p>
+          <p className="mb-2 text-xs text-muted">Exactly how this product will appear on the homepage.</p>
+          <div className="pointer-events-none origin-top scale-[0.92] sm:scale-100" aria-hidden="true">
+            <div className="max-w-sm">
+              <ProductCard product={previewProduct} />
+            </div>
+          </div>
         </div>
 
         <div className="flex justify-end gap-3 border-t border-line pt-5">

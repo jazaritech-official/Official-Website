@@ -32,10 +32,10 @@ interface NavItem {
 }
 
 /**
- * Plain-language navigation. ROUTES ARE UNCHANGED — only the labels, the
- * grouping and the browser titles were rewritten so a non-technical owner can
- * read the sidebar. `#product-presets` is an in-page anchor on the Products
- * route (it is a panel there, not a separate route), so no bookmark breaks.
+ * Plain-language navigation for a non-technical owner. "Product Presets" is a
+ * real standalone route (/admin/product-presets) so it gets its own title,
+ * active state, deep link and back/forward history. Older bookmarks that used
+ * the `/admin/products#product-presets` anchor are redirected by ProductsManager.
  */
 interface NavGroup {
   id: string;
@@ -52,7 +52,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/admin/logos", label: "Homepage Logos", icon: PaletteIcon },
       { href: "/admin/products", label: "Products", icon: LayersIcon },
-      { href: "/admin/products#product-presets", label: "Product Presets", icon: CopyIcon },
+      { href: "/admin/product-presets", label: "Product Presets", icon: CopyIcon },
     ],
   },
   {
@@ -82,6 +82,7 @@ const TITLES: Record<string, string> = {
   "/admin/dashboard": "Overview",
   "/admin/logos": "Homepage Logos",
   "/admin/products": "Products",
+  "/admin/product-presets": "Product Presets",
   "/admin/submissions": "Project Requests",
   "/admin/visitors": "Visitors",
   "/admin/notifications": "Notifications",
@@ -90,7 +91,7 @@ const TITLES: Record<string, string> = {
 };
 
 function isActive(pathname: string, href: string): boolean {
-  // In-page anchors (e.g. `#product-presets`) never take `aria-current`.
+  // In-page anchors (still used by nothing today) never take `aria-current`.
   return !href.includes("#") && pathname === href;
 }
 

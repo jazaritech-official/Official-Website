@@ -34,8 +34,8 @@ export class ApiError extends Error {
     return new ApiError(404, "NOT_FOUND", message);
   }
 
-  static conflict(message = "Resource already exists.") {
-    return new ApiError(409, "CONFLICT", message);
+  static conflict(message = "Resource already exists.", details) {
+    return new ApiError(409, "CONFLICT", message, details);
   }
 
   static serviceUnavailable(message = "This feature is not available right now.") {

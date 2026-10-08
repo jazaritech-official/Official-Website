@@ -28,7 +28,7 @@ export interface LoadedContent<T> {
 }
 
 /** localStorage key namespace. Bump the version when the shape changes. */
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const cacheKey = (resource: PublicResource) => `jazari:public-content:v${CACHE_VERSION}:${resource}`;
 
 /** A stale cache is worse than none — bound how long a fallback may live. */
@@ -70,12 +70,23 @@ function isValidLogo(value: unknown): value is PublicLogo {
 
 function isValidProduct(value: unknown): value is Product {
   if (!isRecord(value)) return false;
-  return (
-    isNonEmptyString(value._id) &&
-    isNonEmptyString(value.name) &&
-    typeof value.category === "string" &&
-    Array.isArray(value.highlightPoints)
-  );
+  if (
+    !(
+      isNonEmptyString(value._id) &&
+      isNonEmptyString(value.name) &&
+      typeof value.category === "string" &&
+      Array.isArray(value.highlightPoints)
+    )
+  ) {
+    return false;
+  }
+  // `logo` is `{ url } | null` (new) but a legacy plain URL string is still
+  // accepted and normalised by `lib/productLogo.ts` — a stale payload must
+  // never invalidate the whole products list.
+  if (value.logo !== undefined && value.logo !== null && typeof value.logo !== "string") {
+    if (!isRecord(value.logo) || !isNonEmptyString(value.logo.url)) return false;
+  }
+  return true;
 }
 
 function isValidService(value: unknown): value is Service {

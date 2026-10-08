@@ -116,14 +116,11 @@ export function TemplatesPanel({ templates, loading, error, onRetry, onChanged }
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="max-w-2xl">
-          <h2 className="text-lg font-semibold">Product Presets</h2>
-          <p className="mt-1 text-sm text-muted">
-            Default highlight points that pre-fill a new product of that type. When a category is
-            chosen while creating a product, these suggestions fill its highlights — they are never
-            forced on the final product, so you can edit them freely.
-          </p>
-        </div>
+        <p className="max-w-2xl text-sm text-muted">
+          Default highlight points that pre-fill a new product of that type. When a category is
+          chosen while creating a product, these suggestions fill its highlights — they are never
+          forced on the final product, so you can edit them freely.
+        </p>
         <Button size="sm" onClick={startCreate} iconLeft={<PlusIcon size={14} />}>
           New template
         </Button>

@@ -1,132 +1,159 @@
 "use client";
 
 import Image from "next/image";
+import { useState, type CSSProperties } from "react";
 import { api } from "@/lib/api";
 import { useApiData } from "@/hooks/useApiData";
-import { useTilt } from "@/hooks/useTilt";
 import { Reveal } from "@/components/motion/Reveal";
 import { SectionIndex } from "@/components/layout/SectionIndex";
 import { CircuitTrace } from "@/components/layout/CircuitTrace";
 import { Skeleton } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
-import {
-  ArrowUpRightIcon,
-  ChartIcon,
-  CheckIcon,
-  iconRegistry,
-  LayersIcon,
-  RefreshIcon,
-  type IconName,
-} from "@/components/icons";
-import { useState } from "react";
+import { productLogoAlt, productLogoUrl, isLogoReference } from "@/lib/productLogo";
+import { ArrowUpRightIcon, ChartIcon, LayersIcon, RefreshIcon } from "@/components/icons";
 import type { Product } from "@/types/api";
-
-const CATEGORY_ICON: Record<string, string> = {
-  "E-commerce": "cart",
-  SaaS: "cloud",
-  "AI Tool": "chip",
-  "Mobile App": "mobile",
-  Website: "website",
-  Marketing: "megaphone",
-  Design: "palette",
-  "ERP / Business Software": "database",
-};
 
 function monogram(name: string): string {
   const words = name.trim().split(/\s+/).slice(0, 2);
   return words.map((word) => word[0]?.toUpperCase() ?? "").join("");
 }
 
-function ProductCard({ product }: { product: Product }) {
-  const iconKey = (CATEGORY_ICON[product.category] ?? "layers") as IconName;
-  const CategoryIcon = iconRegistry[iconKey] ?? LayersIcon;
+/** Deterministic plate id, e.g. PRD-003 — derived from sortOrder, never invented data. */
+function plateId(product: Product, index: number): string {
+  const order = Number.isFinite(product.sortOrder) ? product.sortOrder : 0;
+  const base = order > 0 ? Math.round(order / 10) : index + 1;
+  return `PRD-${String(Math.max(1, base)).padStart(3, "0")}`;
+}
+
+/** Tone-aware backdrop: a dark logo sits on white, a light logo on navy. */
+function windowTone(product: Product): "light" | "dark" | "colorful" {
+  if (!isLogoReference(product.logo)) return "colorful";
+  const tone = product.logo.tone;
+  return tone === "light" || tone === "dark" || tone === "colorful" ? tone : "colorful";
+}
+
+/**
+ * Specimen Plate — a product mounted on a blueprint plate: a framed, gridded
+ * specimen window, a mono plate id, a spec list whose ticks draw in on reveal,
+ * one Growth-Green status node and a spectrum trace to the Visit action.
+ *
+ * Exported so the admin editor can render a live, real preview of the card.
+ */
+export function ProductCard({
+  product,
+  index = 0,
+  featured = false,
+}: {
+  product: Product;
+  index?: number;
+  featured?: boolean;
+}) {
+  const url = productLogoUrl(product.logo);
+  const alt = productLogoAlt(product.logo, product.name);
   const points = product.highlightPoints.slice(0, 4);
   const hasLink = Boolean(product.productUrl);
-  const tiltRef = useTilt<HTMLElement>();
   const [logoFailed, setLogoFailed] = useState(false);
 
   return (
-    <article ref={tiltRef} className="card card-hover card-ticks tilt-card group relative flex h-full flex-col p-6">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex size-14 items-center justify-center overflow-hidden rounded-2xl border border-line bg-surface">
-          {product.logo && !logoFailed ? (
+    <article
+      className={`plate group h-full ${featured ? "plate--featured" : ""}`}
+      data-product-plate=""
+      data-featured={featured ? "true" : undefined}
+    >
+      <div className="plate__body">
+        <div className="plate__head">
+          <span className="plate__id">{plateId(product, index)}</span>
+          <span className="plate__node" title="Available">
+            Live
+          </span>
+        </div>
+
+        <div className="plate__window" data-tone={windowTone(product)}>
+          <span aria-hidden="true" className="plate__corner plate__corner--tl" />
+          <span aria-hidden="true" className="plate__corner plate__corner--tr" />
+          <span aria-hidden="true" className="plate__corner plate__corner--bl" />
+          <span aria-hidden="true" className="plate__corner plate__corner--br" />
+
+          {url && !logoFailed ? (
             <Image
-              src={product.logo}
-              alt={`${product.name} logo`}
-              width={56}
-              height={56}
-              sizes="56px"
-              className="size-full object-contain p-1.5"
+              src={url}
+              alt={alt}
+              width={220}
+              height={140}
+              sizes="(max-width: 640px) 60vw, 220px"
+              className="plate__logo object-contain"
               onError={() => setLogoFailed(true)}
             />
           ) : (
             /* Designed monogram fallback — never a broken-image icon. */
-            <span className="text-gradient text-lg font-semibold">{monogram(product.name) || "JT"}</span>
+            <span className="plate__monogram text-gradient" aria-hidden="true">
+              {monogram(product.name) || "JT"}
+            </span>
           )}
         </div>
 
-        <span className="icon-interactive tilt-depth inline-flex rounded-xl bg-accent-soft p-2.5 text-accent">
-          <CategoryIcon size={18} animated="pulse" />
-        </span>
-      </div>
+        <h3 className="plate__title">{product.name}</h3>
+        <span className="plate__category">{product.category}</span>
 
-      <div className="mt-5 flex items-center gap-2">
-        <h3 className="text-lg font-semibold">{product.name}</h3>
-      </div>
-      <span className="mt-2 w-fit rounded-full border border-line bg-surface px-2.5 py-1 text-[0.7rem] font-semibold uppercase tracking-wider text-muted">
-        {product.category}
-      </span>
+        <ul className="plate__specs">
+          {points.map((point, pointIndex) => (
+            <li
+              key={point}
+              className="plate__spec"
+              style={{ "--spec-index": pointIndex } as CSSProperties}
+            >
+              <span aria-hidden="true" className="plate__tick" />
+              <span>{point}</span>
+            </li>
+          ))}
+        </ul>
 
-      <ul className="mt-5 flex flex-col gap-2.5">
-        {points.map((point) => (
-          <li key={point} className="flex items-start gap-2.5 text-sm text-muted">
-            <CheckIcon size={15} className="mt-0.5 shrink-0 text-growth" />
-            <span>{point}</span>
-          </li>
-        ))}
-      </ul>
-
-      <div className="mt-auto pt-6">
-        {hasLink ? (
-          <a
-            href={product.productUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent transition-colors hover:text-accent-hover"
-          >
-            Visit product
-            <ArrowUpRightIcon
-              size={15}
-              className="transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5"
-            />
-          </a>
-        ) : (
-          <span className="inline-flex items-center gap-1.5 text-sm font-medium text-muted">
-            <ChartIcon size={15} />
-            Case study coming soon
-          </span>
-        )}
+        <div className="plate__foot">
+          <span aria-hidden="true" className="plate__trace" />
+          {hasLink ? (
+            <a
+              href={product.productUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="plate__action"
+            >
+              Visit
+              <ArrowUpRightIcon
+                size={15}
+                className="transition-transform duration-300 group-hover:-translate-y-0.5"
+              />
+            </a>
+          ) : (
+            <span className="plate__action" style={{ color: "var(--muted)" }}>
+              <ChartIcon size={15} />
+              Case study coming soon
+            </span>
+          )}
+        </div>
       </div>
     </article>
   );
 }
 
-function CardSkeleton() {
+function PlateSkeleton() {
   return (
-    <div className="card flex h-full flex-col p-6" aria-hidden="true">
-      <div className="flex items-start justify-between">
-        <Skeleton className="size-14 rounded-2xl" />
-        <Skeleton className="size-10 rounded-xl" />
+    <div className="plate h-full" aria-hidden="true">
+      <div className="plate__body">
+        <div className="plate__head">
+          <Skeleton className="h-3 w-16 rounded" />
+          <Skeleton className="h-3 w-12 rounded" />
+        </div>
+        <Skeleton className="mt-4 aspect-[16/10] w-full rounded-lg" />
+        <Skeleton className="mt-4 h-5 w-2/3" />
+        <Skeleton className="mt-3 h-3 w-1/3 rounded" />
+        <div className="mt-5 flex flex-col gap-2.5">
+          <Skeleton className="h-3.5 w-full" />
+          <Skeleton className="h-3.5 w-5/6" />
+          <Skeleton className="h-3.5 w-4/6" />
+        </div>
+        <Skeleton className="mt-auto h-4 w-24 pt-6" />
       </div>
-      <Skeleton className="mt-5 h-5 w-2/3" />
-      <Skeleton className="mt-3 h-4 w-1/3 rounded-full" />
-      <div className="mt-5 flex flex-col gap-2.5">
-        <Skeleton className="h-3.5 w-full" />
-        <Skeleton className="h-3.5 w-5/6" />
-        <Skeleton className="h-3.5 w-4/6" />
-      </div>
-      <Skeleton className="mt-auto h-4 w-28 pt-6" />
     </div>
   );
 }
@@ -134,7 +161,7 @@ function CardSkeleton() {
 /**
  * Section 4 — curated product presentation cards. Data comes from
  * `GET /api/products`; the grid is intentionally a showcase, not a database
- * listing.
+ * listing. The first plate is wide ("featured") when there are three or more.
  */
 export function ProductCards() {
   const { data, loading, error, reload } = useApiData(() => api.products(), "products");
@@ -163,7 +190,7 @@ export function ProductCards() {
         {loading ? (
           <div className="mt-9 grid gap-5 sm:grid-cols-2 lg:grid-cols-3" aria-hidden="true">
             {Array.from({ length: 6 }, (_, index) => (
-              <CardSkeleton key={index} />
+              <PlateSkeleton key={index} />
             ))}
           </div>
         ) : error ? (
@@ -196,11 +223,18 @@ export function ProductCards() {
           </div>
         ) : (
           <div className="mt-9 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {products.map((product, index) => (
-              <Reveal key={product._id} delay={(index % 3) * 90} className="h-full">
-                <ProductCard product={product} />
-              </Reveal>
-            ))}
+            {products.map((product, index) => {
+              const featured = products.length >= 3 && index === 0;
+              return (
+                <Reveal
+                  key={product._id}
+                  delay={(index % 3) * 90}
+                  className={`h-full ${featured ? "sm:col-span-2 lg:col-span-2" : ""}`}
+                >
+                  <ProductCard product={product} index={index} featured={featured} />
+                </Reveal>
+              );
+            })}
           </div>
         )}
       </div>

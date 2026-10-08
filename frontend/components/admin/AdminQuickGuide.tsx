@@ -10,7 +10,7 @@ const SECTIONS: { name: string; href?: string; description: string }[] = [
   { name: "Products", href: "/admin/products", description: "The product cards shown on the homepage." },
   {
     name: "Product Presets",
-    href: "/admin/products#product-presets",
+    href: "/admin/product-presets",
     description: "Default highlight points that pre-fill a new product of that type.",
   },
   {
