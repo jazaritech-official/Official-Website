@@ -28,3 +28,6 @@ frontend/test-output/
 .DS_Store
 *.tsbuildinfo
 coverage/
+
+.vercel
+.env*
