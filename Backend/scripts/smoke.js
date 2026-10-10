@@ -166,7 +166,18 @@ if (seedCode !== 0) {
 const server = spawn(process.execPath, ["server.js"], {
   cwd: root,
   stdio: ["ignore", "pipe", "pipe"],
-  env: { ...process.env, MONGODB_URI: uri, PORT, NODE_ENV: "test" },
+  env: {
+    ...process.env,
+    MONGODB_URI: uri,
+    PORT,
+    NODE_ENV: "test",
+    // The intake suite deliberately exercises MORE submission variants than the
+    // production limiter (5) allows, so raise it for THIS test process only.
+    // Production behaviour is untouched — the limiter itself is unchanged.
+    // (the parent process has already loaded Backend/.env, so this is set
+    // explicitly rather than inherited)
+    SUBMISSION_RATE_LIMIT_MAX: "40",
+  },
 });
 server.stdout.on("data", (chunk) => process.stdout.write(`[api] ${chunk}`));
 server.stderr.on("data", (chunk) => process.stderr.write(`[api] ${chunk}`));
@@ -316,6 +327,10 @@ console.log("[smoke] 2. public content");
 
 console.log("[smoke] 3. submission intake");
 let referenceId = null;
+/** Reference of the submission that carries the optional Task L fields. */
+let extrasReferenceId = null;
+/** Reference of the submission whose message tries to look like a formula. */
+let csvGuardReferenceId = null;
 {
   const valid = await json("/submission", {
     method: "POST",
@@ -347,6 +362,79 @@ let referenceId = null;
     body: { name: "Bad Email", email: "not-an-email", service: "Website" },
   });
   check("invalid email → 400", badEmail.status === 400);
+
+  // --- Optional, backward-compatible intake fields (Task L) ---------------
+  const extras = await json("/submission", {
+    method: "POST",
+    body: {
+      name: "Extras Tester",
+      domain: "extras.example.com",
+      email: "extras@example.com",
+      service: "Website",
+      timeline: "1-3-months",
+      message: "We need a customer portal that talks to our ERP.",
+    },
+  });
+  extrasReferenceId = extras.body?.data?.referenceId;
+  check(
+    "optional message + timeline accepted → 201 + reference",
+    extras.status === 201 && /^JT-\d{8}-[A-Z0-9]{6}$/.test(extrasReferenceId || ""),
+    `got ${extras.status} ${extrasReferenceId}`,
+  );
+
+  const badTimeline = await json("/submission", {
+    method: "POST",
+    body: { name: "Bad Timeline", email: "timeline@example.com", service: "Website", timeline: "next-decade" },
+  });
+  check("unknown timeline value → 400", badTimeline.status === 400);
+  check(
+    "the 400 names the timeline field",
+    badTimeline.body?.error?.details?.timeline !== undefined,
+    JSON.stringify(badTimeline.body?.error?.details),
+  );
+
+  const longMessage = await json("/submission", {
+    method: "POST",
+    body: {
+      name: "Long Message",
+      email: "long@example.com",
+      service: "Website",
+      message: "x".repeat(1001),
+    },
+  });
+  check("message longer than 1000 characters → 400", longMessage.status === 400);
+
+  const exactMessage = await json("/submission", {
+    method: "POST",
+    body: {
+      name: "Exact Message",
+      email: "exact@example.com",
+      service: "Website",
+      message: "y".repeat(1000),
+    },
+  });
+  check("message of exactly 1000 characters is accepted → 201", exactMessage.status === 201);
+
+  // Formula-looking text must survive validation and be neutralised on export.
+  const csvGuard = await json("/submission", {
+    method: "POST",
+    body: {
+      name: "CSV Guard",
+      email: "csvguard@example.com",
+      service: "Website",
+      timeline: "asap",
+      message: '=HYPERLINK("http://evil.example")',
+    },
+  });
+  csvGuardReferenceId = csvGuard.body?.data?.referenceId;
+  check("message containing a formula is accepted → 201", csvGuard.status === 201);
+
+  // A legacy-shaped body (no new fields at all) must still be valid.
+  const legacy = await json("/submission", {
+    method: "POST",
+    body: { name: "Legacy Shape", email: "legacy@example.com", service: "Website" },
+  });
+  check("submission without the new fields still works (backward compatible) → 201", legacy.status === 201);
 }
 
 console.log("[smoke] 4. visitor tracking + dedupe");
@@ -679,11 +767,33 @@ console.log("[smoke] 7. submissions admin + CSV");
   const badStatus = await json(`/admin/submissions/${id}/status`, { method: "PATCH", cookie, body: { status: "Bogus" } });
   check("invalid status → 400", badStatus.status === 400);
 
+  // --- Optional Task L fields are stored, exposed and exportable ----------
+  const extras = list.body.data.find((s) => s.referenceId === extrasReferenceId);
+  check(
+    "admin list exposes the optional message + timeline",
+    extras?.message === "We need a customer portal that talks to our ERP." &&
+      extras?.timeline === "1-3-months",
+    JSON.stringify({ message: extras?.message, timeline: extras?.timeline }),
+  );
+  const legacyEntry = list.body.data.find((s) => s.name === "Legacy Shape");
+  check(
+    "a submission without the new fields reads back as empty strings (not undefined)",
+    legacyEntry?.message === "" && legacyEntry?.timeline === "",
+    JSON.stringify({ message: legacyEntry?.message, timeline: legacyEntry?.timeline }),
+  );
+
   const csvResponse = await fetch(`${BASE}/admin/submissions/export`, { headers: { Cookie: cookie } });
   const csv = await csvResponse.text();
   check("CSV export → text/csv", csvResponse.status === 200 && (csvResponse.headers.get("content-type") || "").includes("text/csv"));
   check("CSV has header row", csv.includes("Reference ID"));
   check("CSV contains submission", csv.includes(referenceId));
+  check("CSV exports the new Timeline column", csv.includes("Timeline"));
+  check("CSV exports the stored timeline value", csv.includes("1-3-months"));
+  const guardRow = csv.split(/\r?\n/).find((line) => line.includes(csvGuardReferenceId ?? "@@missing@@"));
+  check(
+    "CSV neutralises a formula in the message (leading apostrophe)",
+    Boolean(guardRow) && guardRow.includes("'=HYPERLINK") && !/(^|[,\r\n])=HYPERLINK/.test(guardRow || ""),
+  );
 
   const del = await json(`/admin/submissions/${id}`, { method: "DELETE", cookie });
   check("delete submission", del.status === 200);

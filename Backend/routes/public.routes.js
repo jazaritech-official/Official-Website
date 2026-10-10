@@ -35,6 +35,17 @@ const submissionRules = [
     .trim()
     .isLength({ min: 2, max: 120 })
     .withMessage("Please choose the service you need."),
+  // Optional, backward-compatible fields (Task L).
+  body("message")
+    .optional({ values: "falsy" })
+    .trim()
+    .isLength({ max: 1000 })
+    .withMessage("Message is too long (max 1000 characters)."),
+  body("timeline")
+    .optional({ values: "falsy" })
+    .trim()
+    .isIn(["asap", "1-3-months", "3-6-months", "exploring"])
+    .withMessage("Please choose a valid timeline."),
   // Business rule: at least one contact channel.
   body()
     .custom((value) => {

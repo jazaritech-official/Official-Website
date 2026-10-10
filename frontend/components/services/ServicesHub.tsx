@@ -8,12 +8,8 @@ import { Reveal } from "@/components/motion/Reveal";
 import { SectionIndex } from "@/components/layout/SectionIndex";
 import { CircuitTrace } from "@/components/layout/CircuitTrace";
 import { iconRegistry, InfoIcon, type IconName } from "@/components/icons";
-import {
-  LOGO_PIECES,
-  LOGO_VIEWBOX,
-  logoGradientId,
-  type LogoPieceId,
-} from "@/components/services/logoGeometry";
+import { LogoMarkSvg } from "@/components/brand/LogoMarkSvg";
+import { type LogoPieceId } from "@/components/services/logoGeometry";
 import {
   HUB_DESIGN,
   HUB_GRID_UNIT,
@@ -262,7 +258,6 @@ export function ServicesHub() {
                 const lit = active === card.piece;
                 const pts = HUB_PIECES[card.piece].wire;
                 const start = pts[0];
-                const end = pts[pts.length - 1];
                 const dir = index % 2 === 1 ? "reverse" : "forward";
                 return (
                   <g key={`${card.piece}-wire`} data-hub-wire-group={card.piece}>
@@ -284,14 +279,16 @@ export function ServicesHub() {
                       vectorEffect="non-scaling-stroke"
                       style={{ "--hub-wire-phase": `${(-index * 0.7).toFixed(2)}s` } as React.CSSProperties}
                     />
-                    {/* Ripple rings at the socket and the anchor node. */}
-                    <circle
-                      className="hub-wire__ripple"
-                      cx={end.x}
-                      cy={end.y}
-                      r="3.4"
-                      style={{ "--hub-wire-phase": `${(-index * 0.9).toFixed(2)}s` } as React.CSSProperties}
-                    />
+                    {/*
+                     * ONE ripple ring, at the anchor node only.
+                     *
+                     * There used to be a second ring at the socket, drawn on top
+                     * of the CSS `.hub-card__socket`. That is exactly the
+                     * "doubled circle" the owner rejected at the E-commerce
+                     * socket: the SVG ring pulsed around the HTML socket, so the
+                     * endpoint read as two concentric circles. The socket is now
+                     * drawn exactly once — by the card, in the DOM.
+                     */}
                     <circle
                       className="hub-wire__ripple"
                       cx={start.x}
@@ -346,11 +343,8 @@ export function ServicesHub() {
                 <span className="sr-only">
                   {exploded ? "Collapse the Jazari services logo" : "Explode the Jazari services logo"}
                 </span>
-                <svg
+                <LogoMarkSvg
                   className="hub__logo"
-                  viewBox={LOGO_VIEWBOX}
-                  aria-hidden="true"
-                  focusable="false"
                   /*
                    * Highlight is cleared when the pointer leaves the whole mark,
                    * not when it leaves an individual piece: exploding moves every
@@ -358,37 +352,15 @@ export function ServicesHub() {
                    * instant the animation starts and the card/trace highlight
                    * would blink off while the pointer is still on the logo.
                    */
-                  onPointerLeave={() => setActive(null)}
-                >
-                  <defs>
-                    {LOGO_PIECES.map((piece) => (
-                      <linearGradient
-                        key={piece.id}
-                        id={logoGradientId(piece.id)}
-                        gradientUnits="userSpaceOnUse"
-                        x1={piece.gradient.x1}
-                        y1={piece.gradient.y1}
-                        x2={piece.gradient.x2}
-                        y2={piece.gradient.y2}
-                      >
-                        {piece.gradient.stops.map((stop, index) => (
-                          <stop key={index} offset={stop.offset} stopColor={stop.color} />
-                        ))}
-                      </linearGradient>
-                    ))}
-                  </defs>
-                  {LOGO_PIECES.map((piece, index) => (
-                    <g
-                      key={piece.id}
-                      data-logo-piece={piece.id}
-                      className={active === piece.id ? "is-lit" : undefined}
-                      style={pieceVars(piece.id, index)}
-                      onPointerEnter={() => setActive(piece.id)}
-                    >
-                      <path d={piece.d} fill={`url(#${logoGradientId(piece.id)})`} />
-                    </g>
-                  ))}
-                </svg>
+                  svgProps={{
+                    "aria-hidden": true,
+                    focusable: false,
+                    onPointerLeave: () => setActive(null),
+                  }}
+                  pieceClassName={(piece) => (active === piece ? "is-lit" : undefined)}
+                  pieceStyle={(piece, index) => pieceVars(piece, index)}
+                  pieceProps={(piece) => ({ onPointerEnter: () => setActive(piece) })}
+                />
               </button>
             </div>
 

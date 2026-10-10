@@ -525,3 +525,29 @@ Architecture + tuning: [`PROJECT_NOTES.md`](./PROJECT_NOTES.md) §37 · deploy s
   ("featured") at three or more products; mobile stays one equal-quality column.
 - **Brand spectrum tokens** `--spectrum-1..5` (navy → blue → sky → teal-blue → green), light and dark, live in
   `app/globals.css` — graphics only (lines, ticks, traces), never text.
+### Hero SVG v2, the Services Index and the rebuilt project form (Task L)
+
+- **The hero is inline SVG, not WebGL.** `three` and `@types/three` are gone from `package.json` and
+  `components/three/*` is deleted; the mark is the same traced geometry the Services Hub uses
+  (`components/brand/LogoMarkSvg.tsx`, generated from the owner's artwork by `npm run trace:logo`).
+  `components/sections/HeroMark.tsx` renders it assembled at rest, explodes the five real pieces on
+  hover / keyboard focus / tap and grows up to ten service tooltips (title, backend `shortDescription`
+  fallback, up to two highlights) with leader lines — all from `GET /api/services`. Below 1024 px those
+  tooltips become a two-column list under the mark. DevTools hooks: `data-hero="svg-v2"`,
+  `data-hero-state`, `data-tooltips`.
+- **One static Services Index.** `components/services/ServicesIndex.tsx` replaces the Discipline Atlas:
+  all 14 disciplines on one page, grouped by the backend `category`, grouped headings, no hover
+  affordances and no per-row links. Entries carry `id="service-{slug}"`, so Hub EXPLORE links and hero
+  tooltips jump straight to a discipline (with a calm `:target` highlight under the navbar).
+- **Rebuilt Start-Your-Project form.** Three labelled steps (about you → how to reach you → what you
+  need) plus a Review step with per-section "Edit" links. Phone **or** email is enough and the rule is
+  stated up front; the service chips come from the backend; error summary, field-level messages,
+  distinct copy for 400/429/5xx/offline, double-submit guard, `sessionStorage`-only draft cleared on
+  success, and a success modal with the reference ID, a 3-step "what happens next" and "Send another".
+- **Backend:** `POST /api/submission` accepts optional `message` (≤ 1000) and `timeline`
+  (`asap | 1-3-months | 3-6-months | exploring`). Both are validated, stored, shown in the admin
+  detail/list and included in the CSV export (the formula-injection guard still applies); older
+  submissions keep working.
+- **Verification:** `node scripts/verify-three.mjs` (a production build on `:3001` + the in-memory
+  backend) covers all of it; `NO_WEBGL=1` asserts the hero is identical with WebGL disabled, and
+  `npm run verify:bff` checks the `/api/auth/*` BFF cookie handling. See `PROJECT_NOTES.md` §39–§45.

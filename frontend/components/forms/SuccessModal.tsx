@@ -3,11 +3,18 @@
 import { useMemo, useState } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
+import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { CheckIcon, CopyIcon } from "@/components/icons";
 
 interface SuccessModalProps {
   open: boolean;
   referenceId: string;
+  /** The service the visitor chose — shown back to them as confirmation. */
+  service?: string;
+  /** Primary action — returns the visitor to the page they came from. */
+  onBackHome: () => void;
+  /** Secondary action — clears the form and starts a fresh brief. */
+  onSendAnother: () => void;
   onClose: () => void;
 }
 
@@ -27,15 +34,30 @@ const PARTICLES = [
   { x: 46, y: -52, r: -160, color: "var(--accent)", delay: 110 },
 ] as const;
 
+/** The three fixed post-submission stages. Copy only — no invented promises. */
+const NEXT_STEPS = [
+  { title: "Received", copy: "Your brief is stored with the reference ID above." },
+  { title: "We review", copy: "An engineer reads it and scopes the work." },
+  { title: "We contact you", copy: "You get a reply with scope, timeline and next steps." },
+] as const;
+
 /**
  * Premium success dialog: stroke-drawn check, brand-only confetti, the
- * backend-generated reference ID (with copy) and an accessible close flow
- * (focus trap + Escape are provided by Modal).
+ * backend-generated reference ID (with copy), the chosen service, a three-step
+ * "what happens next" timeline and two explicit exits. Confetti is suppressed
+ * entirely under `prefers-reduced-motion`. Focus trap + Escape come from Modal.
  */
-export function SuccessModal({ open, referenceId, onClose }: SuccessModalProps) {
+export function SuccessModal({
+  open,
+  referenceId,
+  service,
+  onBackHome,
+  onSendAnother,
+  onClose,
+}: SuccessModalProps) {
   const [copied, setCopied] = useState(false);
-
-  const particles = useMemo(() => (open ? PARTICLES : []), [open]);
+  const reduced = useReducedMotion();
+  const particles = useMemo(() => (open && !reduced ? PARTICLES : []), [open, reduced]);
 
   const copyReference = async () => {
     try {
@@ -51,7 +73,6 @@ export function SuccessModal({ open, referenceId, onClose }: SuccessModalProps) 
     <Modal open={open} onClose={onClose} label="Request received" showClose>
       <div className="flex flex-col items-center gap-5 text-center">
         <div className="relative flex size-20 items-center justify-center">
-          {/* expanding ring */}
           <span
             aria-hidden="true"
             className="absolute inset-0 rounded-full border-2 border-growth"
@@ -61,7 +82,6 @@ export function SuccessModal({ open, referenceId, onClose }: SuccessModalProps) 
             <CheckIcon size={30} animated="draw" />
           </span>
 
-          {/* brand-palette confetti */}
           <span aria-hidden="true" className="absolute inset-0">
             {particles.map((particle, index) => (
               <span
@@ -91,7 +111,7 @@ export function SuccessModal({ open, referenceId, onClose }: SuccessModalProps) 
           </p>
         </div>
 
-        <div className="flex w-full max-w-xs flex-col items-center gap-2 rounded-2xl border border-line bg-surface px-4 py-3">
+        <div className="flex w-full max-w-sm flex-col items-center gap-2 rounded-2xl border border-line bg-surface px-4 py-3">
           <span className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-muted">
             Reference ID
           </span>
@@ -109,14 +129,37 @@ export function SuccessModal({ open, referenceId, onClose }: SuccessModalProps) 
           <span className="sr-only" role="status">
             {copied ? "Reference ID copied to clipboard" : ""}
           </span>
-          {copied ? (
-            <span className="text-[0.7rem] text-growth-ink">Copied to clipboard</span>
-          ) : null}
+          {copied ? <span className="text-[0.7rem] text-growth-ink">Copied to clipboard</span> : null}
         </div>
 
-        <Button onClick={onClose} className="w-full sm:w-auto">
-          Done
-        </Button>
+        {service ? (
+          <p className="text-xs text-muted">
+            Requested service: <span className="font-semibold text-foreground">{service}</span>
+          </p>
+        ) : null}
+
+        <ol className="success-next-steps w-full max-w-sm">
+          {NEXT_STEPS.map((stage, index) => (
+            <li key={stage.title} className="success-next-step">
+              <span className="success-next-step__num" aria-hidden="true">
+                {String(index + 1).padStart(2, "0")}
+              </span>
+              <span>
+                <span className="success-next-step__title">{stage.title}</span>
+                <span className="success-next-step__copy">{stage.copy}</span>
+              </span>
+            </li>
+          ))}
+        </ol>
+
+        <div className="flex w-full flex-col gap-2 sm:flex-row sm:justify-center">
+          <Button onClick={onBackHome} className="w-full sm:w-auto">
+            Back to home
+          </Button>
+          <Button variant="outline" onClick={onSendAnother} className="w-full sm:w-auto">
+            Send another
+          </Button>
+        </div>
       </div>
     </Modal>
   );

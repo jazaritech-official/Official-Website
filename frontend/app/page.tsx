@@ -3,7 +3,7 @@ import { Hero } from "@/components/sections/Hero";
 import { LogoMarquee } from "@/components/products/LogoMarquee";
 import { ProductCards } from "@/components/products/ProductCards";
 import { ServicesHub } from "@/components/services/ServicesHub";
-import { DisciplineAtlas } from "@/components/services/DisciplineAtlas";
+import { ServicesIndex } from "@/components/services/ServicesIndex";
 import { StartProjectForm } from "@/components/forms/StartProjectForm";
 import { BrandStatement } from "@/components/sections/BrandStatement";
 import { Footer } from "@/components/layout/Footer";
@@ -24,7 +24,7 @@ export default function Home() {
         <LogoMarquee />
         <ProductCards />
         <ServicesHub />
-        <DisciplineAtlas />
+        <ServicesIndex />
         <StartProjectForm />
         <BrandStatement />
       </main>

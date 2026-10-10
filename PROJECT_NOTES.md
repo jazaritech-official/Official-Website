@@ -651,6 +651,14 @@ This is an intentional no-op, not an omission. Revisit only with real Lighthouse
 
 ## 26. 3D / Three.js Architecture
 
+> **SUPERSEDED (Task L, 2026-10-10) — DO NOT REBUILD THIS.** The owner asked for the WebGL hero,
+> its cubes/shards/chip-box/particles/orbit rings and the debug hooks to be removed. Every file below
+> (`frontend/components/three/*`), the `three` + `@types/three` dependencies and the WebGL CSS were
+> deleted; the hero is now inline SVG (`components/sections/HeroMark.tsx` over the shared
+> `components/brand/LogoMarkSvg.tsx`). This section is kept as history only — see **§42** for what
+> replaced it, **§41** for the retired-check ledger, and `README.md`/`DEPLOYMENT.md` for the current
+> stack.
+
 The public homepage hero carries a procedural WebGL layer as **progressive enhancement** on top of
 the existing static fallback. React only manages lifecycle; every Three.js concern lives in
 `frontend/components/three/`.
@@ -2695,3 +2703,241 @@ render as Specimen Plates (window, `PRD-\d{3}` plate id, ticks, spectrum trace);
 3. Assign logos to products in **Admin → Products → edit → Logo** (the picker references the Homepage Logos).
 4. Replace the placeholder logos (e.g. "Showcase Fixture A/B") with real ones; remove stray test logos.
 5. Rotate any secret that was ever pasted into a chat or committed.
+---
+
+## 39. Services — the Discipline Index (Task L, 2026-10-10)
+
+**Owner requirement:** every service visible together on ONE page; services have no pages of their own,
+so nothing about an entry may look clickable.
+
+**What was deleted.** `components/services/DisciplineAtlas.tsx` (and its CSS block) is gone. The Atlas
+needed a scrollable rail, showed one discipline at a time on a mostly-empty stage, expanded rows into
+clipped blobs and used hover/pointer affordances for content with no destination. Also deleted with it:
+the water-fill `article.service-card` styling and `useTilt` in Services.
+
+**What replaced it.** `components/services/ServicesIndex.tsx` — a static, blueprint-style schedule
+(`section#services`, `data-services-index`) that renders **one ordered list** (`ol.services-index__list`):
+
+- **Grouping** comes from the backend `category` (`engineering | growth | design | security | operations`)
+  in a fixed order; services without a category render in one trailing "More disciplines" bucket. No
+  group name is ever invented, and with no categories at all the list is simply ungrouped.
+- **Each entry** (`li[data-service-entry="{slug}"]`) is: mono number, icon, title, `shortDescription`
+  (via `restingLine()` — the same word-boundary fallback the hero uses) and up to three highlight tags.
+- **Zero interactivity styling:** no `cursor: pointer`, no hover/focus transform or background change,
+  no tilt, no tabs, no expanding rows, no per-row CTA. The only control is the section-level
+  "Start a project" link. CHECK S3 and CHECK S8 assert this against computed styles.
+- **Semantics:** `ol` + `li`, one `h3`-level heading per group (`[data-service-group]`), no ARIA widget
+  roles. Reduced motion shows the schedule instantly (the one-time reveal is `opacity`/`translateY`
+  only, and it is disabled under `prefers-reduced-motion`).
+- **Deep links:** `id="service-{slug}"` with `scroll-margin-top: 6rem` (96 px, i.e. above the navbar)
+  and a calm `:target` highlight (accent-soft background + a 2 px inset accent rule — no pointer
+  affordance). The Hub's EXPLORE links and the hero tooltips point here.
+- **Designed states stay:** loading skeletons, EMPTY (`data-services-state="empty"`, "No services
+  published yet") and ERROR with Retry (`EmptyState` + `EmptyState`-style icon) are unchanged.
+
+**One screen, not one click.** The owner also asked for the whole section within ~1.15× the 1440×900
+viewport. Measured 1265 px on the first pass, which failed CHECK S5; the schedule was tightened
+(section padding 80→56 px, group-band margins 1.35rem→0.75rem, entry padding 0.7rem→0.45rem, entry
+type −0.04rem, description line-height 1.4→1.32, CTA margins) with **no clamping and no ellipsis**
+(CHECK S2 still passes) → **1017 px**, inside the budget. At 1366×768 the same section is still taller
+than 1.15×768 (≈883 px) — the owner's figure is only reachable for the schedule alone, so this is
+reported, not faked.
+
+## 40. Start-Your-Project form v2 (Task L, 2026-10-10)
+
+`components/forms/StartProjectForm.tsx` + `forms/SuccessModal.tsx` were rebuilt around a **3 input steps
+plus Review** model:
+
+1. **About you** — full name (required, ≥ 2 chars) + company/domain (optional).
+2. **How to reach you** — phone and/or email, and the rule is stated on the form *before* the inputs.
+3. **What you need** — service (chips from `GET /api/services`), timeline (`asap | 1-3-months |
+   3-6-months | exploring`) and project details (≤ 1000 chars, counted).
+4. **Review** — every answer with an "Edit" link per section, then send.
+
+**Why three steps, not four.** The previous flow spent a whole screen on a single optional field
+("Your work"), which measured as a near-empty step. Moving it in with the name cut one screen without
+removing a single question, and the Review step makes the trade-off safe: nothing is sent before the
+user has seen it in one place.
+
+**Behaviour:** visible labels (never placeholder-only), ≥ 48 px targets, correct `type`/`inputmode`/
+`autocomplete`, helper text and counters; domain input accepts `example.com` or a full URL and is
+normalised before submit; inline validation on blur and on submit; an error summary at the top
+(`role="alert"`, focus moved to it, field anchors) with specific, non-blaming messages; backend `400`
+field details are attached to the right inputs; `429` and `5xx`/network failures get distinct friendly
+copy and keep the user's answers; a double-submit guard; the draft lives in **`sessionStorage` only**
+(cleared on success, never `localStorage`); the honeypot stays invisible and untouched; the privacy line
+is visible. The success modal shows the server reference ID with a copy button, the chosen service, a
+"what happens next" 3-step timeline, "Back to home" + "Send another" (clean reset), a focus trap/Escape,
+and no confetti under reduced motion.
+
+**Backend (verified, not invented):** `Submission.message` (≤ 1000) and `Submission.timeline` (enum) are
+optional and validated in the model + express-validator, accepted by `POST /api/submission`, exposed in
+the admin list/detail and the CSV export (the formula-injection guard still runs); legacy submissions
+remain valid. Frontend types live in `types/api.ts`.
+
+## 41. Retired-check ledger (Task L)
+
+Every check below was **retired, never weakened**: its subject was deleted at the owner's request, so the
+assertion could no longer be true. Each row names the check(s), the reason and the check(s) that carry
+the intent forward. Everything else in `verify-three.mjs` keeps passing unchanged.
+
+| Retired | Subject that was deleted | Replacement(s) |
+|---|---|---|
+| CHECK 82–90 + the `data-explode` state machine | WebGL hero shatter (`shatter.ts`, `shatterState.ts`, `HeroScene.tsx`) | L60–L64 (hover/focus/tap explode, five pieces move, tooltips, aria), L68–L70 (pointer leave, focus, Escape), L94 (the retired surface is gone), L50/L51 (chunk scan) |
+| the "canvas count" / "three chunk loaded" / WebGL-resource assertions of the old hero suite | the three.js scene and its lazily-loaded chunk | L2 / L78 (zero canvases on `/` and on mobile), L79 (zero WebGL resources on `/admin`), L50 (no chunk ships a WebGL renderer), S19/S20 |
+| Fracture-fragment budget, stage machine, neon-edge pixel sampling, 639 KB three-chunk budget | `fracture.ts`, `animation.ts`, `materials.ts` | L58/L59 (long tasks + dropped frames during a real explosion), S21 (home initial JS ≤ 900 KB raw), the bundle deltas in §45 |
+| CHECK 100–115 | Discipline Atlas rail/stage/tour/constellation/liquid band/row toggle/Escape/category attributes | S1–S11 (every discipline visible, no affordances, grouping, deep link, mobile), S18 (Atlas surface gone, index present) |
+| "three atlas rows" / "five atlas rows" halves of CHECK 13 & 14 | Atlas rows | both checks now assert `hubLabels === indexEntries` and `atlasRows === 0` |
+| "services cards — water-fill" suite | `article.service-card` | S3/S8 (computed styles prove no affordance) |
+| Hero "graceful WebGL fallback" checks | the WebGL hero | `NO_WEBGL=1` now asserts **identity**: with WebGL disabled the hero must be byte-for-byte the same SVG hero |
+
+## 42. Hero — inline-SVG mark v2 (Task L, 2026-10-10)
+
+`components/sections/HeroMark.tsx` renders the owner's artwork as **inline SVG**, reusing the same
+`components/brand/LogoMarkSvg.tsx` (traced geometry from `components/services/logoGeometry.ts`) as the
+Hub — one mark, one geometry source, no second renderer. `Hero.tsx` composes it; there is no canvas, no
+`three`, no rAF loop.
+
+- **Rest state:** assembled, real artwork gradients, a ≤ 6 s transform-only idle float on the trigger, a
+  one-time ≤ 700 ms entrance (opacity + a small translate, staggered ~45 ms), a static pre-blurred glow
+  duplicate whose **opacity** animates (never the filter), plus a hairline frame. Nothing rotates.
+- **Interaction:** fine-pointer hover, keyboard focus on the mark's `<button>` and (coarse pointers) tap
+  toggle the explosion of the five real pieces along their own outward vectors (≤ 8 % travel, ≤ 3°
+  rotation, 40–60 ms stagger, 450–600 ms, slight overshoot); Escape reassembles; pointer leave and blur
+  reassemble. Optional idle auto-open once after ~3 s of no input when ≥ 50 % in view, ~10 s auto-close,
+  any input cancels, never loops.
+- **Tooltips:** up to 10 cards built **only** from `GET /api/services` (mono index, title,
+  `restingLine(service, 78)` fallback, ≤ 2 highlight tags, a Growth-Green status dot), positioned from
+  one design-space coordinate system (`components/sections/heroLayout.ts`) with thin leader lines to
+  anchor nodes on the pieces. Text is **always in the DOM** (opacity-hidden when assembled, never
+  `display: none`); hovering a card lights its piece and trace and vice-versa.
+- **Mobile (< 1024):** the same list becomes a two-column list directly under the mark, targets ≥ 44 px,
+  no hover needed, zero horizontal overflow.
+- **Hooks for the owner:** `data-hero="svg-v2"`, `data-hero-state="assembled|exploding|exploded|reassembling"`,
+  `data-tooltips="<n>"`.
+- **Performance (measured in the harness, this machine):** first transform change 13 ms after the
+  pointer event (budget 50 ms), zero long tasks during the explosion, 0–4 dropped frames in a sampled
+  1 s window against a 2–4 dropped-frame idle baseline (budget ≤ 3 — see §45, this single check is
+  machine-load sensitive and is reported as measured, not as a pass).
+
+**Silhouette fidelity, and why the check was rewritten.** CHECK L71/L72 compare the assembled SVG with
+the real `Main Logo.png` (IoU ≥ 0.95; the Hub's clone-render check measures 0.9984). The first version
+took one page screenshot and masked it by colour ("saturated or dark") — which also matches the
+blueprint grid, the blue traces, focus rings and a partially exploded mark, so the crop box grew to the
+whole clip and the IoU collapsed to **0.25**. The measurement is now:
+
+1. the page is put back into one known state (light theme, top of page, blurred, tooltips hidden,
+   assembled) before the two captures;
+2. the clip is captured **twice** — with the mark's SVG painted and with it hidden — and the silhouette
+   is the pixel difference, so everything that is not the mark cancels out;
+3. measurement-only styles (never shipped) stop the entrance/float and pin the resting transform, and a
+   `wheel` event defers the hero's idle auto-open so it cannot fire between the passes;
+4. both masks are cropped to their own bounding box and scaled to 384², exactly like the Hub check.
+
+L71 additionally requires the armed sample to be `assembled` with zero lit tooltips; L72 requires the
+five real pieces to be back at `transform: none` (shadowing nothing: the same five transforms are
+sampled again after the second pass to prove the mark did not move mid-capture), IoU ≥ 0.95 vs the
+reference **and** ≥ 0.95 against the first capture. Measured: **0.9686** and **0.9686 / round-trip 1.0**.
+The check was proven able to fail (a mid-explosion capture scores 0.32/0.53).
+
+## 43. Hub wiring — what was kept, what was restored (Task L)
+
+The owner rejected three layout defects (card 04 bottom spacing, a doubled socket circle at connector
+endpoints, the logo overlapping a card) but never retired the Task I wiring. The layout fix that
+produced the "no packets" report had removed the packet layer and the per-connector flow overlay. The
+current `ServicesHub.tsx` keeps the layout corrections **and** carries the full wiring again:
+
+- a faint base hairline per connector (`data-hub-connector-base`, never moves);
+- a flowing gradient overlay per connector (`data-hub-connector`, `.hub-wire--flow`, one
+  `userSpaceOnUse` gradient sampled from the artwork) whose direction alternates and which speeds up
+  (1.5 s) only for the hovered/focused card's own connector;
+- **two travelling packets per connector** (`data-hub-packet`, `.hub-wire__packet`, `animateMotion`
+  along the real path, 10 total, Growth-Green heads) and **one** ripple ring per connector at the anchor
+  node — the socket is drawn exactly once, by the card, so no endpoint reads as two concentric circles;
+- `.is-inview` + tab-visibility gating (SMIL paused via `pauseAnimations()`), reduced motion = static
+  gradient lines and no packets.
+
+**Harness bug found while verifying it:** the packet check timed out because `gotoHub()` only reloaded
+the current URL, and the suites that ran before it (admin information architecture) had left the browser
+on an `/admin` route. `gotoHub()` now navigates to `/` first. The packet probe's `.catch(() => null)`
+masking was removed, per the rule that a missing feature must fail its check.
+
+## 44. Harness notes and the two gotchas that cost real time (Task L)
+
+- `verify-three.mjs` is the single harness (suites `[0]`–`[25]`, with the retired suites marked in
+  place). Screenshots land in `frontend/test-output/screenshots/`; the run totals are in §45.
+- **DATABASE SAFETY.** `Backend/.env` sets `NODE_ENV=production` and points at a real database, so
+  `node server.js` / `npm start` / `npm run dev` must never be run locally. The only allowed local
+  backend is the in-memory one:
+  `cd Backend && set NODE_ENV=development && set RATE_LIMIT_MAX=5000 && npm run dev:mem -- --seed`.
+  Sanity signature before any harness run: `GET /api/products` → the 4 sample products,
+  `GET /api/services` → 14 with `shortDescription` + `category`. One product named
+  "Irhas'Inn Ecommerce Store", or services without `shortDescription`, means a REAL database — stop.
+- **STALE BUILD.** Never `npm run build` while `next start` is running: the running server keeps
+  serving chunk hashes that no longer exist, which turns into 500s and fake harness failures. Kill the
+  3001/5000 listeners, build, start, then `curl` the home page and confirm a chunk URL returns 200.
+- **BFF proxy is runtime config.** `BACKEND_ORIGIN=http://localhost:5000 npx next start -p 3001` makes
+  the `/api/auth/*` route handlers work (CHECK 124–128, `npm run verify:bff`); without it they answer
+  503 and the browser-only checks cannot pass. There is no `/api/push/*` route — the harness asks the
+  API origin directly for the VAPID key (asking the page's `/api` path logged a 404 and failed the
+  console-clean assertion).
+- **Harness measurement fixes in this pass** (all add-only, none weakening): the L71/L72 rewrite above;
+  S10 compares scroll-margin numerically (96 px == 6rem) and requires a non-transparent target
+  background; S18 navigates back to `/` and waits for the loaded state before counting the index; the
+  mobile hero suite waits for the tooltip list instead of sleeping; CHECK 117 reads the push key from
+  the API origin. `HARNESS_ONLY=<suite>` (rule "add a suite filter") was **not** added: it needs every
+  suite wrapped in a guard and the budget was better spent on the two real regressions.
+## 45. Task L verification — actual numbers (2026-10-10)
+
+All frontend numbers come from a production build (`npm run build` → `BACKEND_ORIGIN=http://localhost:5000
+npx next start -p 3001`) against the **in-memory** backend
+(`NODE_ENV=development RATE_LIMIT_MAX=5000 npm run dev:mem -- --seed`, signature checked: 4 sample
+products, 14 services with `shortDescription` + `category`, 5 flagged `hubSlot`).
+
+| Gate | Result | Baseline (§38) |
+|---|---|---|
+| `npm run lint` | **clean** (0 errors, 0 warnings) | 0 |
+| `npx tsc --noEmit` | **0 errors** | 0 |
+| `npm run build` | **OK** — 22 routes incl. `/api/auth/{login,logout,me,password}`, `/api/diag-session` | 18 routes |
+| `npm run audit:contrast` | **57/57 AA** (6 new hero/form/index pairs) | 51/51 |
+| `npm run check:secrets` | **clean** (7 files) | clean |
+| `node scripts/verify-three.mjs` (full, production build) | **277/277** (EXIT 0) | 271/271 |
+| `NO_WEBGL=1 node scripts/verify-three.mjs` | **10/10** | 7/7 (old fallback intent) |
+| `npm run verify:bff` | **21/21** | not run |
+| Backend `npm run lint` | clean | clean |
+| Backend `npm run build` | 54 files verified | 54 |
+| Backend `NODE_ENV=test npm run smoke` | **234/234** | 222/222 |
+
+Retired-check ledger: **§41**. Two runs before the last one measured the same build with the L72 assertion
+bug (`piecesBackAtRest` sampled the decorative glow duplicate) and a cold-start dropped-frame outlier
+(4/47 vs ≤ 3); the final run measures dropped=1/63 against an idle baseline of 1/54. CHECK L59 is the one
+machine-load-sensitive check in the suite — on a busy desktop it has measured 4, 8 and 9 dropped frames
+and it is reported as measured, never assumed.
+
+**Bundle deltas.** Home initial JS (the same measurement the harness makes, all `_next/static/chunks`
+referenced by the rendered home page, raw/gzip): **705570 B / 218449 gz** vs the §38 baseline
+**707307 B / 218300 gz** (Δ **−1737 raw / +149 gz**). The WebGL layer is gone: the `three` chunk
+(652165 B / 168521 gz) is no longer emitted at all — 23 chunks, 947753 B / 298199 gz total, none
+containing a WebGL renderer or the old shatter/debug hooks (CHECK L50/L51 scan the built chunks).
+`three` + `@types/three` are out of `package.json`/`package-lock.json` and `components/three/`
+(18 files) is deleted.
+
+**Explosion measurements (this machine, headless Chrome):** first transform change **15 ms** after the
+pointer event (budget ≤ 50 ms), **0** long tasks > 50 ms during the explosion, **1** dropped frame in a
+sampled 1 s window (idle baseline 1). Hero silhouette IoU vs the real artwork **0.9661** assembled and
+**0.9661** after explode → reassemble with a **1.0** round trip (the Hub's clone-render check: 0.99839).
+Services Index section height at 1440×900: **1017 px** (budget 1035); at 1366×768 the whole section is
+still taller than 1.15×768 — see §39.
+
+**Screenshots** (`frontend/test-output/screenshots/`): the suite regenerates hero assembled /
+mid-explosion / exploded / reduced-motion / mobile, the Hub at 1440 and 390 in both themes, the
+Services Index (light/dark/mobile), the navbar occlusion probes and the admin pages; this pass added
+`form-step-1-errors-light`, `form-step-2-light`, `form-step-3-light`, `form-review-light`,
+`form-success-light` (real submission, reference `JT-20261010-N8KLBN`), `form-step-1-dark` and
+`form-review-dark`. What the inspection found: the hero shows one dark mark cluster on a light field and
+**no cube, shard, chip-box, ring or particle blobs anywhere** (the mark's own silhouette only); the Hub
+shows the centre mark with its cards and no overlapping geometry; the review step shows the filled summary
+with the navy "Send request" button; the success modal is a centred card over a dimmed page with
+"Back to home" and "Send another". **Caveat:** `hero-exploded-light/dark.png` were taken ~10 s into the
+suite, so the public push opt-in prompt (by design) is over the page in those two files — the ASCII/luma
+inspection shows the same dimmed-page-plus-centred-card signature as `notification-prompt.png`.

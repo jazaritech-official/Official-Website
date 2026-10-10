@@ -1,26 +1,21 @@
 "use client";
 
-import { Fragment, useEffect, useRef, type CSSProperties } from "react";
+import { Fragment, type CSSProperties } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/Button";
 import { Counter } from "@/components/motion/Counter";
-import { Logo } from "@/components/brand/Logo";
-import { HeroScene } from "@/components/three/HeroScene";
-import {
-  ArrowRightIcon,
-  ChipIcon,
-  CodeIcon,
-  GlobeIcon,
-  CartIcon,
-  StarIcon,
-} from "@/components/icons";
+import { HeroMark } from "@/components/sections/HeroMark";
+import { ArrowRightIcon, StarIcon } from "@/components/icons";
 
-const FLOATING_TILES = [
-  { Icon: CodeIcon, position: "left-[4%] top-[8%]", animation: "float-slow", delay: 0 },
-  { Icon: CartIcon, position: "right-[6%] top-[16%]", animation: "float-medium", delay: 800 },
-  { Icon: ChipIcon, position: "left-[10%] bottom-[14%]", animation: "float-medium", delay: 1400 },
-  { Icon: GlobeIcon, position: "right-[12%] bottom-[6%]", animation: "float-slow", delay: 400 },
-];
+/**
+ * Premium hero — strong typography, trust signals and animated counters beside
+ * the Jazari mark, which is now a real inline-SVG build (`HeroMark`).
+ *
+ * The previous WebGL hero (neon dust, a Voronoi fracture of a boxed support
+ * object, orbit rings, floating tiles and a glass "Featured service" card) was
+ * removed in Task L. There is no canvas and no rAF loop in this section; every
+ * animation is a CSS `transform`/`opacity` transition on the SVG mark.
+ */
 
 /** Headline split into words for the masked, word-by-word first-load reveal. */
 const HEADLINE_WORDS: Array<{ text: string; accent?: boolean }> = [
@@ -41,54 +36,11 @@ const STATS = [
   { value: 99.9, suffix: "%", label: "platform uptime", decimals: 1 },
 ];
 
-/**
- * Premium hero: strong typography, trust signals, animated counters, a glass
- * preview card with connector + hotspot, orbit rings and floating tech tiles.
- * Parallax runs through a passive scroll listener writing transforms directly
- * to refs (no re-renders), and is disabled for reduced-motion users.
- */
 export function Hero() {
-  const visualRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const visual = visualRef.current;
-    if (!visual || typeof window === "undefined") return;
-
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduced) return;
-
-    const layers = Array.from(visual.querySelectorAll<HTMLElement>("[data-parallax]"));
-    if (layers.length === 0) return;
-
-    let ticking = false;
-    const update = () => {
-      const offset = window.scrollY;
-      for (const layer of layers) {
-        const factor = Number(layer.dataset.parallax || 0.06);
-        layer.style.transform = `translate3d(0, ${(-offset * factor).toFixed(2)}px, 0)`;
-      }
-      ticking = false;
-    };
-
-    const onScroll = () => {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(update);
-    };
-
-    update();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      for (const layer of layers) layer.style.transform = "";
-    };
-  }, []);
-
   return (
     <section id="home" className="relative overflow-hidden pb-14 pt-28 sm:pb-20 sm:pt-32">
-      {/* Decorative backdrop */}
+      {/* Decorative backdrop — CSS-only atmosphere + blueprint grid. */}
       <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10">
-        {/* Aurora / mesh gradient — subtle, CSS-only, transform+opacity */}
         <div className="hero-aurora">
           <span className="hero-aurora__blob hero-aurora__blob--a" />
           <span className="hero-aurora__blob hero-aurora__blob--b" />
@@ -108,7 +60,7 @@ export function Hero() {
         />
       </div>
 
-      <div className="container-page grid items-center gap-14 lg:grid-cols-[1.02fr_0.98fr] lg:gap-8">
+      <div className="container-page grid items-center gap-14 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-8">
         {/* ---------------- Copy ---------------- */}
         <div className="max-w-2xl">
           <span className="jt-intro badge bg-surface-elevated" style={intro("calc(var(--intro-cta-delay) + 70ms)")}>
@@ -142,11 +94,7 @@ export function Hero() {
                 Start your project
               </Button>
             </Link>
-            <Link
-              href="#products"
-              className="jt-intro"
-              style={intro("calc(var(--intro-cta-delay) + 80ms)")}
-            >
+            <Link href="#products" className="jt-intro" style={intro("calc(var(--intro-cta-delay) + 80ms)")}>
               <Button variant="outline" size="sm" className="px-6 py-3.5 text-sm">
                 Explore our products
               </Button>
@@ -154,41 +102,41 @@ export function Hero() {
           </div>
 
           <div className="jt-intro mt-6 flex flex-wrap items-center gap-x-7 gap-y-4" style={intro("var(--intro-trust-delay)")}>
-              {/* Rating */}
-              <div className="flex items-center gap-2.5">
-                <div className="flex gap-0.5 text-accent" aria-hidden="true">
-                  {Array.from({ length: 5 }, (_, index) => (
-                    <StarIcon key={index} size={15} variant="solid" />
-                  ))}
-                </div>
-                <span className="text-sm text-muted">
-                  <span className="font-semibold text-foreground">4.9/5</span> client rating
-                </span>
+            {/* Rating */}
+            <div className="flex items-center gap-2.5">
+              <div className="flex gap-0.5 text-accent" aria-hidden="true">
+                {Array.from({ length: 5 }, (_, index) => (
+                  <StarIcon key={index} size={15} variant="solid" />
+                ))}
               </div>
+              <span className="text-sm text-muted">
+                <span className="font-semibold text-foreground">4.9/5</span> client rating
+              </span>
+            </div>
 
-              {/* Avatar social proof */}
-              <div className="flex items-center gap-3">
-                <div className="flex -space-x-2.5" aria-hidden="true">
-                  {[
-                    { initials: "AK", tone: "bg-primary" },
-                    { initials: "MR", tone: "bg-accent dark:bg-[#2f5f9e]" },
-                    { initials: "TS", tone: "bg-[#4a5a8f]" },
-                  ].map((avatar) => (
-                    <span
-                      key={avatar.initials}
-                      className={`flex size-8 items-center justify-center rounded-full border-2 border-background text-[0.62rem] font-semibold text-white ${avatar.tone}`}
-                    >
-                      {avatar.initials}
-                    </span>
-                  ))}
-                </div>
-                <p className="text-sm text-muted">
-                  <span className="font-semibold text-foreground">
-                    <Counter value={10} suffix="k+" />
-                  </span>{" "}
-                  users onboarded
-                </p>
+            {/* Avatar social proof */}
+            <div className="flex items-center gap-3">
+              <div className="flex -space-x-2.5" aria-hidden="true">
+                {[
+                  { initials: "AK", tone: "bg-primary" },
+                  { initials: "MR", tone: "bg-accent dark:bg-[#2f5f9e]" },
+                  { initials: "TS", tone: "bg-[#4a5a8f]" },
+                ].map((avatar) => (
+                  <span
+                    key={avatar.initials}
+                    className={`flex size-8 items-center justify-center rounded-full border-2 border-background text-[0.62rem] font-semibold text-white ${avatar.tone}`}
+                  >
+                    {avatar.initials}
+                  </span>
+                ))}
               </div>
+              <p className="text-sm text-muted">
+                <span className="font-semibold text-foreground">
+                  <Counter value={10} suffix="k+" />
+                </span>{" "}
+                users onboarded
+              </p>
+            </div>
           </div>
 
           {/* Animated counters */}
@@ -208,64 +156,9 @@ export function Hero() {
           </dl>
         </div>
 
-        {/* ---------------- Visual composition ---------------- */}
-        {/* Static fallback (orbit rings, tiles, brand icon) crossfades out
-            when the lazy WebGL scene reports ready via `data-scene`. */}
-        <div
-          ref={visualRef}
-          data-scene="fallback"
-          className="relative mx-auto flex min-h-[24rem] w-full max-w-md items-center justify-center lg:min-h-[30rem] lg:max-w-none"
-        >
-          {/* Light rays behind the mark — strengthen the silhouette without
-              washing it out (CSS only, no continuous blur). */}
-          <div className="hero-rays" aria-hidden="true" />
-          <div className="hero-decor" aria-hidden="true">
-          {/* Orbit rings */}
-          <div className="absolute left-1/2 top-1/2 h-64 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line sm:h-72 sm:w-72" data-parallax="0.03" />
-          <div className="absolute left-1/2 top-1/2 h-96 w-96 -translate-x-1/2 -translate-y-1/2 rounded-full border border-dashed border-line/70 lg:h-[28rem] lg:w-[28rem]" data-parallax="0.05" />
-
-          {/* Orbiting indicator */}
-          <div
-            className="absolute left-1/2 top-1/2 h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full sm:h-80 sm:w-80"
-            style={{ animation: "jt-spin 26s linear infinite" }}
-            data-parallax="0.04"
-          >
-            <span className="absolute -top-1.5 left-1/2 size-3 -translate-x-1/2 rounded-full bg-accent shadow-[0_0_0_5px_color-mix(in_srgb,var(--accent)_18%,transparent)]" />
-          </div>
-          <div
-            className="absolute left-1/2 top-1/2 h-52 w-52 -translate-x-1/2 -translate-y-1/2 rounded-full"
-            style={{ animation: "jt-spin 18s linear infinite reverse" }}
-            data-parallax="0.06"
-          >
-            <span className="absolute -top-1 right-8 size-2 rounded-full bg-growth shadow-[0_0_0_4px_color-mix(in_srgb,var(--growth)_20%,transparent)]" />
-          </div>
-
-          {/* Floating technology tiles */}
-          {FLOATING_TILES.map(({ Icon, position, animation, delay }) => (
-            <div
-              key={position}
-              className={`glass absolute ${position} ${animation} flex size-12 items-center justify-center rounded-2xl text-accent shadow-[var(--shadow-card)]`}
-              style={{ animationDelay: `${delay}ms` }}
-              data-parallax="0.09"
-            >
-              <Icon size={22} />
-            </div>
-          ))}
-
-          {/* Glass preview card + connector + hotspot now live in HeroScene
-              (backend-driven content, projected onto the 3D anchor) */}
-
-          {/* Jazari ribbon/diamond motif — the supplied brand icon */}
-          <div
-            className="glass absolute left-0 top-6 hidden size-16 items-center justify-center rounded-2xl shadow-[var(--shadow-card)] sm:flex"
-            data-parallax="0.08"
-          >
-            <Logo variant="mark" sizes="48px" className="float-medium size-11" />
-          </div>
-          </div>{/* /.hero-decor */}
-
-          {/* Procedural Three.js scene — loads lazily, never blocks content */}
-          <HeroScene hostRef={visualRef} />
+        {/* ---------------- The mark + service tooltips ---------------- */}
+        <div className="hero-visual">
+          <HeroMark />
         </div>
       </div>
     </section>

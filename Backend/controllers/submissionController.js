@@ -27,6 +27,9 @@ export const createSubmission = asyncHandler(async (req, res) => {
   const phone = String(body.phone || "").trim();
   const email = String(body.email || "").trim().toLowerCase();
   const service = String(body.service || "").trim();
+  // Optional, backward-compatible (Task L) — absent means empty string.
+  const message = String(body.message || "").trim();
+  const timeline = String(body.timeline || "").trim();
 
   if (!name) throw ApiError.badRequest("Name is required.", { name: "Name is required." });
   if (!service) throw ApiError.badRequest("Service is required.", { service: "Service is required." });
@@ -55,6 +58,8 @@ export const createSubmission = asyncHandler(async (req, res) => {
     phone,
     email,
     service,
+    message,
+    timeline,
     referenceId: createReferenceId(),
     visitorIp: getClientIp(req),
     status: "New",
@@ -150,6 +155,8 @@ export const exportSubmissions = asyncHandler(async (req, res) => {
     { key: "email", label: "Email" },
     { key: "phone", label: "Phone" },
     { key: "service", label: "Service" },
+    { key: "timeline", label: "Timeline" },
+    { key: "message", label: "Message" },
     { key: "status", label: "Status" },
     { key: "visitorIp", label: "Visitor IP" },
     { key: "createdAt", label: "Submitted At" },

@@ -686,3 +686,28 @@ Admin product create/update now accepts `logoId` (an ObjectId or `null`); an inv
 The public-content cache schema version moved to **2**. Stale `jazari:public-content:v1:*` entries are
 discarded on read (never crashed on) — no user action required. Re-run `npm run snapshot:content` after the
 backend is live and logos/products exist so the offline fallback snapshot carries the new `logo` object.
+### Task L deploy notes — SVG hero, Services Index, form v2, no WebGL
+
+1. **Deploy the backend first.** It accepts two new optional submission fields (`message`, `timeline`);
+   the frontend form sends them, and an old backend would answer 400. The in-memory/dev and production
+   builds are otherwise unchanged.
+2. **Then the frontend with the build cache off.** `three` was removed from the dependency tree, so a
+   cached build can still emit the old WebGL chunk: build with cache disabled and confirm the fresh
+   `.next/static/chunks` contain no chunk that references a WebGL renderer (the harness checks this
+   from the build output: CHECK L50/L51).
+3. **`BACKEND_ORIGIN` is runtime config, not only build-time.** Set it on the frontend project
+   (`BACKEND_ORIGIN=https://<backend-host>`) so the `/api/auth/*` route handlers and the same-origin
+   `/api` path work; locally, `BACKEND_ORIGIN=http://localhost:5000 npx next start -p 3001`. Without it
+   those routes answer **503 CONFIG_MISSING** by design (never a fake 401) and the session/BFF checks
+   cannot pass. There is no `/api/push/*` proxy route — the browser fetches the VAPID public key from
+   the API origin.
+4. **Snapshot step.** `npm run build` runs `prebuild` → `npm run snapshot:content`, which refreshes
+   `frontend/public/content-snapshot.json` from the live API before the offline fallback is bundled.
+   Run it after the backend has the final content (or set the deploy hook to do it), otherwise the
+   fallback snapshot lags behind the API.
+5. **Confirm the live build in DevTools.** Hard-reload the homepage and check the hero for
+   `data-hero="svg-v2"` with `data-hero-state="assembled"` and `data-tooltips="10"`; if the hook is
+   missing, an old build (possibly the WebGL one) is still being served.
+6. **Post-deploy sanity:** the Services section must show 14 entries in one page with no pointer
+   cursor; a deep link such as `/#service-web-development` must land below the navbar; the form must
+   return a reference ID. `PROJECT_NOTES.md` §45 lists the local verification numbers.

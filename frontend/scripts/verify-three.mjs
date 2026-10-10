@@ -4,17 +4,24 @@
  *
  * Drives real Chrome over the DevTools protocol (no new dependencies — Node's
  * built-in WebSocket) and asserts the spec's runtime requirements:
- *   1  Home renders, scene reaches `data-scene="webgl"`, one canvas, live tier
- *   2  Idle motion is alive (hotspot moves between samples)
- *   3  Reduced motion → static composition (hotspot frozen), scene still works
- *   4  Context loss → fallback; restore → scene resumes, still one canvas
- *   5  Mobile metrics → LOW/MEDIUM tier (never the desktop scene)
- *   6  /admin loads ZERO three-chunk resources (runtime proof, not just build)
- *   7  SPA round-trips (hero unmount/remount ×3): no leak, one canvas, clean console
- *   8  Accessibility structure
+
+ *   1  Home renders the REAL-LOGO SVG hero (`data-hero="svg-v2"`), zero canvases
+ *   2  Hero assemble / explode / reassemble via hover, focus and Escape
+ *   3  Up to ten neon service tooltips + leader lines, no overlap with the copy
+ *   4  prefers-reduced-motion → a static mark, tooltips still present
+ *   5  Mobile (390×844) → tooltips become a list, no horizontal overflow
+ *   6  /admin ships no hero code and no canvas
+ *   7  SPA round-trips (hero unmount/remount ×3): no leak, clean console
+ *   8  Accessibility structure (button + aria-expanded + aria-controls)
  *   9  Homepage section + API regression
- *  10  Start-Your-Project form end-to-end
+ *  10  Start-Your-Project form end-to-end (3 steps + Review → reference ID)
  *  11  Brand (Main Logo) + hero layout + first-load choreography + screenshots
+ *  20  Services Index (static, every discipline visible, no hover affordance)
+ *
+ * RETIRED CHECKS (Task L) — the WebGL hero and the Discipline Atlas were
+ * deleted at the owner's request, so every check whose SUBJECT was one of them
+ * is RETIRED rather than silently edited. See `PROJECT_NOTES.md` §41 for the
+ * numbered list and the replacement check for each. Nothing else was weakened.
  *
  * Super Admin role/security logic is covered by the BACKEND smoke test
  * (`cd Backend && npm run smoke`) — 81 assertions.
@@ -141,20 +148,29 @@ function check(name, condition, detail = "") {
   console.log(`${condition ? "  ✓" : "  ✗"} ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
-/* ---- Find the three chunk (build output) -------------------------------- */
-function findThreeChunk() {
+
+/**
+ * RETIRED SUBJECT (Task L). The WebGL hero was deleted, so there is no `three`
+ * chunk in the build any more. The old question ("did the three chunk load?")
+ * is replaced by a stronger one asked of the BUILD itself: does ANY emitted
+ * chunk still contain a WebGL renderer or the old debug hooks? If one does, the
+ * dependency was not really removed and the run fails.
+ */
+function scanChunks(needles) {
   const dir = join(process.cwd(), ".next", "static", "chunks");
+  if (!existsSync(dir)) return { missing: true, hits: [] };
+  const hits = [];
   for (const file of readdirSync(dir)) {
     if (!file.endsWith(".js")) continue;
     try {
-      if (readFileSync(join(dir, file), "utf8").includes("WebGLRenderer")) return file;
+      const text = readFileSync(join(dir, file), "utf8");
+      if (needles.some((needle) => text.includes(needle))) hits.push(file);
     } catch {
       /* unreadable chunk — skip */
     }
   }
-  return null;
+  return { missing: false, hits };
 }
-
 /* ---- Minimal CDP client -------------------------------------------------- */
 class Cdp {
   constructor(ws) {
@@ -313,28 +329,22 @@ async function waitFor(cdp, expression, timeoutMs = 8000, label = "condition") {
   throw new Error(`timeout waiting for ${label} (last=${JSON.stringify(last)})`);
 }
 
-const HOTSPOT_POS = `(() => {
-  const h = document.querySelector(".hero-hotspot");
-  if (!h) return null;
-  const t = new DOMMatrixReadOnly(getComputedStyle(h).transform);
-  return { x: t.m41, y: t.m42 };
-})()`;
-
-/**
- * The engine legitimately pauses while the hero is off-screen (spec §45), and
- * in a short headless viewport the visual column starts below the fold — so
- * motion assertions must first bring it into view.
- */
-const BRING_HERO_INTO_VIEW = `(() => {
-  const el = document.querySelector("[data-scene]");
-  if (el) el.scrollIntoView({ block: "center", behavior: "instant" });
-  return true;
-})()`;
-
 /* ---- Main ---------------------------------------------------------------- */
 async function main() {
-  const threeChunk = findThreeChunk();
-  if (!threeChunk) throw new Error("three chunk not found in .next/static/chunks");
+
+  const webglChunks = scanChunks(["WebGLRenderer", "THREE.WebGLRenderer", "__jazariDebug"]);
+  console.log("[0] Static assets");
+  check(
+    "CHECK L50 — no build chunk ships a WebGL renderer (three.js is fully removed)",
+    !webglChunks.missing && webglChunks.hits.length === 0,
+    webglChunks.missing ? "no .next/static/chunks — build first" : webglChunks.hits.join(","),
+  );
+  const fractureChunks = scanChunks(["Voronoi", "shatterState", "fractureBudget"]);
+  check(
+    "CHECK L51 — no build chunk ships the Voronoi fracture / shatter machinery",
+    fractureChunks.hits.length === 0,
+    fractureChunks.hits.join(","),
+  );
   console.log("[0] Static assets");
   check(
     "Main Logo application asset exists (public/brand/logo-main.png)",
@@ -389,6 +399,15 @@ async function main() {
     if (!target) throw new Error("Chrome DevTools endpoint never appeared");
 
     cdp = await Cdp.connect(target.webSocketDebuggerUrl);
+
+
+    const shotHero = async (name) => {
+      mkdirSync(SCREENSHOT_DIR, { recursive: true });
+      const { data } = await cdp.send("Page.captureScreenshot", { format: "png" });
+      const file = join(SCREENSHOT_DIR, name);
+      writeFileSync(file, Buffer.from(data, "base64"));
+      console.log(`    · screenshot → ${file}`);
+    };
     cdp.on("Runtime.consoleAPICalled", (params) => {
       if (params.type === "error") {
         consoleErrors.push(params.args.map((a) => a.value ?? a.description ?? "").join(" "));
@@ -437,446 +456,636 @@ async function main() {
       await sleep(300);
     };
 
-    /* -- TEST 0 (NO_WEBGL mode): static fallback must carry the page ------- */
+
+    /* -- NO_WEBGL (Task L): the hero is SVG, so WebGL disabled must change
+     * NOTHING. Same intent as the retired fallback-mode test, now asserted as
+     * identity rather than as a graceful degradation. */
     if (NO_WEBGL) {
-      console.log("\n[0] WebGL disabled → static fallback (spec TEST 14)");
+      console.log("\n[0] WebGL disabled → the SVG hero must be identical");
       resetErrors();
       await cdp.send("Page.navigate", { url: `${BASE}/` });
-      await waitFor(cdp, `document.readyState === "complete"`, 12000, "page load");
-      await sleep(3500); // give a would-be engine every chance to activate
+      await waitFor(cdp, `document.querySelector('[data-hero="svg-v2"]') !== null`, 12000, "hero svg");
+      await sleep(1500);
       const fb = await evaluate(
         cdp,
-        `(() => ({
-          scene: document.querySelector("[data-scene]")?.dataset.scene ?? "missing",
-          canvases: document.querySelectorAll(".hero-scene canvas").length,
-          decorOpacity: getComputedStyle(document.querySelector(".hero-decor")).opacity,
-          hotspotPlaced: ${HOTSPOT_POS},
-          card: document.querySelector(".hero-card p")?.textContent ?? null,
-          heading: document.querySelector("h1")?.textContent?.slice(0, 30) ?? null,
-        }))()`,
+        `(() => {
+          const root = document.querySelector('[data-hero="svg-v2"]');
+          const svg = root.querySelector('.hero-mark__svg');
+          return {
+            hero: root.dataset.hero,
+            state: root.dataset.heroState,
+            tooltips: Number(root.dataset.tooltips),
+            canvases: document.querySelectorAll('canvas').length,
+            pieces: svg.querySelectorAll('[data-logo-piece]').length,
+            first: document.querySelector('[data-hero-tooltip] .hero-tooltip__title')?.textContent ?? null,
+            heading: Boolean(document.querySelector('h1')),
+          };
+        })()`,
       );
-      check("scene stays data-scene=fallback", fb.scene === "fallback", fb.scene);
-      check("zero canvases created", fb.canvases === 0, `count=${fb.canvases}`);
-      check("static fallback fully visible (opacity 1)", fb.decorOpacity === "1", fb.decorOpacity);
-      check("overlay card still placed", Boolean(fb.hotspotPlaced && fb.hotspotPlaced.x >= 0), JSON.stringify(fb.hotspotPlaced));
-      check("backend card content still renders", typeof fb.card === "string" && fb.card.length > 0, String(fb.card ?? "").slice(0, 40));
-      check("hero heading intact", Boolean(fb.heading), fb.heading ?? "");
+      check("CHECK L52 — hero reports data-hero=svg-v2 with WebGL disabled", fb.hero === "svg-v2", String(fb.hero));
+      check("CHECK L53 — zero canvases anywhere on the page", fb.canvases === 0, `count=${fb.canvases}`);
+      check("CHECK L54 — the mark still renders its five real pieces", fb.pieces === 5, `pieces=${fb.pieces}`);
+      check("CHECK L55 — the tooltip list is populated from the API", fb.tooltips > 0 && typeof fb.first === "string" && fb.first.length > 0, `n=${fb.tooltips}`);
+      check("CHECK L56 — hero heading intact", fb.heading === true);
       assertClean("no-webgl");
 
       const failed = results.filter((r) => !r.ok);
       console.log(`\n${"=".repeat(60)}`);
-      console.log(`Three.js NO-WEBGL verification: ${results.length - failed.length}/${results.length} checks passed`);
+      console.log(`NO-WEBGL verification (hero must be identical): ${results.length - failed.length}/${results.length} checks passed`);
       if (failed.length > 0) process.exit(1);
       return;
     }
 
-    /* -- TEST 1: home loads, scene activates, one canvas, live tier -------- */
-    console.log("\n[1] Home render + scene activation");
+    /* -- TEST 1: the real-logo SVG hero (Task L) ---------------------------
+     * Retired here: CHECK 1/1b (scene=webgl, canvas, tier, hotspot, glass card),
+     * CHECK 2b-1..2b-5 (3D logo IoU, supports, saturation), CHECK 2 (idle
+     * hotspot motion) and the WebGL context-loss/restore suite — their SUBJECT
+     * is the deleted scene. The replacement asserts the same INTENT on the SVG
+     * mark: real traced geometry, backend-driven content, no canvas, no rAF. */
+    console.log("\n[1] Hero — real-logo SVG mark (no canvas, no WebGL)");
     resetErrors();
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
     await cdp.send("Page.navigate", { url: `${BASE}/` });
-    await waitFor(
-      cdp,
-      `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`,
-      12000,
-      "scene=webgl",
-    );
+    await waitFor(cdp, `document.querySelector('[data-hero="svg-v2"]') !== null`, 12000, "hero svg root");
+    /* Cancel the optional idle auto-open: it is one-shot and armed 3 s after
+     * the mark first becomes 50 % visible, which would otherwise re-open the
+     * diagram in the middle of the interaction tests below. A synthetic `wheel`
+     * (an input the component listens for) records "the user is active". */
+    await evaluate(cdp, `(() => { window.dispatchEvent(new WheelEvent('wheel', { bubbles: true })); return true; })()`);
+    // The tooltip list is backend-driven: wait for it before probing so the
+    // assertions measure the real state, not the loading one.
+    try {
+      await waitFor(
+        cdp,
+        `Number(document.querySelector('[data-hero="svg-v2"]')?.dataset.tooltips ?? 0) > 0`,
+        15000,
+        "hero tooltips loaded",
+      );
+    } catch {
+      /* reported honestly by CHECK L6 */
+    }
 
-    // The public notification opt-in prompt is a full-viewport dialog that
-    // opens ~10s after arrival. Every suite other than the dedicated push one
-    // must not be disturbed by it, so it is dismissed for the rest of the run
-    // (the push suite clears this flag again when it needs the real behaviour).
-    await evaluate(cdp, `(() => { try { localStorage.setItem("jazari-push-dismissed", "1"); } catch {} return true; })()`);
-    const home = await evaluate(
+    const hero = await evaluate(
       cdp,
-      `(() => ({
-        scene: document.querySelector("[data-scene]")?.dataset.scene,
-        canvases: document.querySelectorAll(".hero-scene canvas").length,
-        quality: document.querySelector(".hero-scene canvas")?.dataset.quality ?? null,
-        hotspot: ${HOTSPOT_POS},
-        card: document.querySelector(".hero-card p")?.textContent ?? null,
-        hasHeading: Boolean(document.querySelector("h1")),
-      }))()`,
+      `(() => {
+        const root = document.querySelector('[data-hero="svg-v2"]');
+        const svg = root.querySelector('.hero-mark__svg');
+        const trigger = root.querySelector('.hero-mark__trigger');
+        const rect = svg.getBoundingClientRect();
+        const tips = [...root.querySelectorAll('[data-hero-tooltip]')];
+        return {
+          hero: root.dataset.hero,
+          state: root.dataset.heroState,
+          tooltips: Number(root.dataset.tooltips),
+          canvases: document.querySelectorAll('canvas').length,
+          webglResources: performance.getEntriesByType('resource').filter((r) => /three|webgl/i.test(r.name)).length,
+          pieces: svg.querySelectorAll('[data-logo-piece]').length,
+          pieceOrder: [...svg.querySelectorAll('[data-logo-piece]')].map((g) => g.dataset.logoPiece).join(','),
+          svgW: Math.round(rect.width),
+          svgH: Math.round(rect.height),
+          triggerTag: trigger.tagName,
+          expanded: trigger.getAttribute('aria-expanded'),
+          controls: trigger.getAttribute('aria-controls'),
+          listId: root.querySelector('.hero-tooltips')?.id ?? null,
+          leaders: root.querySelectorAll('[data-hero-leader]').length,
+          anchors: root.querySelectorAll('[data-hero-anchor]').length,
+          heading: Boolean(document.querySelector('h1')),
+          copy: tips.map((li) => ({
+            title: li.querySelector('.hero-tooltip__title')?.textContent ?? '',
+            desc: li.querySelector('.hero-tooltip__desc')?.textContent ?? '',
+            href: li.querySelector('a')?.getAttribute('href') ?? '',
+          })),
+        };
+      })()`,
     );
-    check("scene reaches data-scene=webgl", home.scene === "webgl");
-    check("exactly one canvas", home.canvases === 1, `count=${home.canvases}`);
-    check("canvas exposes live quality tier", ["high", "medium", "low"].includes(home.quality), `tier=${home.quality}`);
-    check("hotspot visible + positioned", home.hotspot && home.hotspot.y >= 0 && getFloat(home.hotspot.x) >= 0, JSON.stringify(home.hotspot));
-    check("glass card carries backend service data", typeof home.card === "string" && home.card.length > 0, String(home.card).slice(0, 40));
-    check("hero heading intact (LCP content present)", home.hasHeading);
+    check("CHECK L1 — hero root reports data-hero=svg-v2", hero.hero === "svg-v2", String(hero.hero));
+    check("CHECK L2 — zero canvases and zero WebGL resources on /", hero.canvases === 0 && hero.webglResources === 0, `canvases=${hero.canvases} webgl=${hero.webglResources}`);
+    check("CHECK L3 — the mark is the five REAL traced pieces", hero.pieces === 5 && hero.pieceOrder === "top,bottom,right,fold,leaf", `${hero.pieces}: ${hero.pieceOrder}`);
+    check("CHECK L4 — the mark is square and non-degenerate", hero.svgW > 40 && Math.abs(hero.svgW - hero.svgH) <= 2, `${hero.svgW}x${hero.svgH}`);
+    check(
+      "CHECK L5 — the mark is a real <button> with aria-expanded + aria-controls",
+      hero.triggerTag === "BUTTON" && ["true", "false"].includes(hero.expanded) && hero.controls === "hero-service-list" && hero.listId === "hero-service-list",
+      JSON.stringify({ tag: hero.triggerTag, expanded: hero.expanded, controls: hero.controls, listId: hero.listId }),
+    );
+    check("CHECK L6 — 8..10 service tooltips (or exactly N when fewer exist)", hero.tooltips >= 8 && hero.tooltips <= 10, `n=${hero.tooltips}`);
+    check("CHECK L7 — one leader + one anchor per tooltip (5 real pieces)", hero.leaders === hero.tooltips && hero.anchors === hero.tooltips, `leaders=${hero.leaders} anchors=${hero.anchors}`);
+    check("CHECK L8 — heading intact (LCP content present)", hero.heading === true);
 
-    // Environment diagnostics: RAF must tick and the page must be visible,
-    // otherwise every timing assertion below would be meaningless.
-    const env = await evaluate(
+    let apiTitles = [];
+    try {
+      const payload = await (await fetch(`${API}/services`)).json();
+      apiTitles = (payload.data ?? []).map((s) => s.title);
+    } catch {
+      /* the backend may not be reachable; CHECK L10 reports it */
+    }
+    check("CHECK L9 — every tooltip has a title, a backend summary and an in-page anchor", hero.copy.length > 0 && hero.copy.every((t) => t.title.length > 0 && t.desc.length > 0 && /^#service-/.test(t.href)), JSON.stringify(hero.copy.slice(0, 2)));
+    check("CHECK L10 — tooltip titles are the API service titles (no invented copy)", apiTitles.length > 0 && hero.copy.every((t) => apiTitles.includes(t.title)), `api=${apiTitles.length} shown=${hero.copy.length}`);
+    assertClean("hero-svg");
+
+    /* -- TEST 1b: performance — no rAF loop, no long task, no dropped frames */
+    const dbgState = await evaluate(
+      cdp,
+      `(() => ({ reduce: matchMedia('(prefers-reduced-motion: reduce)').matches, vw: innerWidth, vh: innerHeight, dg: document.querySelector('.hero-diagram')?.className ?? null, cls: document.querySelector('[data-hero="svg-v2"]')?.className ?? null }))()`,
+    );
+    console.log(`    · dbg ${JSON.stringify(dbgState)}`);
+    await evaluate(
+      cdp,
+      `(() => { const t = document.querySelector('[data-hero="svg-v2"] .hero-mark__trigger'); if (t) t.scrollIntoView({ block: 'center', behavior: 'instant' }); return true; })()`,
+    );
+    // Warm-up: let the one-time assembly entrance, the lazy images and the
+    // section reveals finish so the sampled window measures the EXPLOSION and
+    // nothing else.
+    await sleep(2600);
+    const perfBox = await evaluate(
+      cdp,
+      `(() => { const r = document.querySelector('[data-hero="svg-v2"] .hero-mark__trigger').getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), vw: innerWidth, vh: innerHeight }; })()`,
+    );
+    console.log(`    · perfBox ${JSON.stringify(perfBox)}`);
+    // Baseline: the same 1 s window with the mark untouched, so a dropped-
+    // frame count can be attributed to the explosion and not to the page.
+    const baseline = await evaluate(
       cdp,
       `new Promise((resolve) => {
-        const start = performance.now();
-        let frames = 0;
-        const tick = () => {
-          frames += 1;
-          if (performance.now() - start < 500) requestAnimationFrame(tick);
-          else resolve({ frames, visibility: document.visibilityState });
+        const gaps = [];
+        let last = performance.now();
+        const t0 = performance.now();
+        const tick = (now) => { gaps.push(now - last); last = now; if (now - t0 < 1000) requestAnimationFrame(tick); else resolve({ dropped: gaps.filter((g) => g > 33.4).length, frames: gaps.length }); };
+        requestAnimationFrame(tick);
+      })`,
+    );
+    console.log(`    · baseline frames ${JSON.stringify(baseline)}`);
+    await evaluate(
+      cdp,
+      `(() => { window.__perf = { t0: null, evt0: null }; window.addEventListener('pointerover', () => { if (window.__perf.evt0 === null) window.__perf.evt0 = performance.now(); }, { once: true, capture: true, passive: true }); return true; })()`,
+    );
+    await evaluate(cdp, `(() => { window.__perf.t0 = performance.now(); return true; })()`);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: perfBox.x, y: perfBox.y });
+    const perf = await evaluate(
+      cdp,
+      `new Promise((resolve) => {
+        const root = document.querySelector('[data-hero="svg-v2"]');
+        const longTasks = [];
+        let obs = null;
+        try { obs = new PerformanceObserver((list) => { for (const e of list.getEntries()) longTasks.push(Math.round(e.duration)); }); obs.observe({ entryTypes: ['longtask'] }); } catch {}
+        const t0 = window.__perf.t0;
+        let firstChange = null;
+        let classAt = null;
+        const gaps = [];
+        let last = performance.now();
+        const tick = (now) => {
+          gaps.push(now - last); last = now;
+          const dg = document.querySelector('.hero-diagram');
+          if (classAt === null && dg && dg.className.indexOf('is-exploded') !== -1) classAt = now;
+          const g = root.querySelector('.hero-mark__svg [data-logo-piece]');
+          const t = g ? getComputedStyle(g).transform : 'none';
+          if (firstChange === null && t && t !== 'none') firstChange = now;
+          if (now - t0 < 1100) requestAnimationFrame(tick);
+          else {
+            if (obs) obs.disconnect();
+            resolve({
+              firstRel: firstChange !== null && window.__perf.evt0 !== null ? Math.round(firstChange - window.__perf.evt0) : null,
+              classRel: classAt !== null && window.__perf.evt0 !== null ? Math.round(classAt - window.__perf.evt0) : null,
+              dispatch: window.__perf.evt0 !== null ? Math.round(window.__perf.evt0 - t0) : null,
+              longTasks,
+              dropped: gaps.filter((g) => g > 33.4).length,
+              frames: gaps.length,
+              state: root.dataset.heroState,
+            });
+          }
         };
         requestAnimationFrame(tick);
       })`,
     );
-    check("headless RAF ticks (≥10 frames/500ms)", env.frames >= 10, `frames=${env.frames}`);
-    check("page visibilityState=visible", env.visibility === "visible", env.visibility);
-    assertClean("home");
+    check(
+      "CHECK L57 — first transform change within 50 ms of the pointer event",
+      perf.firstRel !== null && perf.firstRel <= 50,
+      `${perf.firstRel}ms after pointerover (class ${perf.classRel}ms, CDP dispatch ${perf.dispatch}ms)`,
+    );
+    check("CHECK L58 — zero long tasks (> 50 ms) during the explosion", perf.longTasks.length === 0, perf.longTasks.join(","));
+    check(
+      "CHECK L59 — dropped frames ≤ 3 in a 1 s window",
+      perf.dropped <= 3,
+      `dropped=${perf.dropped}/${perf.frames} (idle baseline ${baseline.dropped}/${baseline.frames})`,
+    );
 
-    /* -- TEST 2: idle motion alive ----------------------------------------- */
-    console.log("\n[2] Idle motion is alive");
-    await evaluate(cdp, BRING_HERO_INTO_VIEW);
-    await sleep(2000); // resume + let the 1.4 s assembly finish → pure idle
-    const a1 = await evaluate(cdp, HOTSPOT_POS);
-    await sleep(700);
-    const a2 = await evaluate(cdp, HOTSPOT_POS);
-    const delta = Math.hypot(a2.x - a1.x, a2.y - a1.y);
-    check("hotspot moves between samples (>2px/700ms)", delta > 2, `delta=${delta.toFixed(2)}px`);
-
-    /* -- TEST 4: context loss → fallback → restore → resume ---------------- */
-    console.log("\n[3] WebGL context loss + restore");
+    /* -- TEST 2: explode / reassemble via hover, focus and Escape ---------- */
+    console.log("\n[2] Hero — explode, reassemble, keyboard");
     resetErrors();
-    const lost = await evaluate(
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: perfBox.x, y: perfBox.y });
+    await sleep(600);
+    const exploded = await evaluate(
       cdp,
       `(() => {
-        const c = document.querySelector(".hero-scene canvas");
-        const gl = c && c.getContext("webgl2");
-        const ext = gl && gl.getExtension("WEBGL_lose_context");
-        if (!ext) return "no-ext";
-        window.__jazariLoseExt = ext; // keep the handle — getExtension may
-        ext.loseContext();            // return null while the context is lost
-        return "lost";
-      })()`,
-    );
-    check("loseContext triggered", lost === "lost", lost);
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "fallback"`, 5000, "fallback after loss");
-    check("context loss → static fallback shown", true);
-    const restored = await evaluate(
-      cdp,
-      `(() => {
-        const ext = window.__jazariLoseExt;
-        if (!ext) return "no-ext";
-        ext.restoreContext();
-        return "restored";
-      })()`,
-    );
-    check("restoreContext triggered", restored === "restored", restored);
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 6000, "webgl after restore");
-    const afterRestore = await evaluate(
-      cdp,
-      `document.querySelectorAll(".hero-scene canvas").length`,
-    );
-    check("recovery keeps exactly one canvas", afterRestore === 1, `count=${afterRestore}`);
-    assertClean("context-loss");
-
-    /* -- TEST 2b: real-logo 3D geometry + silhouette + saturation ----------
-     * The 3D logo is rebuilt from the traced real artwork. This measures its
-     * ASSEMBLED silhouette against the real PNG mask (supports hidden, idle
-     * motion frozen for determinism) and its average saturation against the
-     * source pixels, in LIGHT mode — proving the mark is not washed out. */
-    console.log("\n[3b] Real-logo 3D reconstruction (silhouette IoU + saturation)");
-    resetErrors();
-    await evaluate(cdp, `localStorage.setItem("jazari-theme", "light"); true`);
-    await reload();
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 12000, "scene for logo check");
-    await evaluate(cdp, BRING_HERO_INTO_VIEW);
-    await sleep(400);
-    const logoRect = await evaluate(
-      cdp,
-      `(() => {
-        const c = document.querySelector(".hero-scene canvas");
-        if (!c || !c.__jazariDebug) return { error: "no canvas" };
-        c.__jazariDebug.setReducedMotion(true);
-        c.__jazariDebug.setSupportsVisible(false);
-        const hide = (sel) => { const el = document.querySelector(sel); if (el) el.style.visibility = "hidden"; };
-        hide(".hero-card"); hide(".hero-hotspot"); hide(".hero-connector"); hide(".hero-decor"); hide(".hero-rays"); hide(".hero-aurora"); hide(".bg-grid");
-        const r = c.getBoundingClientRect();
-        return { x: Math.round(r.x + window.scrollX), y: Math.round(r.y + window.scrollY), width: Math.round(r.width), height: Math.round(r.height) };
-      })()`,
-    );
-    await sleep(200);
-    const logoScreenshot = logoRect.error
-      ? null
-      : await cdp.send("Page.captureScreenshot", {
-          format: "png",
-          clip: { x: logoRect.x, y: logoRect.y, width: logoRect.width, height: logoRect.height, scale: 1 },
-        });
-    await evaluate(cdp, `window.__logoShot = ${JSON.stringify(logoScreenshot.data)}; true`);
-    const logoScene = await evaluate(
-      cdp,
-      `(async () => {
-        const restore = () => {
-          const c = document.querySelector(".hero-scene canvas");
-          if (c && c.__jazariDebug) { c.__jazariDebug.setSupportsVisible(true); c.__jazariDebug.setReducedMotion(false); }
-          const show = (sel) => { const el = document.querySelector(sel); if (el) el.style.visibility = ""; };
-          show(".hero-card"); show(".hero-hotspot"); show(".hero-connector"); show(".hero-decor"); show(".hero-rays"); show(".hero-aurora"); show(".bg-grid");
+        const root = document.querySelector('[data-hero="svg-v2"]');
+        const pieces = [...root.querySelectorAll('[data-logo-piece]')];
+        const leader = root.querySelector('[data-hero-leader]');
+        const svgRect = root.querySelector('.hero-mark__svg').getBoundingClientRect();
+        const tips = [...root.querySelectorAll('[data-hero-tooltip]')];
+        return {
+          state: root.dataset.heroState,
+          moved: pieces.filter((g) => getComputedStyle(g).transform !== 'none').length,
+          tipsVisible: tips.filter((li) => +getComputedStyle(li).opacity > 0.5).length,
+          leaderOpacity: leader ? +getComputedStyle(leader.parentElement).opacity : 0,
+          triggerExpanded: root.querySelector('.hero-mark__trigger').getAttribute('aria-expanded'),
+          mark: { x: svgRect.x, y: svgRect.y, w: svgRect.width, h: svgRect.height },
         };
-        try {
-          const pick = ${JSON.stringify(LOGO_CANDIDATES)};
-          const load = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("load")); i.src = src; });
-          let source = null;
-          for (const candidate of pick) { try { source = await load(candidate); break; } catch { } }
-          if (!source) return { error: "source logo not servable" };
-          const shotData = window.__logoShot;
-          if (!shotData) return { error: "no screenshot" };
-          const shot = await load("data:image/png;base64," + shotData);
-          const canvas = document.querySelector(".hero-scene canvas");
-          const read = (img, w, h) => {
-            const cv = document.createElement("canvas");
-            cv.width = w; cv.height = h;
-            const ctx = cv.getContext("2d", { willReadFrequently: true });
-            ctx.clearRect(0, 0, w, h);
-            ctx.drawImage(img, 0, 0, w, h);
-            return ctx.getImageData(0, 0, w, h);
-          };
-          const boxOfAlpha = (px, w, h, thr) => {
-            let minX = w, minY = h, maxX = -1, maxY = -1;
-            for (let y = 0; y < h; y++) { for (let x = 0; x < w; x++) {
-              if (px.data[(y * w + x) * 4 + 3] > thr) {
-                if (x < minX) minX = x; if (x > maxX) maxX = x;
-                if (y < minY) minY = y; if (y > maxY) maxY = y;
-              }
-            } }
-            return { minX, minY, maxX, maxY, ok: maxX - minX > 4 && maxY - minY > 4 };
-          };
-          const boxOfFg = (px, w, h, isFg) => {
-            let minX = w, minY = h, maxX = -1, maxY = -1;
-            for (let y = 0; y < h; y++) { for (let x = 0; x < w; x++) {
-              if (isFg((y * w + x) * 4)) {
-                if (x < minX) minX = x; if (x > maxX) maxX = x;
-                if (y < minY) minY = y; if (y > maxY) maxY = y;
-              }
-            } }
-            return { minX, minY, maxX, maxY, ok: maxX - minX > 4 && maxY - minY > 4 };
-          };
-          const drawCrop = (img, box, N) => {
-            const cv = document.createElement("canvas");
-            cv.width = N; cv.height = N;
-            const ctx = cv.getContext("2d", { willReadFrequently: true });
-            ctx.clearRect(0, 0, N, N);
-            ctx.drawImage(img, box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY, 0, 0, N, N);
-            return ctx.getImageData(0, 0, N, N);
-          };
-          const avgSat = (px, isIn) => {
-            let sum = 0, n = 0;
-            for (let i = 0; i < px.data.length; i += 4) {
-              if (!isIn(i)) continue;
-              const r = px.data[i] / 255, g = px.data[i + 1] / 255, b = px.data[i + 2] / 255;
-              const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-              const l = (mx + mn) / 2;
-              if (l < 0.06 || l > 0.985) continue;
-              sum += mx === mn ? 0 : (mx - mn) / (1 - Math.abs(2 * l - 1));
-              n++;
-            }
-            return n ? sum / n : 0;
-          };
-          const isLogo = (r, g, b) => {
-            const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-            const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-            return mx - mn > 48 || lum < 150;
-          };
-          const W = shot.naturalWidth, H = shot.naturalHeight;
-          const renderPx = read(shot, W, H);
-          const isFg = (i) => isLogo(renderPx.data[i], renderPx.data[i + 1], renderPx.data[i + 2]);
-          const renderBox = boxOfFg(renderPx, W, H, isFg);
-          const SrcN = 1024;
-          const sourcePx = read(source, SrcN, SrcN);
-          const sourceBoxN = boxOfAlpha(sourcePx, SrcN, SrcN, 128);
-          const ratio = (source.naturalWidth || 4096) / SrcN;
-          const sourceBox = { minX: sourceBoxN.minX * ratio, minY: sourceBoxN.minY * ratio, maxX: sourceBoxN.maxX * ratio, maxY: sourceBoxN.maxY * ratio, ok: sourceBoxN.ok };
-          let iou = 0, iouTolerant = 0, inter = 0, union = 0;
-          let iouMirrorX = 0, iouMirrorY = 0;
-          let bestIou = 0, bestAngle = 0;
-          let areaA = 0, areaB = 0, quadA = [], centA = [0, 0], centB = [0, 0], profA = [], profB = [];
-          if (renderBox.ok && sourceBox.ok) {
-            const N = 384;
-            const a = drawCrop(source, sourceBox, N).data;
-            const b = drawCrop(shot, renderBox, N).data;
-            const am = new Uint8Array(N * N);
-            const bm = new Uint8Array(N * N);
-            for (let i = 0; i < N * N; i++) {
-              am[i] = a[i * 4 + 3] > 128 ? 1 : 0;
-              bm[i] = isLogo(b[i * 4], b[i * 4 + 1], b[i * 4 + 2]) ? 1 : 0;
-            }
-            const iouOf = (m1, m2) => {
-              let it = 0, un = 0;
-              for (let i = 0; i < m1.length; i++) { if (m1[i] || m2[i]) { un++; if (m1[i] && m2[i]) it++; } }
-              return un ? it / un : 0;
-            };
-            const areaOf = (m) => { let a = 0; for (let i = 0; i < m.length; i++) a += m[i]; return a; };
-            const quadIou = (m1, m2, qx, qy) => {
-              const half = N / 2;
-              let it = 0, un = 0;
-              for (let y = qy * half; y < qy * half + half; y++) {
-                for (let x = qx * half; x < qx * half + half; x++) {
-                  const i = y * N + x;
-                  if (m1[i] || m2[i]) { un++; if (m1[i] && m2[i]) it++; }
-                }
-              }
-              return un ? it / un : 0;
-            };
-            areaA = areaOf(am); areaB = areaOf(bm);
-            quadA = [quadIou(am, bm, 0, 0), quadIou(am, bm, 1, 0), quadIou(am, bm, 0, 1), quadIou(am, bm, 1, 1)];
-            const centroid = (m) => {
-              let sx = 0, sy = 0, n = 0;
-              for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (m[y * N + x]) { sx += x; sy += y; n++; }
-              return n ? [+(sx / n / N).toFixed(3), +(sy / n / N).toFixed(3)] : [0, 0];
-            };
-            centA = centroid(am); centB = centroid(bm);
-            const prof = (m) => {
-              const rows = [];
-              for (let r = 0; r < 8; r++) {
-                const y0 = Math.floor((r * N) / 8), y1 = Math.floor(((r + 1) * N) / 8);
-                let mn = N, mx = -1;
-                for (let y = y0; y < y1; y++) for (let x = 0; x < N; x++) if (m[y * N + x]) { if (x < mn) mn = x; if (x > mx) mx = x; }
-                rows.push(mn === N ? -1 : +(mn / N).toFixed(2));
-              }
-              return rows;
-            };
-            profA = prof(am); profB = prof(bm);
-            iou = iouOf(am, bm);
-            // 2px edge tolerance: a colour-segmented silhouette of a glossy 3D
-            // render can never match the alpha mask pixel-for-pixel, so the
-            // headline IoU dilates both masks by 2px per side (documented).
-            const dilate = (m, r) => {
-              const out = new Uint8Array(m.length);
-              for (let y = 0; y < N; y++) {
-                for (let x = 0; x < N; x++) {
-                  if (!m[y * N + x]) continue;
-                  for (let dy = -r; dy <= r; dy++) {
-                    const yy = y + dy;
-                    if (yy < 0 || yy >= N) continue;
-                    for (let dx = -r; dx <= r; dx++) {
-                      const xx = x + dx;
-                      if (xx >= 0 && xx < N) out[yy * N + xx] = 1;
-                    }
-                  }
-                }
-              }
-              return out;
-            };
-            iouTolerant = iouOf(dilate(am, 2), dilate(bm, 2));
-            // Rotation diagnostic: find the in-plane angle at which the render
-            // mask best matches the source (0 means upright within tolerance).
-            const cx = N / 2, cy = N / 2;
-            for (let deg = -4; deg <= 4.001; deg += 0.5) {
-              const rad = deg * Math.PI / 180, co = Math.cos(rad), si = Math.sin(rad);
-              const rm = new Uint8Array(N * N);
-              for (let y = 0; y < N; y++) {
-                for (let x = 0; x < N; x++) {
-                  const dx = x - cx, dy = y - cy;
-                  const sx = Math.round(cx + dx * co - dy * si);
-                  const sy = Math.round(cy + dx * si + dy * co);
-                  if (sx >= 0 && sx < N && sy >= 0 && sy < N && bm[sy * N + sx]) rm[y * N + x] = 1;
-                }
-              }
-              const v = iouOf(am, rm);
-              if (v > bestIou) { bestIou = v; bestAngle = deg; }
-            }
-            inter = 0; union = 0;
-            const amX = new Uint8Array(N * N);
-            const amY = new Uint8Array(N * N);
-            for (let y = 0; y < N; y++) {
-              for (let x = 0; x < N; x++) {
-                amX[y * N + x] = am[y * N + (N - 1 - x)];
-                amY[y * N + x] = am[(N - 1 - y) * N + x];
-              }
-            }
-            iouMirrorX = iouOf(amX, bm);
-            iouMirrorY = iouOf(amY, bm);
-          }
-          const sourceSmall = read(source, 512, 512);
-          const result = {
-            iou, iouTolerant, iouMirrorX, iouMirrorY, bestIou, bestAngle, areaA, areaB, quadA,
-            centA, centB, profA, profB,
-            renderOk: renderBox.ok, sourceOk: sourceBox.ok,
-            renderBox: [renderBox.minX, renderBox.minY, renderBox.maxX, renderBox.maxY],
-            sourceBox: [Math.round(sourceBox.minX), Math.round(sourceBox.minY), Math.round(sourceBox.maxX), Math.round(sourceBox.maxY)],
-            renderSat: avgSat(renderPx, isFg),
-            sourceSat: avgSat(sourceSmall, (i) => sourceSmall.data[i + 3] > 40),
-            pieces: canvas ? canvas.dataset.scenePieces : null,
-            supports: canvas ? canvas.dataset.sceneSupports : null,
-            logoSize: canvas ? canvas.dataset.sceneLogoSize : null,
-          };
-          return result;
-        } finally {
-          restore();
-        }
       })()`,
     );
-    check(
-      "CHECK 2b-1 — 3D logo built from the five real pieces (top,bottom,right,fold,leaf)",
-      logoScene.pieces === "top,bottom,right,fold,leaf",
-      `pieces=${logoScene.pieces}`,
-    );
-    check(
-      "CHECK 2b-2 — five distinct support objects in the scene",
-      logoScene.supports === "5",
-      `supports=${logoScene.supports}`,
-    );
-    check(
-      "CHECK 2b-3 — assembled 3D logo silhouette IoU vs the real logo mask (2px tolerance, >= 0.80)",
-      !logoScene.error && logoScene.iouTolerant >= 0.8,
-      JSON.stringify({ iou: +logoScene.iou.toFixed(3), iou2px: +logoScene.iouTolerant.toFixed(3), areaA: logoScene.areaA, areaB: logoScene.areaB, quads: logoScene.quadA.map((v) => +v.toFixed(2)), centA: logoScene.centA, centB: logoScene.centB, profA: logoScene.profA, profB: logoScene.profB }),
-    );
-    check(
-      "CHECK 2b-4 — light-mode logo saturation not washed out (render >= 0.6 × source)",
-      !logoScene.error && logoScene.sourceSat > 0 && logoScene.renderSat >= 0.6 * logoScene.sourceSat,
-      JSON.stringify({ renderSat: logoScene.renderSat, sourceSat: logoScene.sourceSat, ratio: logoScene.sourceSat ? +(logoScene.renderSat / logoScene.sourceSat).toFixed(3) : 0 }),
-    );
-    check(
-      "CHECK 2b-5 — assembled 3D logo has sane proportions (non-degenerate bbox)",
-      !logoScene.error && typeof logoScene.logoSize === "string" && logoScene.logoSize.split("x").every((v) => Number(v) > 0.5),
-      `logoSize=${logoScene.logoSize}`,
-    );
-    assertClean("real-logo-3d");
+    check("CHECK L60 — hover explodes the mark (state=exploded)", exploded.state === "exploded", String(exploded.state));
+    check("CHECK L61 — all five real pieces carry a transform when exploded", exploded.moved === 5, `moved=${exploded.moved}`);
+    check("CHECK L62 — every tooltip is visible while exploded", exploded.tipsVisible === hero.tooltips, `${exploded.tipsVisible}/${hero.tooltips}`);
+    check("CHECK L63 — leader lines are drawn when exploded", exploded.leaderOpacity > 0.5, String(exploded.leaderOpacity));
+    check("CHECK L64 — aria-expanded follows the exploded state", exploded.triggerExpanded === "true", String(exploded.triggerExpanded));
 
-    /* -- TEST 3: reduced motion → static composition ----------------------- */
+    // Bounding-box safety: no tooltip may touch the headline, the CTAs, the
+    // navbar or another tooltip.
+    const overlap = await evaluate(
+      cdp,
+      `(() => {
+        const root = document.querySelector('[data-hero="svg-v2"]');
+        const tips = [...root.querySelectorAll('[data-hero-tooltip]')].filter((li) => +getComputedStyle(li).opacity > 0.5).map((li) => { const r = li.getBoundingClientRect(); return { t: li.dataset.heroTooltip, x: r.x, y: r.y, w: r.width, h: r.height }; });
+        const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+        const pairClashes = [];
+        for (let i = 0; i < tips.length; i++) for (let j = i + 1; j < tips.length; j++) if (overlaps(tips[i], tips[j])) pairClashes.push([tips[i].t, tips[j].t]);
+        const others = [...document.querySelectorAll('h1, #home a, header a, header button')]
+          .filter((el) => !el.closest('[data-hero-tooltip]'))
+          .map((el) => { const r = el.getBoundingClientRect(); return { tag: el.tagName, r }; });
+        const tipVsCopy = [];
+        for (const tip of tips) for (const other of others) { const r = { x: other.r.x, y: other.r.y, w: other.r.width, h: other.r.height }; if (r.w && r.h && overlaps(tip, r)) tipVsCopy.push([tip.t, other.tag]); }
+        return { pairClashes, tipVsCopy, count: tips.length };
+      })()`,
+    );
+    check("CHECK L65 — no tooltip overlaps another tooltip", overlap.pairClashes.length === 0, JSON.stringify(overlap.pairClashes));
+    check("CHECK L66 — no tooltip overlaps the headline, CTAs or navbar", overlap.count > 0 && overlap.pairClashes.length === 0 && overlap.tipVsCopy.length === 0, JSON.stringify(overlap));
+
+    // CTAs stay hit-testable while exploded.
+    const ctaHit = await evaluate(
+      cdp,
+      `(() => {
+        const cta = document.querySelector('#home a[href="#start"]');
+        if (!cta) return { ok: false, reason: 'missing' };
+        const r = cta.getBoundingClientRect();
+        const el = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return { ok: Boolean(el && (cta.contains(el) || el.contains(cta))), tag: el ? el.tagName : null };
+      })()`,
+    );
+    check("CHECK L67 — the hero CTA stays hit-testable while exploded", ctaHit.ok === true, JSON.stringify(ctaHit));
+
+    // Pointer leave → graceful reassemble.
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+    await sleep(900);
+    const reassembled = await evaluate(cdp, `document.querySelector('[data-hero="svg-v2"]').dataset.heroState`);
+    check("CHECK L68 — pointer leave reassembles the mark", reassembled === "assembled", String(reassembled));
+
+    // Keyboard focus explodes; Escape reassembles.
+    await evaluate(cdp, `document.querySelector('[data-hero="svg-v2"] .hero-mark__trigger').focus()`);
+    await sleep(800);
+    const focusHero = await evaluate(cdp, `document.querySelector('[data-hero="svg-v2"]').dataset.heroState`);
+    check("CHECK L69 — keyboard focus explodes the mark", focusHero === "exploded", String(focusHero));
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+    await sleep(900);
+    const escState = await evaluate(cdp, `document.querySelector('[data-hero="svg-v2"]').dataset.heroState`);
+    check("CHECK L70 — Escape reassembles the mark", escState === "assembled", String(escState));
+
+    // Screenshots: assembled, mid-explosion and exploded, light + dark.
+    await evaluate(cdp, `document.documentElement.classList.remove('dark')`);
+    await shotHero("hero-assembled-light.png");
+    await evaluate(cdp, `document.documentElement.classList.add('dark')`);
+    await shotHero("hero-assembled-dark.png");
+    await evaluate(cdp, `document.documentElement.classList.remove('dark')`);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: perfBox.x, y: perfBox.y });
+    await sleep(240);
+    await shotHero("hero-exploding-light.png");
+    await sleep(700);
+    await shotHero("hero-exploded-light.png");
+    await evaluate(cdp, `document.documentElement.classList.add('dark')`);
+    await shotHero("hero-exploded-dark.png");
+    await evaluate(cdp, `document.documentElement.classList.remove('dark')`);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+    await sleep(800);
+
+    // Silhouette fidelity of the ASSEMBLED SVG against the real PNG mask.
+    //
+    // MEASUREMENT (rewritten after CHECK L71 first read 0.25 — a harness bug,
+    // not a geometry bug). A single page screenshot cannot be masked by colour:
+    // the clip legitimately contains the blueprint grid, the blue traces and
+    // anchors, focus rings and, while the idle float runs, the mark itself in
+    // two different places. "Saturated or dark" marked all of that as logo, so
+    // the bounding box grew to the whole clip and the IoU collapsed. The clip is
+    // now captured TWICE — once with the mark's SVG painted and once with it
+    // hidden — and the silhouette is the pixel difference between the two
+    // passes. Everything that is not the mark cancels out exactly.
+    //
+    // Measurement-only styles (never shipped CSS) stop the idle float and the
+    // entrance so both passes line up, and drop the leaf's decorative
+    // drop-shadow so what is measured is the artwork's geometry, not its glow.
+    const IOU_STYLE = {
+      decor: ".hero-mark__glow, .hero-mark__frame { visibility: hidden !important; }",
+      freeze: ".hero-mark-root, .hero-mark-root * { animation: none !important; transition: none !important; }",
+      flatten: ".hero-mark__svg [data-logo-piece] { filter: none !important; }",
+      // Pins the resting geometry: the idle float and the entrance are killed
+      // above, but a state change landing between the two passes (the idle
+      // auto-open, for example) would still move the pieces and silently
+      // misalign the mask. CHECK L71 measures the assembled silhouette, and
+      // `transform: none` IS that silhouette.
+      crest: ".hero-mark__trigger, .hero-mark__svg [data-logo-piece] { transform: none !important; }",
+      hideMark: ".hero-mark__svg { visibility: hidden !important; }",
+    };
+    const setIouStyle = (text) =>
+      evaluate(
+        cdp,
+        `(() => { let s = document.getElementById('iou-style'); if (!s) { s = document.createElement('style'); s.id = 'iou-style'; document.head.appendChild(s); } s.textContent = ${JSON.stringify(text)}; return true; })()`,
+      );
+
+    /**
+     * Captures the hero mark twice (painted / hidden) and returns both PNG data
+     * URLs plus the state they were taken in. The mark must be at rest: blurring
+     * the trigger and waiting for `assembled` keeps the round trip honest — if
+     * it never settles the waitFor fails instead of measuring a mid-flight mark.
+     */
+    const shootMark = async ({ pin = true } = {}) => {
+      await evaluate(
+        cdp,
+        `(() => {
+           if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+           window.scrollTo(0, 0);
+           // The hero auto-opens once ~3 s after the last input; a wheel event
+           // is a real, harmless input that pushes that timer (and collapses an
+           // auto-opened mark) so the two passes cannot catch it mid-explosion.
+           window.dispatchEvent(new WheelEvent("wheel", { deltaY: 0 }));
+           return true;
+         })()`,
+      );
+      await waitFor(
+        cdp,
+        `document.querySelector('[data-hero="svg-v2"]')?.dataset.heroState === "assembled"`,
+        8000,
+        "hero assembled before the silhouette capture",
+      );
+      await waitFor(
+        cdp,
+        `[...document.querySelectorAll('[data-hero="svg-v2"] [data-hero-tooltip]')].every((li) => +getComputedStyle(li).opacity < 0.05)`,
+        8000,
+        "hero tooltips hidden before the silhouette capture",
+      );
+      const frozen = IOU_STYLE.decor + IOU_STYLE.freeze + IOU_STYLE.flatten + (pin ? IOU_STYLE.crest : "");
+      await setIouStyle(frozen);
+      await sleep(150);
+      // Read WHILE the measurement style is applied: removing it re-applies the
+      // entrance animation (a fresh `animation` value starts from `backwards`),
+      // so anything sampled after the restore describes the replay, not the
+      // capture. Only the mark's own pieces are sampled — the glow layer is a
+      // decorative duplicate whose five groups are never animated.
+      const sample = () =>
+        evaluate(
+          cdp,
+          `(() => {
+             const root = document.querySelector('[data-hero="svg-v2"]');
+             return {
+               state: root?.dataset.heroState,
+               tooltipsLit: [...root.querySelectorAll('[data-hero-tooltip]')].filter((li) => +getComputedStyle(li).opacity > 0.05).length,
+               glow: getComputedStyle(document.querySelector('.hero-mark__glow') ?? document.body).visibility,
+               pieces: [...root.querySelectorAll('.hero-mark__svg [data-logo-piece]')].map((g) => getComputedStyle(g).transform),
+               opacity: [...root.querySelectorAll('.hero-mark__svg [data-logo-piece]')].map((g) => +getComputedStyle(g).opacity),
+             };
+           })()`,
+        );
+      const armed = await sample();
+      const box = await evaluate(
+        cdp,
+        `(() => { const r = document.querySelector('[data-hero="svg-v2"] .hero-mark__svg').getBoundingClientRect(); return { x: Math.round(r.x + window.scrollX), y: Math.round(r.y + window.scrollY), width: Math.round(r.width), height: Math.round(r.height) }; })()`,
+      );
+      const capture = async () => {
+        const shot = await cdp.send("Page.captureScreenshot", {
+          format: "png",
+          clip: { ...box, scale: 1 },
+          captureBeyondViewport: true,
+        });
+        return shot.data;
+      };
+      const painted = await capture();
+      await setIouStyle(frozen + IOU_STYLE.hideMark);
+      await sleep(150);
+      const hidden = await capture();
+      // The second sample proves the mark did not move between the two passes.
+      const settled = await sample();
+      await setIouStyle("");
+      return { box, painted, hidden, armed, settled };
+    };
+
+    /**
+     * Compares the mask the mark actually paints (painted minus hidden) with the
+     * source artwork's alpha mask, cropping both to their own bounding box and
+     * scaling them onto the same 384 grid exactly like CHECK 38. When `compare`
+     * is given, the same is done for that capture as well and the two painted
+     * masks are compared with each other (the explode → reassemble round trip).
+     */
+    const IOU = (shot, compare = null) => `(async () => {
+      const load = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('load')); i.src = src; });
+      let source = null;
+      for (const c of window.LOGO_CANDIDATES_FOR_BROWSER) { try { source = await load(c); break; } catch {} }
+      if (!source) return { error: 'source logo not servable' };
+      const N = 384, SrcN = 1024, DIFF = 24;
+      const read = (img, w, h) => { const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const ctx = cv.getContext('2d', { willReadFrequently: true }); ctx.clearRect(0, 0, w, h); ctx.drawImage(img, 0, 0, w, h); return ctx.getImageData(0, 0, w, h); };
+      const boxOfMask = (mask, w, h) => { let a = w, b = h, c = -1, d = -1; for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (mask[y * w + x]) { if (x < a) a = x; if (x > c) c = x; if (y < b) b = y; if (y > d) d = y; } return { minX: a, minY: b, maxX: c, maxY: d }; };
+      const boxOfAlpha = (px, w, h, thr) => { let a = w, b = h, c = -1, d = -1; for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (px.data[(y * w + x) * 4 + 3] > thr) { if (x < a) a = x; if (x > c) c = x; if (y < b) b = y; if (y > d) d = y; } return { minX: a, minY: b, maxX: c, maxY: d }; };
+      const maskOf = (painted, hidden) => {
+        const W = painted.naturalWidth, H = painted.naturalHeight;
+        if (!W || !H || hidden.naturalWidth !== W || hidden.naturalHeight !== H) return { error: 'capture size mismatch' };
+        const ap = read(painted, W, H).data, bp = read(hidden, W, H).data;
+        const mask = new Uint8Array(W * H);
+        let px = 0;
+        for (let i = 0; i < W * H; i++) {
+          const d = Math.max(Math.abs(ap[i * 4] - bp[i * 4]), Math.abs(ap[i * 4 + 1] - bp[i * 4 + 1]), Math.abs(ap[i * 4 + 2] - bp[i * 4 + 2]), Math.abs(ap[i * 4 + 3] - bp[i * 4 + 3]));
+          if (d > DIFF) { mask[i] = 1; px++; }
+        }
+        return { mask, W, H, px };
+      };
+      const normalize = (mm) => {
+        if (mm.error) return mm;
+        const box = boxOfMask(mm.mask, mm.W, mm.H);
+        if (box.maxX - box.minX <= 4 || mm.px < 64) return { error: 'render empty', px: mm.px };
+        const raw = document.createElement('canvas');
+        raw.width = mm.W; raw.height = mm.H;
+        const rctx = raw.getContext('2d', { willReadFrequently: true });
+        const image = rctx.createImageData(mm.W, mm.H);
+        for (let i = 0; i < mm.W * mm.H; i++) { const v = mm.mask[i] ? 255 : 0; image.data[i * 4] = v; image.data[i * 4 + 1] = v; image.data[i * 4 + 2] = v; image.data[i * 4 + 3] = 255; }
+        rctx.putImageData(image, 0, 0);
+        const cv = document.createElement('canvas');
+        cv.width = N; cv.height = N;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        ctx.clearRect(0, 0, N, N);
+        ctx.drawImage(raw, box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY, 0, 0, N, N);
+        const data = ctx.getImageData(0, 0, N, N).data;
+        const out = new Uint8Array(N * N);
+        for (let i = 0; i < N * N; i++) out[i] = data[i * 4] > 127 ? 1 : 0;
+        return { mask: out, px: mm.px, box, size: { W: mm.W, H: mm.H } };
+      };
+      const iouOf = (x, y) => { let it = 0, un = 0; for (let i = 0; i < x.length; i++) { if (x[i] || y[i]) { un++; if (x[i] && y[i]) it++; } } return un ? it / un : 0; };
+      const painted = await load('data:image/png;base64,' + ${JSON.stringify(shot.painted)});
+      const hidden = await load('data:image/png;base64,' + ${JSON.stringify(shot.hidden)});
+      const rendered = normalize(maskOf(painted, hidden));
+      if (rendered.error) return { error: rendered.error, paintedPx: rendered.px || 0 };
+      const sp = read(source, SrcN, SrcN);
+      const sbn = boxOfAlpha(sp, SrcN, SrcN, 128);
+      if (sbn.maxX - sbn.minX <= 4) return { error: 'source alpha empty' };
+      const ratio = (source.naturalWidth || 4096) / SrcN;
+      const sbox = { minX: sbn.minX * ratio, minY: sbn.minY * ratio, maxX: sbn.maxX * ratio, maxY: sbn.maxY * ratio };
+      const refCv = document.createElement('canvas');
+      refCv.width = N; refCv.height = N;
+      const refCtx = refCv.getContext('2d', { willReadFrequently: true });
+      refCtx.clearRect(0, 0, N, N);
+      refCtx.drawImage(source, sbox.minX, sbox.minY, sbox.maxX - sbox.minX, sbox.maxY - sbox.minY, 0, 0, N, N);
+      const refData = refCtx.getImageData(0, 0, N, N).data;
+      const refMask = new Uint8Array(N * N);
+      for (let i = 0; i < N * N; i++) refMask[i] = refData[i * 4 + 3] > 128 ? 1 : 0;
+      const result = { iou: iouOf(refMask, rendered.mask), paintedPx: rendered.px, box: rendered.box, capture: rendered.size };
+      if (${compare ? "true" : "false"}) {
+        const painted0 = await load('data:image/png;base64,' + ${JSON.stringify(compare ? compare.painted : "")});
+        const hidden0 = await load('data:image/png;base64,' + ${JSON.stringify(compare ? compare.hidden : "")});
+        const first = normalize(maskOf(painted0, hidden0));
+        result.roundTrip = first.error ? null : iouOf(first.mask, rendered.mask);
+      }
+      return result;
+    })()`;
+
+    // The suite above has driven hover, explode, focus and theme changes, so the
+    // ambient page state at this point is not comparable with itself (a leftover
+    // theme, a scroll offset, an auto-opened mark). The silhouette is therefore
+    // measured on a page that is deliberately put back into one known state.
+    await evaluate(cdp, `(() => { try { localStorage.setItem("jazari-theme", "light"); } catch {} return true; })()`);
+    await cdp.send("Page.navigate", { url: `${BASE}/` });
+    await waitFor(cdp, `document.querySelector('[data-hero="svg-v2"]') !== null`, 15000, "hero after the silhouette reload");
+    await waitFor(
+      cdp,
+      `document.querySelectorAll('[data-hero="svg-v2"] [data-hero-tooltip]').length > 0`,
+      15000,
+      "hero services after the silhouette reload",
+    );
+    await sleep(900);
+    // Set AFTER the reload: a navigation clears the page's globals.
+    await evaluate(cdp, `window.LOGO_CANDIDATES_FOR_BROWSER = ${JSON.stringify(LOGO_CANDIDATES)}; true`);
+
+    const shotAssembled = await shootMark({ pin: true });
+    const iouAssembled = await evaluate(cdp, IOU(shotAssembled));
+    check(
+      "CHECK L71 — assembled SVG silhouette IoU vs the real logo ≥ 0.95",
+      !iouAssembled.error && iouAssembled.iou >= 0.95 && shotAssembled.armed.state === "assembled" && shotAssembled.armed.tooltipsLit === 0,
+      JSON.stringify({ ...iouAssembled, clip: shotAssembled.box, armed: shotAssembled.armed }),
+    );
+    mkdirSync(SCREENSHOT_DIR, { recursive: true });
+    writeFileSync(join(SCREENSHOT_DIR, "hero-iou-painted.png"), Buffer.from(shotAssembled.painted, "base64"));
+    writeFileSync(join(SCREENSHOT_DIR, "hero-iou-hidden.png"), Buffer.from(shotAssembled.hidden, "base64"));
+
+    // Assembled → exploded → assembled must return to the same silhouette.
+    await evaluate(cdp, `document.querySelector('[data-hero="svg-v2"] .hero-mark__trigger').focus()`);
+    await waitFor(
+      cdp,
+      `document.querySelector('[data-hero="svg-v2"]')?.dataset.heroState === "exploded"`,
+      6000,
+      "hero explodes before the reassemble round trip",
+    );
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+    // NOT pinned: the pieces must have travelled BACK to their resting geometry
+    // by themselves, which is asserted directly on the computed transforms.
+    const shotReassembled = await shootMark({ pin: false });
+    const iou2 = await evaluate(cdp, IOU(shotReassembled, shotAssembled));
+    const atRest =
+      shotReassembled.armed.state === "assembled" &&
+      shotReassembled.armed.tooltipsLit === 0 &&
+      shotReassembled.armed.pieces.length === 5 &&
+      shotReassembled.armed.pieces.every((t) => t === "none") &&
+      shotReassembled.armed.opacity.every((o) => o === 1) &&
+      JSON.stringify(shotReassembled.settled.pieces) === JSON.stringify(shotReassembled.armed.pieces);
+    check(
+      "CHECK L72 — after explode → reassemble the silhouette is identical (IoU ≥ 0.95)",
+      atRest && !iou2.error && iou2.iou >= 0.95 && iou2.roundTrip !== null && iou2.roundTrip >= 0.95,
+      JSON.stringify({ iou: iou2.iou, roundTrip: iou2.roundTrip, piecesBackAtRest: atRest, armed: shotReassembled.armed }),
+    );
+    assertClean("hero-interaction");
+
+    /* -- TEST 3: reduced motion → a static mark, tooltips still present ---- */
     console.log("\n[4] prefers-reduced-motion");
     resetErrors();
     await cdp.send("Emulation.setEmulatedMedia", {
       features: [{ name: "prefers-reduced-motion", value: "reduce" }],
     });
     await reload();
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 12000, "scene under reduced motion");
-    await evaluate(cdp, BRING_HERO_INTO_VIEW); // engine must be RUNNING to prove it stays STILL
-    await sleep(1200); // let any (disabled) assembly settle
-    const r1 = await evaluate(cdp, HOTSPOT_POS);
-    await sleep(700);
-    const r2 = await evaluate(cdp, HOTSPOT_POS);
-    const rDelta = Math.hypot(r2.x - r1.x, r2.y - r1.y);
-    check("reduced motion: composition static (<1.5px/700ms)", rDelta < 1.5, `delta=${rDelta.toFixed(2)}px`);
+    await waitFor(cdp, `document.querySelector('[data-hero="svg-v2"]') !== null`, 12000, "hero under reduced motion");
+    try {
+      await waitFor(
+        cdp,
+        `Number(document.querySelector('[data-hero="svg-v2"]')?.dataset.tooltips ?? 0) > 0`,
+        15000,
+        "hero tooltips (reduced motion)",
+      );
+    } catch {
+      /* reported honestly by CHECK L74 */
+    }
+    await sleep(900);
+    const rmHero = await evaluate(
+      cdp,
+      `(() => {
+        const root = document.querySelector('[data-hero="svg-v2"]');
+        const trigger = root.querySelector('.hero-mark__trigger');
+        const piece = root.querySelector('[data-logo-piece]');
+        const tips = [...root.querySelectorAll('[data-hero-tooltip]')];
+        return {
+          float: getComputedStyle(trigger).animationName,
+          pieceAnim: getComputedStyle(piece).animationName,
+          tooltips: tips.length,
+          tipsVisible: tips.filter((li) => +getComputedStyle(li).opacity > 0.9).length,
+        };
+      })()`,
+    );
+    check("CHECK L73 — reduced motion: the mark does not animate", rmHero.float === "none" && rmHero.pieceAnim === "none", JSON.stringify({ float: rmHero.float, piece: rmHero.pieceAnim }));
+    check("CHECK L74 — reduced motion: the tooltips are shown statically", rmHero.tooltips > 0 && rmHero.tipsVisible === rmHero.tooltips, `${rmHero.tipsVisible}/${rmHero.tooltips}`);
+    await shotHero("hero-reduced-motion.png");
     assertClean("reduced-motion");
     await cdp.send("Emulation.setEmulatedMedia", { features: [] });
 
-    /* -- TEST 5: mobile → degraded tier ------------------------------------ */
-    console.log("\n[5] Mobile metrics → quality tier");
+    /* -- TEST 5: mobile — the tooltips become a list, no overflow ---------- */
+    console.log("\n[5] Mobile (390×844) → tooltip list, no horizontal overflow");
     resetErrors();
-    await cdp.send("Emulation.setDeviceMetricsOverride", {
-      width: 390,
-      height: 844,
-      deviceScaleFactor: 3,
-      mobile: true,
-    });
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
     await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
     await reload();
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 12000, "scene on mobile");
+    await waitFor(cdp, `document.querySelector('[data-hero="svg-v2"]') !== null`, 12000, "hero on mobile");
+    // The tooltip list is backend-driven; a fixed sleep measured an empty list
+    // while the first services response was still in flight.
+    await waitFor(cdp, `document.querySelectorAll('[data-hero="svg-v2"] [data-hero-tooltip]').length > 0`, 12000, "hero tooltips on mobile");
+    await sleep(900);
     const mobile = await evaluate(
       cdp,
-      `(() => ({
-        quality: document.querySelector(".hero-scene canvas")?.dataset.quality,
-        w: document.querySelector(".hero-scene canvas")?.width ?? 0,
-        h: document.querySelector(".hero-scene canvas")?.height ?? 0,
-        coarse: matchMedia("(pointer: coarse)").matches,
-      }))()`,
+      `(() => {
+        const root = document.querySelector('[data-hero="svg-v2"]');
+        const tips = [...root.querySelectorAll('[data-hero-tooltip]')];
+        const mark = root.querySelector('.hero-mark__trigger').getBoundingClientRect();
+        const below = tips.filter((li) => li.getBoundingClientRect().y > mark.bottom - 2).length;
+        const tooSmall = tips.filter((li) => { const a = li.querySelector('a'); const r = a ? a.getBoundingClientRect() : li.getBoundingClientRect(); return r.height < 44; }).length;
+        return {
+          coarse: matchMedia('(pointer: coarse)').matches,
+          docWidth: document.documentElement.scrollWidth,
+          viewWidth: window.innerWidth,
+          canvases: document.querySelectorAll('canvas').length,
+          tips: tips.length,
+          below,
+          tooSmall,
+          visible: tips.filter((li) => +getComputedStyle(li).opacity > 0.9).length,
+        };
+      })()`,
     );
-    check("mobile receives LOW/MEDIUM tier", ["low", "medium"].includes(mobile.quality), `tier=${mobile.quality}, coarse=${mobile.coarse}`);
-    check("mobile canvas has real pixel dimensions", mobile.w > 0 && mobile.h > 0, `${mobile.w}×${mobile.h}`);
+    check("CHECK L75 — mobile: no horizontal overflow", mobile.docWidth <= mobile.viewWidth + 1, `${mobile.docWidth} vs ${mobile.viewWidth}`);
+    check("CHECK L76 — mobile: the tooltips render as a real list under the mark", mobile.tips > 0 && mobile.below === mobile.tips && mobile.visible === mobile.tips, JSON.stringify({ tips: mobile.tips, below: mobile.below, visible: mobile.visible }));
+    check("CHECK L77 — mobile: every tooltip target is ≥ 44 px tall", mobile.tooSmall === 0, `tooSmall=${mobile.tooSmall}`);
+    check("CHECK L78 — still zero canvases on mobile", mobile.canvases === 0, `count=${mobile.canvases}`);
+    await shotHero("hero-mobile-light.png");
     assertClean("mobile");
     await cdp.send("Emulation.clearDeviceMetricsOverride");
     await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
 
-    /* -- TEST 6: admin never loads the three chunk (runtime) --------------- */
+    /* -- TEST 6: admin isolation (no hero code, no canvas) ----------------- */
     console.log("\n[6] Admin isolation (runtime resource check)");
     resetErrors();
     await cdp.send("Page.navigate", { url: `${BASE}/admin/dashboard` });
@@ -885,20 +1094,20 @@ async function main() {
     const admin = await evaluate(
       cdp,
       `(() => ({
-        threeLoaded: performance.getEntriesByType("resource").some((r) => r.name.includes(${JSON.stringify(threeChunk)})),
-        canvasCount: document.querySelectorAll("canvas").length,
+        heroRoot: document.querySelectorAll('[data-hero="svg-v2"]').length,
+        canvasCount: document.querySelectorAll('canvas').length,
+        webglResources: performance.getEntriesByType('resource').filter((r) => /three|webgl/i.test(r.name)).length,
         title: document.title,
       }))()`,
     );
-    check("admin loads NO three chunk", admin.threeLoaded === false);
-    check("admin has zero WebGL canvases", admin.canvasCount === 0, `count=${admin.canvasCount}`);
+    check("CHECK L79 — /admin ships no hero root and no canvas", admin.heroRoot === 0 && admin.canvasCount === 0 && admin.webglResources === 0, JSON.stringify(admin));
     assertClean("admin");
 
-    /* -- TEST 7: SPA round-trips (Strict-Mode-style mount/dispose) --------- */
-    console.log("\n[7] SPA round-trips ×3 (dispose / remount / leak)");
+    /* -- TEST 7: SPA round-trips (hero unmount / remount ×3) --------------- */
+    console.log("\n[7] SPA round-trips ×3 (unmount / remount / leak)");
     resetErrors();
     await cdp.send("Page.navigate", { url: `${BASE}/` });
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 12000, "home for cycles");
+    await waitFor(cdp, `document.querySelector('[data-hero="svg-v2"]') !== null`, 12000, "home for cycles");
     const readHeap = () =>
       evaluate(
         cdp,
@@ -907,69 +1116,63 @@ async function main() {
     const heapStart = await readHeap();
 
     for (let cycle = 1; cycle <= 3; cycle += 1) {
-      // Client-side navigation away (footer admin Link) unmounts the hero…
       await evaluate(cdp, `document.querySelector('footer a[href="/admin/login"]').click()`);
       await waitFor(cdp, `location.pathname === "/admin/login"`, 8000, `cycle ${cycle} → admin`);
-      // …and back — hero remounts, engine rebuilds from scratch.
       await evaluate(cdp, `history.back()`);
       await waitFor(cdp, `location.pathname === "/"`, 8000, `cycle ${cycle} → home`);
       await sleep(600);
     }
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 12000, "scene after cycles");
+    await waitFor(cdp, `document.querySelector('[data-hero="svg-v2"]') !== null`, 12000, "hero after cycles");
     const afterCycles = await evaluate(
       cdp,
       `(() => ({
-        canvases: document.querySelectorAll(".hero-scene canvas").length,
-        scene: document.querySelector("[data-scene]")?.dataset.scene,
+        heroRoots: document.querySelectorAll('[data-hero="svg-v2"]').length,
+        pieces: document.querySelectorAll('[data-hero="svg-v2"] .hero-mark__svg [data-logo-piece]').length,
+        canvases: document.querySelectorAll('canvas').length,
       }))()`,
     );
     const heapEnd = await readHeap();
-    check("still exactly one canvas after 3 remounts", afterCycles.canvases === 1, `count=${afterCycles.canvases}`);
-    check("scene re-activates after remounts", afterCycles.scene === "webgl");
-    check("heap stays bounded (≤3× post-gc start)",
+    check("CHECK L80 — exactly one hero root and five pieces after 3 remounts", afterCycles.heroRoots === 1 && afterCycles.pieces === 5 && afterCycles.canvases === 0, JSON.stringify(afterCycles));
+    check(
+      "CHECK L81 — heap stays bounded (≤3× post-gc start)",
       heapEnd === 0 || heapEnd <= heapStart * 3,
       `${(heapStart / 1048576).toFixed(1)}MB → ${(heapEnd / 1048576).toFixed(1)}MB`,
     );
     assertClean("spa-cycles");
 
-    /* -- TEST 8: accessibility structure ----------------------------------- */
+    /* -- TEST 8: accessibility structure (hero mark) ----------------------- */
     console.log("\n[8] Accessibility structure");
     resetErrors();
     const a11y = await evaluate(
       cdp,
       `(() => {
-        const canvas = document.querySelector(".hero-scene canvas");
-        const card = document.querySelector(".hero-card");
+        const root = document.querySelector('[data-hero="svg-v2"]');
+        const trigger = root.querySelector('.hero-mark__trigger');
+        const svg = root.querySelector('.hero-mark__svg');
+        const list = root.querySelector('.hero-tooltips');
         return {
-          canvasHidden: canvas?.getAttribute("aria-hidden"),
-          canvasTabindex: canvas?.getAttribute("tabindex"),
-          sceneHidden: document.querySelector(".hero-scene")?.getAttribute("aria-hidden"),
-          hotspotHidden: document.querySelector(".hero-hotspot")?.getAttribute("aria-hidden"),
-          connectorHidden: document.querySelector(".hero-connector")?.getAttribute("aria-hidden"),
-          cardExposed: card ? card.closest("[aria-hidden='true']") === null : false,
-          cardHasText: (card?.textContent ?? "").trim().length > 0,
+          triggerTag: trigger.tagName,
+          expanded: trigger.getAttribute('aria-expanded'),
+          controls: trigger.getAttribute('aria-controls'),
+          srOnly: Boolean(trigger.querySelector('.sr-only')),
+          svgHidden: svg.getAttribute('aria-hidden'),
+          listPresent: Boolean(list),
+          listLabelled: list ? list.getAttribute('aria-label') : null,
+          textAlwaysInDom: [...root.querySelectorAll('[data-hero-tooltip]')].every((li) => (li.textContent || '').trim().length > 0),
+          leadersHidden: root.querySelector('.hero-diagram__leaders') ? root.querySelector('.hero-diagram__leaders').getAttribute('aria-hidden') : null,
           skipLink: Boolean(document.querySelector('a[href="#main"]')),
-          h1: document.querySelectorAll("h1").length,
-          landmarks: {
-            main: document.querySelectorAll("main").length,
-            nav: document.querySelectorAll("nav").length,
-            footer: document.querySelectorAll("footer").length,
-          },
+          h1: document.querySelectorAll('h1').length,
+          landmarks: { main: document.querySelectorAll('main').length, nav: document.querySelectorAll('nav').length, footer: document.querySelectorAll('footer').length },
         };
       })()`,
     );
-    check("canvas aria-hidden=true", a11y.canvasHidden === "true", String(a11y.canvasHidden));
-    check("canvas not keyboard-focusable (no tabindex)", a11y.canvasTabindex === null, String(a11y.canvasTabindex));
-    check("whole scene layer aria-hidden", a11y.sceneHidden === "true");
-    check("hotspot + connector aria-hidden", a11y.hotspotHidden === "true" && a11y.connectorHidden === "true");
-    check("glass card exposed to screen readers", a11y.cardExposed && a11y.cardHasText);
-    check("skip link present", a11y.skipLink);
-    check("exactly one h1", a11y.h1 === 1, `count=${a11y.h1}`);
-    check(
-      "landmarks present (main/nav/footer)",
-      a11y.landmarks.main === 1 && a11y.landmarks.nav >= 1 && a11y.landmarks.footer === 1,
-      JSON.stringify(a11y.landmarks),
-    );
+    check("CHECK L82 — the mark is a <button> with aria-expanded + aria-controls", a11y.triggerTag === "BUTTON" && ["true", "false"].includes(a11y.expanded) && a11y.controls === "hero-service-list", JSON.stringify({ tag: a11y.triggerTag, expanded: a11y.expanded, controls: a11y.controls }));
+    check("CHECK L83 — the mark carries an sr-only label", a11y.srOnly === true);
+    check("CHECK L84 — the decorative SVG is aria-hidden", a11y.svgHidden === "true" && a11y.leadersHidden === "true", JSON.stringify({ svg: a11y.svgHidden, leaders: a11y.leadersHidden }));
+    check("CHECK L85 — the service list is present, labelled and never empty in the DOM", a11y.listPresent && typeof a11y.listLabelled === "string" && a11y.listLabelled.length > 0 && a11y.textAlwaysInDom, JSON.stringify({ list: a11y.listPresent, label: a11y.listLabelled, text: a11y.textAlwaysInDom }));
+    check("CHECK L86 — skip link present", a11y.skipLink);
+    check("CHECK L87 — exactly one h1", a11y.h1 === 1, `count=${a11y.h1}`);
+    check("CHECK L88 — landmarks present (main/nav/footer)", a11y.landmarks.main === 1 && a11y.landmarks.nav >= 1 && a11y.landmarks.footer === 1, JSON.stringify(a11y.landmarks));
     assertClean("a11y");
 
     /* -- TEST 9: existing homepage sections + API data (regression) -------- */
@@ -980,110 +1183,138 @@ async function main() {
       `(() => {
         const cards = (headingId) => {
           const h = document.getElementById(headingId);
-          return h ? h.closest("section")?.querySelectorAll("article").length ?? 0 : -1;
+          return h ? (h.closest('section') ? h.closest('section').querySelectorAll('article').length : 0) : -1;
         };
         return {
-          home: Boolean(document.getElementById("home")),
-          marqueeRows: document.querySelectorAll(".logo-showcase__track, .marquee-track").length,
-          marqueeLogos: document.querySelectorAll(".logo-item img, .marquee-track [data-logo]").length,
-          productCards: cards("product-cards-heading"),
-          serviceCards: document.querySelectorAll("#services article").length,
-          form: Boolean(document.querySelector("#start form")),
-          brandHeading: Boolean(document.getElementById("brand-statement-heading")),
+          home: Boolean(document.getElementById('home')),
+          marqueeRows: document.querySelectorAll('.logo-showcase__track, .marquee-track').length,
+          marqueeLogos: document.querySelectorAll('.logo-item img, .marquee-track [data-logo]').length,
+          productCards: cards('product-cards-heading'),
+          serviceEntries: document.querySelectorAll('#services [data-service-entry]').length,
+          form: Boolean(document.querySelector('#start form')),
+          brandHeading: Boolean(document.getElementById('brand-statement-heading')),
           footer: Boolean(document.querySelector("footer a[href='/admin/login']")),
-          startHeading: Boolean(document.getElementById("start-heading")),
-          servicesHeading: Boolean(document.getElementById("services-heading")),
+          startHeading: Boolean(document.getElementById('start-heading')),
+          servicesHeading: Boolean(document.getElementById('services-heading')),
         };
       })()`,
     );
-    check("section order anchors present (home/products/services/start/brand/footer)",
-      sections.home && sections.productCards >= 0 && sections.servicesHeading && sections.startHeading && sections.brandHeading && sections.footer,
+    check(
+      "section order anchors present (home/products/services/start/brand/footer)",
+      sections.home &&
+        sections.productCards >= 0 &&
+        sections.servicesHeading &&
+        sections.startHeading &&
+        sections.brandHeading &&
+        sections.footer,
       JSON.stringify(sections),
     );
     check("products marquee rendered", sections.marqueeRows >= 2 || !logosReady, `rows=${sections.marqueeRows}, seeded=${logosReady}`);
     check("product cards from API (≥4)", sections.productCards >= 4, `cards=${sections.productCards}`);
-    check("service cards from API (≥6)", sections.serviceCards >= 6, `cards=${sections.serviceCards}`);
+    check("service entries from API (≥6)", sections.serviceEntries >= 6, `entries=${sections.serviceEntries}`);
     check("Start-Your-Project form present", sections.form);
     check("hidden admin entry present in footer", sections.footer);
     assertClean("regression");
 
-    /* -- TEST 10: intake form end-to-end → reference ID -------------------- */
-    console.log("\n[10] Start-Your-Project form end-to-end (TEST 28)");
+    /* -- TEST 10: intake form end-to-end (3 steps + Review → reference ID) -- */
+    console.log("\n[10] Start-Your-Project form end-to-end");
     resetErrors();
-    const filled = await evaluate(
+    await evaluate(cdp, `(() => { try { window.sessionStorage.removeItem('jazari:project-draft:v1'); } catch {} return true; })()`);
+    await cdp.send("Page.reload", { ignoreCache: false });
+    await waitFor(cdp, `document.querySelector('#start form #jt-name') !== null`, 12000, "form ready");
+    // The input above is server-rendered, so it exists before React hydrates.
+    // Wait for a client-only signal so the simulated typing/clicks land on a
+    // live form instead of a static shell.
+    await waitFor(
       cdp,
-      `(() => {
-        const set = (selector, value) => {
-          const el = document.querySelector(selector);
-          if (!el) return false;
-          const proto = el.type === "textarea" ? HTMLTextAreaElement : HTMLInputElement;
-          Object.getOwnPropertyDescriptor(proto.prototype, "value").set.call(el, value);
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          return true;
-        };
-        const continueBtn = () =>
-          [...document.querySelectorAll("#start form button")].find(
-            (b) => b.textContent.trim() === "Continue" && b.offsetParent !== null,
-          );
-        const step1 = set("#jt-name", "CDP Verification") && Boolean(continueBtn());
-        if (step1) continueBtn().click();
-        return { step1 };
-      })()`,
+      `document.querySelector('[data-services-state]')?.getAttribute('data-services-state') !== 'loading'`,
+      15000,
+      "form hydrated",
     );
-    check("step 1 (name) accepted + Continue", filled.step1 === true, JSON.stringify(filled));
-    await sleep(500);
-    await evaluate(
-      cdp,
+    await sleep(400);
+    await evaluate(cdp, `document.querySelector('#start').scrollIntoView({ block: 'center', behavior: 'instant' })`);
+
+    const setValue = (selector, value) =>
       `(() => {
-        const el = document.querySelector("#jt-domain");
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, "verify.example");
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        const btn = [...document.querySelectorAll("#start form button")].find((b) => b.textContent.trim() === "Continue");
-        if (btn) btn.click();
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return false;
+        const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement : HTMLInputElement;
+        Object.getOwnPropertyDescriptor(proto.prototype, 'value').set.call(el, ${JSON.stringify(value)});
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
         return true;
-      })()`,
-    );
-    await sleep(500);
-    await evaluate(
+      })()`;
+    const clickContinue = `(() => { const b = [...document.querySelectorAll('#start form button')].find((x) => x.textContent.trim() === 'Continue' && x.offsetParent !== null); if (!b) return 'no-button'; b.click(); return 'clicked'; })()`;
+
+    check("step 1 name accepted", (await evaluate(cdp, setValue("input#jt-name", "CDP Verification"))) === true);
+    check("step 1 Continue", (await evaluate(cdp, clickContinue)) === "clicked");
+    await sleep(450);
+    const step2 = await evaluate(
       cdp,
       `(() => {
-        const el = document.querySelector("#jt-phone");
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, "+15550001111");
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        const btn = [...document.querySelectorAll("#start form button")].find((b) => b.textContent.trim() === "Continue");
-        if (btn) btn.click();
-        return true;
+        const note = document.querySelector('#start .form-step[data-step="1"] .form-note') || document.querySelector('#start .form-note');
+        return { ready: Boolean(document.querySelector('input#jt-phone')), note: note ? /either/i.test(note.textContent) && /or/i.test(note.textContent) : false };
       })()`,
     );
-    await sleep(500);
-    await evaluate(
+    check("step 2 explains the phone-OR-email rule up front", step2.ready && step2.note, JSON.stringify(step2));
+    check("step 2 Continue without contact is blocked", (await evaluate(cdp, clickContinue)) === "clicked");
+    await sleep(350);
+    const summary = await evaluate(
       cdp,
-      `(() => {
-        const chips = document.querySelectorAll('[aria-label="Service you need"] button');
-        if (chips.length) chips[0].click();
-        return chips.length;
-      })()`,
+      `(() => { const el = document.querySelector('[data-form-error-summary]'); return { present: Boolean(el), role: el ? el.getAttribute('role') : null, focused: el ? el === document.activeElement : false }; })()`,
     );
-    await sleep(300);
+    check("CHECK L89 — invalid input shows a focused role=alert error summary", summary.present && summary.role === "alert" && summary.focused, JSON.stringify(summary));
+    check("step 2 phone accepted", (await evaluate(cdp, setValue("input#jt-phone", "+15550001111"))) === true);
+    check("step 2 Continue", (await evaluate(cdp, clickContinue)) === "clicked");
+    await sleep(450);
+    const step3 = await evaluate(
+      cdp,
+      `(() => { const chips = document.querySelectorAll('[aria-label="Service you need"] button'); if (chips.length) chips[0].click(); return chips.length; })()`,
+    );
+    check("step 3 service chips loaded from the API", step3 >= 6, `chips=${step3}`);
+    await sleep(250);
+    check("step 3 Continue", (await evaluate(cdp, clickContinue)) === "clicked");
+    await sleep(450);
+    const review = await evaluate(
+      cdp,
+      `(() => { const el = document.querySelector('[data-form-review]'); return { present: Boolean(el), hasName: /CDP Verification/.test(el ? el.textContent : ''), editLinks: el ? [...el.querySelectorAll('.form-review__edit')].length : 0, submit: Boolean(document.querySelector('#start form button[type="submit"]')) }; })()`,
+    );
+    check("CHECK L90 — Review step summarises every answer with Edit links", review.present && review.hasName && review.editLinks === 3 && review.submit, JSON.stringify(review));
+    const editBack = await evaluate(
+      cdp,
+      `(() => { const b = [...document.querySelectorAll('[data-form-review] .form-review__edit')][1]; if (!b) return 'missing'; b.click(); return 'clicked'; })()`,
+    );
+    await sleep(400);
+    const edited = await evaluate(cdp, `(() => ({ phone: document.querySelector('input#jt-phone') ? document.querySelector('input#jt-phone').value : null }))()`);
+    check("CHECK L91 — Edit jumps back to that step with the data preserved", editBack === "clicked" && edited.phone === "+15550001111", JSON.stringify(edited));
+    // From step 1 the reviewer must walk forward twice to reach Review again.
+    let backToReview = false;
+    for (let hop = 0; hop < 3 && !backToReview; hop += 1) {
+      await evaluate(cdp, `(() => { const b = [...document.querySelectorAll('#start form button')].find((x) => x.textContent.trim() === 'Continue'); if (b) b.click(); return true; })()`);
+      await sleep(450);
+      backToReview = (await evaluate(cdp, `Boolean(document.querySelector('[data-form-review]'))`)) === true;
+    }
+    check("CHECK L95 — returning from Edit lands back on the Review step", backToReview === true, String(backToReview));
+
     const submitted = await evaluate(
       cdp,
-      `(() => {
-        const btn = document.querySelector("#start form button[type='submit']");
-        if (!btn) return false;
-        btn.click();
-        return true;
-      })()`,
+      `(() => { const b = document.querySelector('#start form button[type="submit"]'); if (!b) return false; b.click(); return true; })()`,
     );
     check("final submit clicked", submitted === true, String(submitted));
     const reference = await waitFor(
       cdp,
       `(/JT-\\d{8}-[A-Z0-9]{6}/.test(document.body.innerText)) ? document.body.innerText.match(/JT-\\d{8}-[A-Z0-9]{6}/)[0] : false`,
-      10000,
+      12000,
       "success modal reference ID",
     );
     check("success modal shows server reference ID", Boolean(reference), String(reference));
+    const successExtras = await evaluate(
+      cdp,
+      `(() => ({ steps: document.querySelectorAll('.success-next-step').length, service: /Requested service/i.test(document.body.innerText), draft: (() => { try { return window.sessionStorage.getItem('jazari:project-draft:v1'); } catch { return 'blocked'; } })() }))()`,
+    );
+    check("CHECK L92 — success dialog shows the 3-step next-steps timeline + the chosen service", successExtras.steps === 3 && successExtras.service === true, JSON.stringify(successExtras));
+    check("CHECK L93 — the sessionStorage draft is cleared on success", successExtras.draft === null, String(successExtras.draft));
     assertClean("form-e2e");
-
     /* -- TEST 11: Main Logo + hero layout + first-load choreography -------- */
     console.log("\n[11] Brand logo, hero layout, first-load choreography + screenshots");
     resetErrors();
@@ -1149,8 +1380,8 @@ async function main() {
         trustInView: inView(rating),
         logoMain: Boolean(logoImg),
         whitePlate,
-        decor: Boolean(document.querySelector(".hero-decor")),
-        scene: document.querySelector("[data-scene]")?.dataset.scene ?? "missing",
+        decor: Boolean(document.querySelector(".hero-aurora")),
+        hero: document.querySelector('[data-hero="svg-v2"]')?.dataset.hero ?? "missing",
         jsIntro: document.documentElement.classList.contains("js-intro"),
         heading: document.querySelector("h1")?.textContent?.slice(0, 24) ?? "",
       };
@@ -1159,7 +1390,7 @@ async function main() {
     // --- 1366×768 desktop, light theme ------------------------------------
     await setViewport(1366, 768);
     await setThemeThenReload("light");
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 12000, "scene (light desktop)");
+    await waitFor(cdp, `document.querySelector('[data-hero="svg-v2"]') !== null`, 12000, "hero svg (light desktop)");
     await sleep(1800); // let the ~1.5 s choreography finish
     const desktop = await evaluate(cdp, HERO_PROBE);
     check("Main Logo asset is used in the navbar", desktop.logoMain);
@@ -1202,7 +1433,7 @@ async function main() {
     // --- 1366×768 desktop, dark theme -------------------------------------
     await setThemeThenReload("dark");
     await waitFor(cdp, `document.documentElement.classList.contains("dark")`, 8000, "dark class");
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 12000, "scene (dark desktop)");
+    await waitFor(cdp, `document.querySelector('[data-hero="svg-v2"]') !== null`, 12000, "hero svg (dark desktop)");
     await sleep(1700);
     const darkDesktop = await evaluate(cdp, HERO_PROBE);
     check("dark mode: no white plate behind the logo", darkDesktop.whitePlate === false);
@@ -1596,6 +1827,11 @@ async function main() {
     const gotoHub = async (theme = "light", width = 1440, height = 900) => {
       await setViewport(width, height, width < 640);
       await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: width < 640 });
+      // Suites that ran earlier (admin information architecture) can leave the
+      // browser on an /admin route. Reloading there would never mount the hub
+      // again, so the home page is always the starting point.
+      await cdp.send("Page.navigate", { url: `${BASE}/` });
+      await waitFor(cdp, `document.readyState === "complete"`, 15000, "home before the hub");
       await setThemeThenReload(theme);
       await evaluate(
         cdp,
@@ -1708,7 +1944,7 @@ async function main() {
 
     // CHECK 10 — labels link to real service cards.
     const links = await evaluate(cdp, `[...document.querySelectorAll("#hub-service-list a")].map((a) => a.getAttribute("href"))`);
-    const targets = await evaluate(cdp, `[...document.querySelectorAll("#services article")].map((a) => "#" + a.id)`);
+    const targets = await evaluate(cdp, `[...document.querySelectorAll("#services [id^=service-]")].map((a) => "#" + a.id)`);
     check(
       "CHECK 10 — hub labels link to existing service cards",
       links.length > 0 && links.every((h) => targets.includes(h)),
@@ -1821,11 +2057,14 @@ async function main() {
         `(() => ({
           labels: document.querySelectorAll("#hub-service-list a").length,
           atlasRows: document.querySelectorAll("[data-atlas-item]").length,
+          indexEntries: document.querySelectorAll("#services [data-service-entry]").length,
         }))()`,
       );
-      // The SAME one public services request feeds the hub AND the Discipline
-      // Atlas, so both must track the intercepted count exactly.
-      check("CHECK 13 — 3 services: three hub labels and three atlas rows", n.labels === 3 && n.atlasRows === 3, JSON.stringify(n));
+      // RETIRED (Task L): the "three atlas rows" half of CHECK 13 — the
+      // Discipline Atlas was deleted. Intent preserved: the ONE public
+      // services request still feeds the hub (labels) and the static index
+      // (entries) at the same intercepted count.
+      check("CHECK 13 — 3 services: three hub labels and three index entries (atlas rows RETIRED)", n.labels === 3 && n.indexEntries === 3 && n.atlasRows === 0, JSON.stringify(n));
     });
     await withServices(flagged.slice(0, 5), async () => {
       const n = await evaluate(
@@ -1833,9 +2072,11 @@ async function main() {
         `(() => ({
           labels: document.querySelectorAll("#hub-service-list a").length,
           atlasRows: document.querySelectorAll("[data-atlas-item]").length,
+          indexEntries: document.querySelectorAll("#services [data-service-entry]").length,
         }))()`,
       );
-      check("CHECK 14 — 5 services: five hub labels and five atlas rows", n.labels === 5 && n.atlasRows === 5, JSON.stringify(n));
+      // RETIRED (Task L): the "five atlas rows" half of CHECK 14 (same reason).
+      check("CHECK 14 — 5 services: five hub labels and five index entries (atlas rows RETIRED)", n.labels === 5 && n.indexEntries === 5 && n.atlasRows === 0, JSON.stringify(n));
     });
 
     /* ================================================================
@@ -2614,7 +2855,7 @@ async function main() {
       `(() => ({
         grid: document.querySelectorAll(".bg-grid").length,
         hub: document.querySelectorAll("#hub").length,
-        three: performance.getEntriesByType("resource").some((r) => r.name.includes(${JSON.stringify(threeChunk)})),
+        three: performance.getEntriesByType("resource").some((r) => /three|webgl/i.test(r.name)),
       }))()`,
     );
     check("CHECK 20 — admin has no grid layer, no hub, no three chunk", adminGrid.grid === 0 && adminGrid.hub === 0 && adminGrid.three === false, JSON.stringify(adminGrid));
@@ -2714,7 +2955,7 @@ async function main() {
         const grid = document.querySelector('[data-services-state="loaded"]');
         return {
           state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state'),
-          cards: grid ? grid.querySelectorAll(':scope > *').length : 0,
+          cards: grid ? grid.querySelectorAll('[data-service-entry]').length : 0,
           hubCards: document.querySelectorAll('#hub-service-list .hub-card').length,
           footerLinks: document.querySelectorAll('footer a[href="#services"]').length,
         };
@@ -2758,7 +2999,7 @@ async function main() {
       cdp,
       `(() => {
         const grid = document.querySelector('[data-services-state="loaded"]');
-        return { state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state'), cards: grid ? grid.querySelectorAll(':scope > *').length : 0 };
+        return { state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state'), cards: grid ? grid.querySelectorAll('[data-service-entry]').length : 0 };
       })()`,
     );
     check(
@@ -2784,7 +3025,7 @@ async function main() {
       cdp,
       `(() => {
         const grid = document.querySelector('[data-services-state="loaded"]');
-        return { state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state'), cards: grid ? grid.querySelectorAll(':scope > *').length : 0 };
+        return { state: document.querySelector('[data-services-state]')?.getAttribute('data-services-state'), cards: grid ? grid.querySelectorAll('[data-service-entry]').length : 0 };
       })()`,
     );
     check(
@@ -3332,183 +3573,29 @@ async function main() {
       adminRobots ? adminRobots[0] : "no robots meta",
     );
 
-    // --- 17. Task I — hero shatter (instanced neon shards) -----------------
-    console.log("\n[17] Hero shatter — instanced neon shards");
-    resetErrors();
-    await setViewport(1440, 900, false);
-    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
-    await cdp.send("Page.navigate", { url: `${BASE}/?shatter=1` });
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero scene for shatter");
-    await evaluate(cdp, BRING_HERO_INTO_VIEW);
-    await sleep(700);
 
-    const SHARD_STATE = `(() => {
-      const c = document.querySelector("[data-scene] canvas");
-      return c ? { quality: c.dataset.quality || null, shards: Number(c.dataset.shards || 0), explode: c.dataset.explode || null } : null;
-    })()`;
-    const TIER_BUDGET = { high: 1000, medium: 500, low: 200 };
-    // The idle-dwell trigger is ~3 s of no input, so restart the timer before the
-    // assembled baseline (the spec's own "about 3 s" is what we assert elsewhere).
-    await evaluate(cdp, `(() => { document.querySelector("[data-scene] canvas")?.__jazariDebug?.noteActivity?.(); return true; })()`);
-    const shardInfo = await evaluate(cdp, SHARD_STATE);
-    check(
-      "CHECK 81 — shard count matches the tier budget (1000/500/200), starts assembled",
-      shardInfo && shardInfo.shards === TIER_BUDGET[shardInfo.quality] && shardInfo.explode === "assembled",
-      JSON.stringify(shardInfo),
-    );
-    await evaluate(cdp, `(() => { document.querySelector("[data-scene] canvas")?.__jazariDebug?.noteActivity?.(); return true; })()`);
-    await shotSection("[data-scene]", "hero-shatter-assembled-light.png", "light");
-    await evaluate(cdp, `(() => { document.querySelector("[data-scene] canvas")?.__jazariDebug?.noteActivity?.(); return true; })()`);
-    await shotSection("[data-scene]", "hero-shatter-assembled-dark.png", "dark");
-    await evaluate(cdp, `(() => { document.documentElement.classList.remove('dark'); return true; })()`);
-    await sleep(200);
-
-    const column = await evaluate(
+    // --- 17. RETIRED — WebGL hero shatter (subject deleted, Task L) -------
+    console.log("\n[17] RETIRED — WebGL hero shatter (subject deleted)");
+    /*
+     * RETIRED CHECKS (Task L): 82, 83, 84, 85, 86, 87, 88, 89, 90 and the
+     * `data-explode` state machine. Their SUBJECT — the WebGL shatter — was
+     * deleted at the owner's request, so they are retired rather than edited.
+     * Intent replacements: CHECK L60–L64 (explode / pieces / reassemble),
+     * L68–L70 (pointer leave, focus, Escape). Nothing else was weakened.
+     */
+    const retiredHero = await evaluate(
       cdp,
-      `(() => {
-        const el = document.querySelector("[data-scene]");
-        const r = el.getBoundingClientRect();
-        return { x: Math.round(r.x + r.width * 0.5), y: Math.round(r.y + r.height * 0.5) };
-      })()`,
+      `(() => ({ canvases: document.querySelectorAll('canvas').length, sceneHook: Boolean(document.querySelector('[data-scene]')) }))()`,
     );
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: column.x, y: column.y });
-    let hoverState = null;
-    try {
-      hoverState = await waitFor(
-        cdp,
-        `(() => { const c = document.querySelector("[data-scene] canvas"); return c && c.dataset.explode !== "assembled" ? c.dataset.explode : ""; })()`,
-        4000,
-        "hover shatter",
-      );
-    } catch {
-      hoverState = null;
-    }
-    check("CHECK 82 — hovering the visual column starts the shatter", hoverState === "shattering" || hoverState === "floating", String(hoverState));
-    await sleep(900);
-    const floating = await evaluate(cdp, `document.querySelector("[data-scene] canvas")?.dataset.explode || null`);
-    check("CHECK 83 — the shatter progresses on to floating", floating === "floating", String(floating));
-
-    const ctaHit = await evaluate(
-      cdp,
-      `(() => {
-        const link = [...document.querySelectorAll("a")].find((a) => /start your project/i.test(a.textContent || ""));
-        if (!link) return { ok: false, reason: "cta missing" };
-        const r = link.getBoundingClientRect();
-        const el = document.elementFromPoint(Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2));
-        return { ok: Boolean(el && (link === el || link.contains(el))), tag: el ? el.tagName : null };
-      })()`,
-    );
-    check("CHECK 84 — headline CTA stays hit-testable during the shatter", ctaHit.ok === true, JSON.stringify(ctaHit));
-    await shotSection("[data-scene]", "hero-shatter-floating-light.png", "light");
-    await shotSection("[data-scene]", "hero-shatter-floating-dark.png", "dark");
-    await evaluate(cdp, `(() => { document.documentElement.classList.remove('dark'); return true; })()`);
-    await sleep(200);
-
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
-    let afterLeave = null;
-    try {
-      afterLeave = await waitFor(
-        cdp,
-        `(() => { const c = document.querySelector("[data-scene] canvas"); return c && c.dataset.explode === "assembled" ? "assembled" : ""; })()`,
-        5000,
-        "reassemble on leave",
-      );
-    } catch {
-      afterLeave = null;
-    }
-    check("CHECK 85 — pointer leave reassembles the mark", afterLeave === "assembled", String(afterLeave));
-
-    await evaluate(
-      cdp,
-      `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("floating")`,
-    );
-    await sleep(300); // the dataset is written by the RAF loop, not synchronously
-    const forced = await evaluate(cdp, `document.querySelector("[data-scene] canvas").dataset.explode`);
-    await evaluate(cdp, `(() => { window.scrollTo(0, 320); return true; })()`);
-    let afterScroll = null;
-    try {
-      afterScroll = await waitFor(
-        cdp,
-        `(() => { const c = document.querySelector("[data-scene] canvas"); return c && c.dataset.explode === "assembled" ? "assembled" : ""; })()`,
-        5000,
-        "reassemble on scroll",
-      );
-    } catch {
-      afterScroll = null;
-    }
-    check(
-      "CHECK 86 — the debug hook forces a state, and a scroll reassembles",
-      forced === "floating" && afterScroll === "assembled",
-      `${forced} → ${afterScroll}`,
-    );
-    await evaluate(cdp, `(() => { window.scrollTo(0, 0); return true; })()`);
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
-    await sleep(3600);
-    const idleState = await evaluate(
-      cdp,
-      `(() => {
-        const c = document.querySelector("[data-scene] canvas");
-        return { explode: c?.dataset.explode || null, snap: c?.__jazariDebug?.shatter?.() ?? null };
-      })()`,
-    );
-    check(
-      "CHECK 87 — idle dwell (~3 s, no input, hero in view) starts the shatter",
-      idleState.explode === "shattering" ||
-        idleState.explode === "floating" ||
-        idleState.explode === "reassembling",
-      JSON.stringify(idleState),
-    );
-
-    // Reset, then force an assembled state before the reduced-motion pass.
-    await evaluate(cdp, `(() => { window.scrollTo(0, 0); return true; })()`);
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
-
-    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-    await cdp.send("Page.navigate", { url: `${BASE}/?shatter-rm=1` });
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (reduced motion)");
-    await evaluate(cdp, BRING_HERO_INTO_VIEW);
-    await sleep(800);
-    const rmColumn = await evaluate(
-      cdp,
-      `(() => {
-        const el = document.querySelector("[data-scene]");
-        const r = el.getBoundingClientRect();
-        return { x: Math.round(r.x + r.width * 0.5), y: Math.round(r.y + r.height * 0.5) };
-      })()`,
-    );
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: rmColumn.x, y: rmColumn.y });
-    await sleep(1200);
-    const rmState = await evaluate(cdp, `document.querySelector("[data-scene] canvas")?.dataset.explode || null`);
-    const rmForce = await evaluate(
-      cdp,
-      `(() => { const c = document.querySelector("[data-scene] canvas"); c.__jazariDebug.forceShatter("floating"); return c.dataset.explode; })()`,
-    );
-    check(
-      "CHECK 88 — reduced motion never shatters (hover and forced hook both inert)",
-      rmState === "assembled" && rmForce === "assembled",
-      `hover=${rmState} forced=${rmForce}`,
-    );
-    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
-
-    await cdp.send("Page.navigate", { url: `${BASE}/?shatter-cycles=1` });
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (cycles)");
-    await evaluate(cdp, BRING_HERO_INTO_VIEW);
-    await sleep(500);
-    for (let cycle = 0; cycle < 3; cycle += 1) {
-      await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("floating")`);
-      await sleep(320);
-      await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("assembled")`);
-      await sleep(320);
-    }
-    const canvasCount = await evaluate(cdp, `document.querySelectorAll("[data-scene] canvas").length`);
-    check("CHECK 89 — exactly one canvas after 3 shatter cycles (no leaks)", canvasCount === 1, String(canvasCount));
-    assertClean("hero-shatter");
-
+    check("CHECK L94 — the retired shatter surface is gone (no canvas, no scene)", retiredHero.canvases === 0 && retiredHero.sceneHook === false, JSON.stringify(retiredHero));
     // --- 19. Task I — Services hub: animated wiring ------------------------
     console.log("\n[19] Services hub — animated wiring");
     resetErrors();
     await cdp.send("Emulation.setEmulatedMedia", { features: [] });
     await gotoHub("light", 1440, 900);
+    // The hub's wire layer is backend-driven and renders on the client, so wait
+    // for it rather than sampling an empty SVG.
+    await waitFor(cdp, `document.querySelectorAll('#hub [data-hub-packet]').length > 0`, 15000, "hub packets");
     await sleep(500);
 
     // Packet count + the colours driving the flow.
@@ -3548,6 +3635,7 @@ async function main() {
       const inv = svg.getScreenCTM().inverse();
       const path = document.querySelector('#hub [data-hub-connector="leaf"]');
       const packets = [...document.querySelectorAll('#hub [data-hub-packet="leaf"]')];
+      if (!path || packets.length === 0) return null;
       const toUser = (el) => { const b = el.getBoundingClientRect(); return new DOMPoint(b.x + b.width / 2, b.y + b.height / 2).matrixTransform(inv); };
       const samples = [];
       for (let i = 0; i <= 40; i += 1) { const p = path.getPointAtLength(path.getTotalLength() * i / 40); samples.push(p); }
@@ -3649,183 +3737,159 @@ async function main() {
     await shotSection("#hub", "hub-wiring-dark.png", "dark");
     assertClean("hub-wiring");
 
-    // --- 20. Task I — Services cards: water-fill redesign ------------------
-    console.log("\n[20] Services cards — water-fill redesign");
-    resetErrors();
+
+    // --- 20. Services Index — one static page, no hover affordances --------
+    console.log("\n[20] Services Index — one static page, no hover affordances");
+    /*
+     * Replaces the retired "services cards — water-fill" suite (its subject,
+     * `article.service-card`, was deleted with the Discipline Atlas). The new
+     * checks assert the owner's actual requirement: EVERY discipline is visible
+     * at once and NOTHING about an entry suggests it is clickable.
+     */
     await setViewport(1440, 900, false);
     await cdp.send("Emulation.setEmulatedMedia", { features: [] });
-    await cdp.send("Page.navigate", { url: `${BASE}/?services-redesign=1` });
-    await waitFor(cdp, SERVICES_SETTLED, 15000, "services settled");
-    await evaluate(cdp, `(() => { const c = document.querySelector("#services article[data-service-card]"); if (c) c.scrollIntoView({ block: "center", behavior: "instant" }); return true; })()`);
-    await sleep(500);
+    await cdp.send("Page.navigate", { url: `${BASE}/` });
+    await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 12000, "services loaded");
+    await evaluate(cdp, `document.querySelector('#services').scrollIntoView({ block: 'start', behavior: 'instant' })`);
+    await sleep(700);
 
-    const restCard = await evaluate(
+    const index = await evaluate(
       cdp,
       `(() => {
-        const card = document.querySelector("#services article[data-service-card]");
-        const details = card.querySelector(".service-card__details");
-        const short = card.querySelector(".service-card__short");
+        const section = document.querySelector('#services');
+        const entries = [...section.querySelectorAll('[data-service-entry]')];
+        const clipped = entries.filter((el) => el.scrollHeight > el.clientHeight + 2 || el.scrollWidth > el.clientWidth + 2).length;
+        const ellipsis = entries.filter((el) => [...el.querySelectorAll('.service-entry__short, .service-entry__title')].some((n) => n.scrollWidth > n.clientWidth + 2 && n.textContent.trim().length > 0)).length;
+        const cursors = [...new Set(entries.map((el) => getComputedStyle(el).cursor))];
+        const groups = [...section.querySelectorAll('[data-service-group]')].map((h) => h.dataset.serviceGroup);
+        const rect = section.getBoundingClientRect();
         return {
-          slug: card.dataset.serviceCard,
-          id: card.id,
-          detailsOpacity: +getComputedStyle(details).opacity,
-          descLength: card.querySelector(".service-card__desc").textContent.trim().length,
-          shortVisible: +getComputedStyle(short).opacity > 0.9,
-          chips: card.querySelectorAll(".service-card__chip").length,
-          height: card.offsetHeight,
+          entries: entries.length,
+          clipped,
+          ellipsis,
+          cursors,
+          groups,
+          sectionHeight: Math.round(rect.height),
+          viewportHeight: window.innerHeight,
+          hrefs: [...section.querySelectorAll('a')].map((a) => a.getAttribute('href')),
+          interactiveInEntries: section.querySelectorAll('[data-service-entry] a, [data-service-entry] button').length,
+          columns: entries.length ? new Set(entries.map((el) => Math.round(el.getBoundingClientRect().x))).size : 0,
         };
       })()`,
     );
-    check(
-      "CHECK 103 — at rest the details are hidden, the short line/chips show, the full description stays in the DOM",
-      restCard.detailsOpacity < 0.05 && restCard.shortVisible && restCard.chips <= 3 && restCard.descLength >= 20,
-      JSON.stringify(restCard),
-    );
+    check("CHECK S1 — every discipline is rendered at once (14 entries)", index.entries === 14, `entries=${index.entries}`);
+    check("CHECK S2 — no entry is clipped and none is ellipsised", index.clipped === 0 && index.ellipsis === 0, JSON.stringify({ clipped: index.clipped, ellipsis: index.ellipsis }));
+    check("CHECK S3 — entries are NOT interactive (no pointer cursor, no links/buttons inside)", index.cursors.every((c) => c !== "pointer") && index.interactiveInEntries === 0, JSON.stringify({ cursors: index.cursors, inner: index.interactiveInEntries }));
+    check("CHECK S4 — the schedule is grouped by the backend category", index.groups.length >= 1 && index.groups.every((g) => typeof g === "string" && g.length > 0), JSON.stringify(index.groups));
+    check("CHECK S5 — the whole section fits ≈ one viewport (≤ 1.15×) at 1440×900", index.sectionHeight <= index.viewportHeight * 1.15, `${index.sectionHeight}px vs ${index.viewportHeight}px`);
+    check("CHECK S6 — desktop uses a multi-column schedule", index.columns >= 2, `columns=${index.columns}`);
+    check("CHECK S7 — the section has exactly one interactive control (Start a project)", index.hrefs.filter((h) => h === "#start").length === 1, JSON.stringify(index.hrefs));
 
-    const svcCardPoint = await evaluate(
+    // Hovering an entry must change nothing (computed styles identical).
+    const entryBox = await evaluate(
       cdp,
-      `(() => { const r = document.querySelector("#services article[data-service-card]").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 40) }; })()`,
+      `(() => { const el = document.querySelector('#services [data-service-entry]'); const before = { cursor: getComputedStyle(el).cursor, transform: getComputedStyle(el).transform, background: getComputedStyle(el).backgroundColor, borderTop: getComputedStyle(el).borderTopColor }; const r = el.getBoundingClientRect(); window.__svcEntry = { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 20) }; return before; })()`,
     );
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: svcCardPoint.x, y: svcCardPoint.y });
-    await sleep(950);
-    const hoverCard = await evaluate(
+    const svcPoint = await evaluate(cdp, `window.__svcEntry`);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: svcPoint.x, y: svcPoint.y });
+    await sleep(400);
+    const entryAfter = await evaluate(
       cdp,
-      `(() => {
-        const card = document.querySelector("#services article[data-service-card]");
-        return {
-          liquid: getComputedStyle(card.querySelector(".service-card__liquid")).transform,
-          detailsOpacity: +getComputedStyle(card.querySelector(".service-card__details")).opacity,
-          title: getComputedStyle(card.querySelector(".service-card__title")).color,
-          height: card.offsetHeight,
-        };
-      })()`,
+      `(() => { const el = document.querySelector('#services [data-service-entry]'); return { cursor: getComputedStyle(el).cursor, transform: getComputedStyle(el).transform, background: getComputedStyle(el).backgroundColor, borderTop: getComputedStyle(el).borderTopColor }; })()`,
     );
-    check(
-      "CHECK 104 — hover raises the liquid with transform (not height) and fades the description up in white",
-      /matrix\(1, 0, 0, 1, 0, 0\)/.test(hoverCard.liquid) &&
-        hoverCard.detailsOpacity > 0.9 &&
-        hoverCard.height === restCard.height &&
-        /rgba?\(255,\s*255,\s*255/.test(hoverCard.title),
-      JSON.stringify({ liquid: hoverCard.liquid, details: hoverCard.detailsOpacity, title: hoverCard.title, height: hoverCard.height, restHeight: restCard.height }),
-    );
+    check("CHECK S8 — hovering an entry changes no computed style (no affordance)", JSON.stringify(entryBox) === JSON.stringify(entryAfter), `${JSON.stringify(entryBox)} → ${JSON.stringify(entryAfter)}`);
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+
+    // Deep link: #service-{slug} lands below the navbar and flashes.
+    const svcSlug = await evaluate(cdp, `document.querySelector('#services [data-service-entry]').dataset.serviceEntry`);
+    await cdp.send("Page.navigate", { url: `${BASE}/#service-${svcSlug}` });
+    await waitFor(cdp, `document.querySelector('#services [data-service-entry]') !== null`, 12000, "services after deep link");
+    await sleep(1600);
+    const deepInfo = await evaluate(
+      cdp,
+      `(() => {
+        const entry = document.querySelector('#services [data-service-entry]');
+        const el = document.getElementById('service-' + entry.dataset.serviceEntry);
+        if (!el) return { ok: false, wanted: 'service-' + entry.dataset.serviceEntry };
+        const nav = document.querySelector('nav') || document.querySelector('header');
+        const navBottom = nav ? nav.getBoundingClientRect().bottom : 0;
+        return { ok: true, top: Math.round(el.getBoundingClientRect().top), navBottom: Math.round(navBottom), margin: getComputedStyle(el).scrollMarginTop, bg: getComputedStyle(el).backgroundColor };
+      })()`,
+    );
+    check("CHECK S9 — #service-{slug} deep link lands below the navbar", deepInfo.ok && deepInfo.top >= deepInfo.navBottom, JSON.stringify(deepInfo));
+    // Scroll-margin may be authored as `6rem` or resolved to `96px` depending
+    // on where the rule lives; both mean "the navbar height".
+    check(
+      "CHECK S10 — the :target entry is highlighted (scroll-margin ≥ 6rem + calm outline)",
+      deepInfo.ok && parseFloat(deepInfo.margin) >= 96 && /^rgba?\(/.test(String(deepInfo.bg)) && deepInfo.bg !== "rgba(0, 0, 0, 0)",
+      JSON.stringify({ margin: deepInfo.margin, bg: deepInfo.bg }),
+    );
+    await shotSection("#services", "services-index-light.png", "light");
+    await shotSection("#services", "services-index-dark.png", "dark");
+    assertClean("services-index");
+
+    // Mobile: one column, no overflow.
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+    await cdp.send("Page.navigate", { url: `${BASE}/#services` });
+    await waitFor(cdp, `document.querySelector('#services [data-service-entry]') !== null`, 12000, "services on mobile");
+    await sleep(900);
+    const svcMobile = await evaluate(
+      cdp,
+      `(() => {
+        const entries = [...document.querySelectorAll('#services [data-service-entry]')];
+        return {
+          entries: entries.length,
+          columns: new Set(entries.map((el) => Math.round(el.getBoundingClientRect().x))).size,
+          docWidth: document.documentElement.scrollWidth,
+          viewWidth: window.innerWidth,
+          clipped: entries.filter((el) => el.scrollHeight > el.clientHeight + 2).length,
+        };
+      })()`,
+    );
+    check("CHECK S11 — mobile: one column, all entries, no overflow", svcMobile.entries === 14 && svcMobile.columns === 1 && svcMobile.docWidth <= svcMobile.viewWidth + 1 && svcMobile.clipped === 0, JSON.stringify(svcMobile));
+    await shotSection("#services", "services-index-mobile-light.png", "light");
+    await cdp.send("Emulation.clearDeviceMetricsOverride");
     await sleep(300);
 
-    const cardStyles = `(() => {
-      const card = document.querySelector("#services article[data-service-card]");
-      return {
-        detailsOpacity: +getComputedStyle(card.querySelector(".service-card__details")).opacity,
-        liquid: getComputedStyle(card.querySelector(".service-card__liquid")).transform,
-        filled: card.hasAttribute("data-filled"),
-      };
-    })()`;
-    await evaluate(cdp, `(() => { document.querySelector("#services article[data-service-card]").querySelector(".service-card__toggle").focus(); return true; })()`);
-    await sleep(950); // the liquid transition is 600-800 ms
-    const focusCard = await evaluate(cdp, cardStyles);
-    check(
-      "CHECK 105 — keyboard focus-within fills the card too",
-      focusCard.detailsOpacity > 0.9 && /matrix\(1, 0, 0, 1, 0, 0\)/.test(focusCard.liquid),
-      JSON.stringify(focusCard),
-    );
-
-    const toggleBefore = await evaluate(
+    // Hub card-04 audit (Task L): spacing, doubled socket, logo overlap.
+    await setViewport(1440, 900, false);
+    await cdp.send("Page.navigate", { url: `${BASE}/#hub` });
+    await waitFor(cdp, `document.querySelector('.hub-card[data-hub-card]') !== null`, 12000, "hub for card audit");
+    await evaluate(cdp, `(() => { const el = document.getElementById('hub'); if (el) el.scrollIntoView({ block: 'center', behavior: 'instant' }); return true; })()`);
+    await sleep(800);
+    const hubAudit = await evaluate(
       cdp,
       `(() => {
-        const btn = document.querySelector("#services article[data-service-card] .service-card__toggle");
-        return btn.getAttribute("aria-expanded");
-      })()`,
-    );
-    await evaluate(
-      cdp,
-      `(() => { document.querySelector("#services article[data-service-card] .service-card__toggle").click(); return true; })()`,
-    );
-    await sleep(300); // React commits state on the next microtask/render
-    const toggleAfter = await evaluate(
-      cdp,
-      `(() => {
-        const card = document.querySelector("#services article[data-service-card]");
-        const btn = card.querySelector(".service-card__toggle");
-        return { after: btn.getAttribute("aria-expanded"), text: btn.textContent.trim(), filled: card.hasAttribute("data-filled") };
-      })()`,
-    );
-    check(
-      "CHECK 106 — the in-card <button> is a real toggle (aria-expanded flips)",
-      (toggleAfter.after === "true" || toggleAfter.after === "false") &&
-        toggleAfter.after !== toggleBefore &&
-        toggleAfter.filled === (toggleAfter.after === "true"),
-      JSON.stringify({ before: toggleBefore, after: toggleAfter.after, text: toggleAfter.text, filled: toggleAfter.filled }),
-    );
-
-    await evaluate(cdp, `(() => { document.querySelector("#services article[data-service-card] .service-card__toggle").focus(); return true; })()`);
-    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
-    await sleep(250);
-    const escapeFilled = await evaluate(cdp, `document.querySelector("#services article[data-service-card]").hasAttribute("data-filled")`);
-    check("CHECK 107 — Escape closes the fill", escapeFilled === false, String(escapeFilled));
-
-    const anchors = await evaluate(
-      cdp,
-      `(() => {
-        const cards = [...document.querySelectorAll("#services article[data-service-card]")];
-        const ids = cards.map((c) => c.id);
-        return { count: cards.length, allPrefixed: ids.every((id) => id.startsWith("service-")), unique: new Set(ids).size === ids.length };
-      })()`,
-    );
-    check(
-      "CHECK 108 — all 14 cards keep unique id=\"service-{slug}\" anchors (hub links resolve)",
-      anchors.count === 14 && anchors.allPrefixed && anchors.unique,
-      JSON.stringify(anchors),
-    );
-
-    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-    await cdp.send("Page.navigate", { url: `${BASE}/?services-rm=1` });
-    await waitFor(cdp, SERVICES_SETTLED, 15000, "services settled (reduced motion)");
-    await sleep(400);
-    const rmCard = await evaluate(
-      cdp,
-      `(() => {
-        const card = document.querySelector("#services article[data-service-card]");
-        card.scrollIntoView({ block: "center", behavior: "instant" });
-        card.querySelector(".service-card__toggle").focus();
-        const liquid = card.querySelector(".service-card__liquid");
+        const diagram = document.querySelector('.hub__diagram');
+        const cards = [...document.querySelectorAll('.hub-card[data-hub-card]')];
+        if (!diagram) return { error: 'no diagram' };
+        const dRect = diagram.getBoundingClientRect();
+        const markEl = document.querySelector('.hub__logo');
+        const mark = markEl ? markEl.getBoundingClientRect() : { left: -9999, right: -9999, top: -9999, bottom: -9999 };
+        const overflow = cards.filter((c) => c.getBoundingClientRect().bottom > dRect.bottom + 2).map((c) => c.dataset.hubCard);
+        const overlapsLogo = cards.filter((c) => { const r = c.getBoundingClientRect(); return r.x < mark.right && mark.left < r.right && r.y < mark.bottom && mark.top < r.bottom; }).map((c) => c.dataset.hubCard);
+        const sockets = [...document.querySelectorAll('.hub-card__socket')].map((s) => { const r = s.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width) }; });
+        const nextSection = document.getElementById('services');
+        const cardBottom = cards.reduce((m, c) => Math.max(m, c.getBoundingClientRect().bottom), 0);
         return {
-          detailsOpacity: +getComputedStyle(card.querySelector(".service-card__details")).opacity,
-          transition: getComputedStyle(liquid).transitionDuration,
-          wave: getComputedStyle(card.querySelector(".service-card__wave")).animationName,
+          cardIds: cards.map((c) => c.dataset.hubCard),
+          overflow,
+          overlapsLogo,
+          sockets,
+          socketCount: sockets.length,
+          ripplePerGroup: [...document.querySelectorAll('[data-hub-wire-group]')].map((g) => g.querySelectorAll('.hub-wire__ripple').length),
+          gapToNextSection: nextSection ? Math.round(nextSection.getBoundingClientRect().top - cardBottom) : 9999,
         };
       })()`,
     );
-    check(
-      "CHECK 109 — reduced motion: static fill (no wave, no transition) still reveals the description",
-      rmCard.detailsOpacity > 0.9 &&
-        rmCard.wave === "none" &&
-        rmCard.transition.split(",").every((d) => Number.parseFloat(d) === 0),
-      JSON.stringify(rmCard),
-    );
-    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
-
-    // Screenshots: rest, then a filled card in both themes.
-    await cdp.send("Page.navigate", { url: `${BASE}/?services-shots=1` });
-    await waitFor(cdp, SERVICES_SETTLED, 15000, "services settled (shots)");
-    await shotSection("#services", "service-cards-rest-light.png", "light");
-    await shotSection("#services", "service-cards-rest-dark.png", "dark");
-    await cdp.send("Page.navigate", { url: `${BASE}/?services-shots=2` });
-    await waitFor(cdp, SERVICES_SETTLED, 15000, "services settled (filled shot)");
-    await evaluate(cdp, `(() => { const c = document.querySelector("#services article[data-service-card]"); c.scrollIntoView({ block: "center", behavior: "instant" }); document.documentElement.classList.remove("dark"); return true; })()`);
-    await sleep(400);
-    const filledPoint = await evaluate(
-      cdp,
-      `(() => { const r = document.querySelector("#services article[data-service-card]").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 40) }; })()`,
-    );
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: filledPoint.x, y: filledPoint.y });
-    await sleep(1000);
-    await capture("service-cards-filled-light.png");
-    await evaluate(cdp, `(() => { document.documentElement.classList.add("dark"); return true; })()`);
-    await sleep(500);
-    await capture("service-cards-filled-dark.png");
-    await evaluate(cdp, `(() => { document.documentElement.classList.remove("dark"); return true; })()`);
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
-    assertClean("services-cards");
-
+    check("CHECK S12 — card 04 (Business Growth, centre slot) exists with the other four", !hubAudit.error && hubAudit.cardIds.length === 5 && hubAudit.cardIds.includes("fold"), JSON.stringify(hubAudit.cardIds ?? hubAudit));
+    check("CHECK S13 — no hub card overflows the diagram (consistent bottom spacing)", hubAudit.overflow && hubAudit.overflow.length === 0, JSON.stringify(hubAudit.overflow ?? hubAudit));
+    check("CHECK S14 — the mark never overlaps a card", hubAudit.overlapsLogo && hubAudit.overlapsLogo.length === 0, JSON.stringify(hubAudit.overlapsLogo ?? hubAudit));
+    check("CHECK S15 — exactly ONE socket glyph per card (no doubled circle)", hubAudit.socketCount === 5 && new Set(hubAudit.sockets.map((s) => `${s.x}:${s.y}`)).size === 5, JSON.stringify(hubAudit.sockets ?? hubAudit));
+    check("CHECK S16 — exactly one ripple ring per connector (the socket ring is gone)", hubAudit.ripplePerGroup.length > 0 && hubAudit.ripplePerGroup.every((n) => n === 1), JSON.stringify(hubAudit.ripplePerGroup ?? hubAudit));
+    check("CHECK S17 — the hub never collides with the next section", typeof hubAudit.gapToNextSection === "number" && hubAudit.gapToNextSection >= 0, `gap=${hubAudit.gapToNextSection}`);
+    await shotSection("#hub", "hub-desktop-1440-light.png", "light");
+    assertClean("hub-card-audit");
     // --- 21. Task I — navbar occlusion (pixel-level, non-vacuous) -----------
     console.log("\n[21] Navbar occlusion");
     resetErrors();
@@ -4001,9 +4065,28 @@ async function main() {
     await cdp.send("Page.navigate", { url: `${BASE}/?push-prompt=1` });
     await waitFor(cdp, `document.querySelector(".jt-nav .glass") !== null`, 15000, "navbar (push prompt)");
 
+    // The Next `/api` proxy only exists when the build was made with
+    // BACKEND_ORIGIN, so the API base the app itself uses is the fallback —
+    // without it a proxyless build answered with the HTML 404 page and the
+    // whole run died on a JSON parse error.
     const pushKey = await evaluate(
       cdp,
-      `fetch("/api/push/public-key").then((r) => r.json()).then((d) => ({ configured: d.data.configured === true, keyLength: d.data.key.length }))`,
+      `(async () => {
+        // The API origin the app itself is built against — asking the page for
+        // /api/* would 404 (and log a console error) on a proxyless build.
+        const urls = [${JSON.stringify(`${API}/push/public-key`)}];
+        for (const url of urls) {
+          try {
+            const response = await fetch(url);
+            if (!response.ok) continue;
+            const body = await response.json();
+            if (body && body.data && typeof body.data.key === "string") {
+              return { configured: body.data.configured === true, keyLength: body.data.key.length, url };
+            }
+          } catch { /* try the next URL */ }
+        }
+        return { error: "the push public key is not reachable from the page" };
+      })()`,
     );
     check(
       "CHECK 117 — the browser receives the VAPID public key (push is configured)",
@@ -4193,642 +4276,62 @@ async function main() {
       assertClean("auth-bff");
     }
 
-    // --- 24. Task K — Discipline Atlas (rail + stage) ---------------------
-    console.log("\n[24] Discipline Atlas — rail + stage");
-    resetErrors();
-    await setViewport(1440, 900, false);
-    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
-    await cdp.send("Page.navigate", { url: `${BASE}/?atlas=1` });
-    await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 15000, "atlas rail loaded");
 
-    const atlas = await evaluate(
+    // --- 24. RETIRED — Discipline Atlas (subject deleted, Task L) ----------
+    console.log("\n[24] RETIRED — Discipline Atlas (subject deleted)");
+    /*
+     * RETIRED: CHECK 100–115 (the atlas rail, stage, tour, constellation, liquid
+     * band, row toggle, Escape-to-close, category data-attributes). The owner
+     * asked for a static one-page index with NO hover affordances, so the Atlas
+     * and its CSS were deleted instead of patched. Intent replacements: CHECK
+     * S1–S11 above (every discipline visible at once, no interactive styling,
+     * deep-link behaviour, mobile layout).
+     */
+    // The BFF suites above leave the browser on another route; the index has to
+    // be on screen before it can be counted.
+    await cdp.send("Page.navigate", { url: `${BASE}/` });
+    await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 15000, "services loaded (retired Atlas check)");
+    const retiredAtlas = await evaluate(
       cdp,
-      `(() => {
-        const rail = document.querySelector('[data-atlas-rail]');
-        const rows = rail ? [...rail.children] : [];
-        const stage = document.querySelector('[data-atlas-stage]');
-        const hubLinks = [...document.querySelectorAll('#hub-service-list a[data-hub-card]')].map((a) => a.getAttribute('href'));
-        return {
-          rows: rows.length,
-          rowIds: rows.map((r) => r.id),
-          role: rail ? rail.getAttribute('role') : null,
-          stageRole: stage ? stage.getAttribute('role') : null,
-          live: stage ? stage.getAttribute('aria-live') : null,
-          hubLinks,
-          hubResolved: hubLinks.filter((href) => href && document.querySelector(href)).length,
-          selected: rows.filter((r) => r.getAttribute('aria-selected') === 'true').length,
-          roving: rows.filter((r) => r.getAttribute('tabindex') === '0').length,
-        };
-      })()`,
+      `(() => ({ atlas: document.querySelectorAll('[data-atlas], .atlas-rail, .atlas-stage').length, serviceCards: document.querySelectorAll('.service-card').length, index: document.querySelectorAll('[data-service-entry]').length }))()`,
     );
-    check(
-      "CHECK 130 — the atlas rail is a tablist of all 14 disciplines, with exactly one selected/roving row",
-      atlas.rows === 14 &&
-        atlas.role === "tablist" &&
-        atlas.stageRole === "tabpanel" &&
-        atlas.live === "polite" &&
-        atlas.selected === 1 &&
-        atlas.roving === 1 &&
-        atlas.rowIds.every((id) => /^service-/.test(id || "")),
-      JSON.stringify({ rows: atlas.rows, role: atlas.role, stage: atlas.stageRole, live: atlas.live, selected: atlas.selected, roving: atlas.roving }),
-    );
-    check(
-      "CHECK 131 — every hub link still resolves to a rail anchor (#service-{slug})",
-      atlas.hubLinks.length === 5 && atlas.hubResolved === atlas.hubLinks.length,
-      JSON.stringify(atlas.hubLinks),
-    );
+    check("CHECK S18 — the retired Atlas surface is gone and the static index is present", retiredAtlas.atlas === 0 && retiredAtlas.serviceCards === 0 && retiredAtlas.index === 14, JSON.stringify(retiredAtlas));
 
-    const stageOf = `(() => {
-      const stage = document.querySelector('[data-atlas-stage]');
-      const rows = [...document.querySelectorAll('[data-atlas-item]')];
-      const activeRow = rows.find((r) => r.getAttribute('aria-selected') === 'true');
-      return {
-        slug: activeRow ? activeRow.dataset.atlasItem : null,
-        title: stage ? stage.querySelector('.atlas-stage__title')?.textContent.trim() : null,
-        descLen: stage ? (stage.querySelector('.atlas-stage__desc')?.textContent.trim().length || 0) : 0,
-        chips: stage ? stage.querySelectorAll('.atlas-stage__chips .atlas-chip').length : 0,
-        cta: stage ? Boolean(stage.querySelector('.atlas-stage__cta')) : false,
-        nodes: stage ? stage.querySelectorAll('[data-atlas-node]').length : 0,
-        liveText: stage ? stage.textContent.trim().slice(0, 60) : '',
-      };
-    })()`;
-    const firstStage = await evaluate(cdp, stageOf);
-    check(
-      "CHECK 132 — the stage renders the selected discipline: title, full description, chips, CTA and the 14-node constellation",
-      firstStage.slug === "software-solutions" &&
-        firstStage.title &&
-        firstStage.title.length > 0 &&
-        firstStage.descLen > 40 &&
-        firstStage.chips <= 3 &&
-        firstStage.cta === true &&
-        firstStage.nodes === 14,
-      JSON.stringify(firstStage),
-    );
-    check(
-      "CHECK 133 — the stage is a live region announcing the selected title",
-      firstStage.liveText.includes(firstStage.title || "@"),
-      firstStage.liveText,
-    );
-    await shotSection("#services", "atlas-selection-a-light.png", "light");
-    await shotSection("#services", "atlas-selection-a-dark.png", "dark");
-    await evaluate(cdp, `(() => { document.documentElement.classList.remove('dark'); return true; })()`);
-
-    // Keyboard: focus the selected row, ArrowDown twice, Home, End.
-    await evaluate(cdp, `(() => { const r = document.querySelector('[data-atlas-item][tabindex="0"]'); if (r) r.focus(); return Boolean(r); })()`);
-    const keySequence = async (key) => {
-      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key, code: key, windowsVirtualKeyCode: 0 });
-      await sleep(120);
-    };
-    await keySequence("ArrowDown");
-    await keySequence("ArrowDown");
-    const afterArrows = await evaluate(cdp, `(() => {
-      const rows = [...document.querySelectorAll('[data-atlas-item]')];
-      const idx = rows.findIndex((r) => r.getAttribute('aria-selected') === 'true');
-      return { index: idx, focused: document.activeElement === rows[idx], visible: rows[idx] ? getComputedStyle(rows[idx]).outlineStyle : null };
-    })()`);
-    await keySequence("End");
-    const afterEnd = await evaluate(cdp, `(() => {
-      const rows = [...document.querySelectorAll('[data-atlas-item]')];
-      return rows.findIndex((r) => r.getAttribute('aria-selected') === 'true');
-    })()`);
-    await keySequence("Home");
-    const afterHome = await evaluate(cdp, `(() => {
-      const rows = [...document.querySelectorAll('[data-atlas-item]')];
-      return rows.findIndex((r) => r.getAttribute('aria-selected') === 'true');
-    })()`);
-    check(
-      "CHECK 134 — keyboard navigation moves the selection with the focus (Down/End/Home)",
-      afterArrows.index === 2 && afterArrows.focused === true && afterEnd === 13 && afterHome === 0,
-      JSON.stringify({ afterArrows, afterEnd, afterHome }),
-    );
-
-    // A different selection → the stage changes and a second screenshot pair.
-    const secondStage = await evaluate(
+    // --- 25. RETIRED — Voronoi fracture + neon edges (subject deleted) -----
+    console.log("\n[25] RETIRED — Voronoi fracture + neon edges (subject deleted)");
+    /*
+     * RETIRED: the fracture-fragment budget, the stage machine, the neon-edge
+     * pixel sampling and the 639 KB three-chunk bundle budget — every one of them
+     * measured the deleted WebGL scene. Replacements: CHECK L2 (zero canvas /
+     * zero WebGL resources), the build-time chunk scan in [0] (L50/L51) and the
+     * home bundle measurement below.
+     */
+    const bundle = await evaluate(
       cdp,
-      `(() => {
-        const row = [...document.querySelectorAll('[data-atlas-item]')].find((r) => r.dataset.atlasItem === 'cybersecurity');
-        if (!row) return null;
-        row.click();
-        return true;
-      })()`,
+      `(() => ({ canvases: document.querySelectorAll('canvas').length, externalScripts: [...document.querySelectorAll('script[src]')].map((s) => s.src.split('/').pop()).filter((n) => /three/i.test(n)) }))()`,
     );
-    await sleep(250);
-    const stageB = await evaluate(cdp, stageOf);
-    check(
-      "CHECK 135 — selecting another discipline updates the stage (title + description)",
-      secondStage === true && stageB.slug === "cybersecurity" && stageB.title !== firstStage.title && stageB.descLen > 40,
-      JSON.stringify(stageB),
-    );
-    await shotSection("#services", "atlas-selection-b-light.png", "light");
-    await shotSection("#services", "atlas-selection-b-dark.png", "dark");
-    await evaluate(cdp, `(() => { document.documentElement.classList.remove('dark'); return true; })()`);
+    check("CHECK S19 — no script tag references a three chunk", bundle.externalScripts.length === 0, JSON.stringify(bundle.externalScripts));
 
-    // Deep link: #service-{slug} selects that discipline, and the row lands
-    // below the fixed navbar (scroll-margin-top).
-    await evaluate(cdp, `(() => { window.location.hash = '#service-cloud-and-devops'; return true; })()`);
-    await sleep(400);
-    const deepLink = await evaluate(
-      cdp,
-      `(() => {
-        const row = document.querySelector('[data-atlas-item="cloud-and-devops"]');
-        const stage = document.querySelector('[data-atlas-stage]');
-        const nav = document.querySelector('.jt-nav, header');
-        const r = row ? row.getBoundingClientRect() : null;
-        const navBottom = nav ? nav.getBoundingClientRect().bottom : 0;
-        return {
-          selected: row ? row.getAttribute('aria-selected') === 'true' : false,
-          title: stage ? stage.querySelector('.atlas-stage__title')?.textContent.trim() : null,
-          top: r ? Math.round(r.top) : null,
-          navBottom: Math.round(navBottom),
-          margin: row ? getComputedStyle(row).scrollMarginTop : null,
-        };
-      })()`,
-    );
-    check(
-      "CHECK 136 — #service-{slug} selects the discipline and its row scrolls below the navbar",
-      deepLink.selected === true &&
-        deepLink.title === "Cloud and DevOps" &&
-        deepLink.margin !== "0px" &&
-        deepLink.top !== null &&
-        deepLink.top >= deepLink.navBottom - 4,
-      JSON.stringify(deepLink),
-    );
-
-    // Full text present at rest; the stage description is never clamped.
-    const restText = await evaluate(
-      cdp,
-      `(() => {
-        const descs = [...document.querySelectorAll('.atlas-row .service-card__desc')].map((e) => e.textContent.trim().length);
-        const stageDesc = document.querySelector('.atlas-stage__desc');
-        const clamp = stageDesc ? getComputedStyle(stageDesc).webkitLineClamp : 'none';
-        return { rows: descs.length, min: Math.min(...descs), clamp, sectionText: document.querySelector('#services').textContent.replace(/\\s+/g, ' ').trim().length };
-      })()`,
-    );
-    check(
-      "CHECK 137 — every discipline's full description is in the DOM at rest and the stage copy is not clamped",
-      restText.rows === 14 && restText.min > 40 && (restText.clamp === "none" || restText.clamp === "") && restText.sectionText > 2000,
-      JSON.stringify(restText),
-    );
-
-    // Contrast on the stage: the description colour vs the surface it sits on.
-    const stageColours = await evaluate(
-      cdp,
-      `(() => {
-        const stage = document.querySelector('[data-atlas-stage]');
-        const desc = stage ? stage.querySelector('.atlas-stage__desc') : null;
-        const section = document.querySelector('#services');
-        return {
-          fg: desc ? getComputedStyle(desc).color : null,
-          bg: section ? getComputedStyle(section).backgroundColor : null,
-        };
-      })()`,
-    );
-    const parseRgb = (value) => {
-      const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(value || "");
-      return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
-    };
-    const relLum = ([r, g, b]) => {
-      const ch = (v) => {
-        const x = v / 255;
-        return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
-      };
-      return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
-    };
-    const stageFg = parseRgb(stageColours.fg);
-    const stageBg = parseRgb(stageColours.bg);
-    const stageRatio =
-      stageFg && stageBg
-        ? (Math.max(relLum(stageFg), relLum(stageBg)) + 0.05) / (Math.min(relLum(stageFg), relLum(stageBg)) + 0.05)
-        : 0;
-    check(
-      "CHECK 138 — the measured stage description contrast clears WCAG AA (>= 4.5:1)",
-      stageRatio >= 4.5,
-      `${stageRatio.toFixed(2)}:1 (fg=${stageColours.fg} bg=${stageColours.bg})`,
-    );
-
-    // Reduced motion: no tour, no packets, no wave animation.
-    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-    await cdp.send("Page.navigate", { url: `${BASE}/?atlas-rm=1` });
-    await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 15000, "atlas (reduced motion)");
-    await sleep(500);
-    const reducedAtlas = await evaluate(
-      cdp,
-      `(() => {
-        const band = document.querySelector('.atlas-band__wave');
-        return {
-          tour: Boolean(document.querySelector('[data-atlas-tour]')),
-          packets: document.querySelectorAll('.atlas-visual__packet').length,
-          bandAnim: band ? getComputedStyle(band).animationName : 'none',
-          rows: document.querySelectorAll('[data-atlas-item]').length,
-        };
-      })()`,
-    );
-    check(
-      "CHECK 139 — reduced motion: no tour control, no packets, no wave animation (list still complete)",
-      reducedAtlas.tour === false && reducedAtlas.packets === 0 && reducedAtlas.bandAnim === "none" && reducedAtlas.rows === 14,
-      JSON.stringify(reducedAtlas),
-    );
-    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
-
-    // 1 and 3 disciplines via response interception (existing checks cover 0 and 14).
-    const liveServices = await (await fetch(`${BASE}/api/services`)).json();
-    const atlasServicePatterns = [
-      { urlPattern: `${BASE}/api/services*`, requestStage: "Request" },
-      { urlPattern: "*localhost:5000/api/services*", requestStage: "Request" },
-    ];
-    for (const count of [1, 3]) {
-      const body = Buffer.from(
-        JSON.stringify({ success: true, data: liveServices.data.slice(0, count) }),
-      ).toString("base64");
-      await cdp.send("Fetch.enable", { patterns: atlasServicePatterns });
-      const handler = async (params) => {
-        try {
-          await cdp.send("Fetch.fulfillRequest", {
-            requestId: params.requestId,
-            responseCode: 200,
-            responseHeaders: [
-              { name: "Content-Type", value: "application/json" },
-              { name: "Access-Control-Allow-Origin", value: BASE },
-              { name: "Access-Control-Allow-Credentials", value: "true" },
-            ],
-            body,
-          });
-        } catch {
-          /* cancelled */
-        }
-      };
-      cdp.on("Fetch.requestPaused", handler);
-      await evaluate(
-        cdp,
-        `(() => { Object.keys(localStorage).filter((k) => k.startsWith('jazari:public-content:')).forEach((k) => localStorage.removeItem(k)); return true; })()`,
-      );
-      await cdp.send("Page.navigate", { url: `${BASE}/?atlas-count=${count}` });
-      await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 15000, `atlas with ${count} disciplines`);
-      const small = await evaluate(
-        cdp,
-        `(() => ({
-          rows: document.querySelectorAll('[data-atlas-item]').length,
-          nodes: document.querySelectorAll('[data-atlas-node]').length,
-          title: document.querySelector('[data-atlas-stage] .atlas-stage__title')?.textContent.trim() || null,
-          gauge: Boolean(document.querySelector('[data-atlas-gauge]')),
-        }))()`,
-      );
-      check(
-        `CHECK 14${count === 1 ? "0" : "1"} — atlas renders ${count} discipline(s) with a valid stage (no crash, no invented data)`,
-        small.rows === count && small.nodes === count && Boolean(small.title) && small.gauge === true,
-        JSON.stringify(small),
-      );
-      cdp.off("Fetch.requestPaused", handler);
-      await cdp.send("Fetch.disable");
+    // Bundle delta: measure the real home initial JS.
+    const bundleHomeHtml = await (await fetch(`${BASE}/`)).text();
+    const bundleHomeScripts = [...bundleHomeHtml.matchAll(/\/_next\/static\/chunks\/[^"'`]+?\.js/g)].map((m) => m[0]);
+    let bundleHomeRaw = 0;
+    let bundleHomeGz = 0;
+    const seenChunks = new Set();
+    for (const src of new Set(bundleHomeScripts)) {
+      const rel = src.replace(/^\/_next\//, "").split("?")[0];
+      const filePath = join(process.cwd(), ".next", rel);
+      if (!existsSync(filePath)) continue;
+      seenChunks.add(rel);
+      const bytes = readFileSync(filePath);
+      bundleHomeRaw += bytes.length;
+      bundleHomeGz += gzipSync(bytes, { level: 9 }).length;
     }
-
-    // Mobile: sticky scroll-snapped chip carousel, no page overflow.
-    await setViewport(390, 844, true);
-    await cdp.send("Page.navigate", { url: `${BASE}/?atlas-mobile=1` });
-    await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 15000, "atlas mobile");
-    await sleep(400);
-    const mobileAtlas = await evaluate(
-      cdp,
-      `(() => {
-        const rail = document.querySelector('[data-atlas-rail]');
-        const style = rail ? getComputedStyle(rail) : null;
-        return {
-          direction: style ? style.flexDirection : null,
-          snap: style ? style.scrollSnapType : null,
-          overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-          rows: document.querySelectorAll('[data-atlas-item]').length,
-        };
-      })()`,
-    );
-    check(
-      "CHECK 142 — mobile shows the horizontal scroll-snapped chip carousel with no page overflow",
-      mobileAtlas.direction === "row" &&
-        /x/.test(mobileAtlas.snap || "") &&
-        mobileAtlas.overflowX <= 1 &&
-        mobileAtlas.rows === 14,
-      JSON.stringify(mobileAtlas),
-    );
-    await shotSection("#services", "atlas-mobile-light.png", "light");
-    await shotSection("#services", "atlas-mobile-dark.png", "dark");
-    await setViewport(1440, 900, false);
-    assertClean("atlas");
-
-    // --- 25. Task 2 — hero explosion: real Voronoi fragments + neon edges --
-    // Rebuilds the shatter as a REAL exploded view of the traced logo (a
-    // Voronoi fracture of the five true contours) while keeping the legacy
-    // `data-explode` vocabulary so suites [17] keep reading the same contract.
-    console.log("\n[25] Hero explosion — Voronoi fracture + neon edges");
-    resetErrors();
-    await setViewport(1440, 900, false);
-    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
-    await cdp.send("Page.navigate", { url: `${BASE}/?fracture=1` });
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero scene (fracture)");
-    await evaluate(cdp, BRING_HERO_INTO_VIEW);
-    await sleep(700);
-
-    const FRAG_BUDGET = { high: 100, medium: 50, low: 20 };
-    const fragInfo = await evaluate(
-      cdp,
-      `(() => {
-        const c = document.querySelector("[data-scene] canvas");
-        const d = c.__jazariDebug;
-        return {
-          quality: c.dataset.quality,
-          shards: Number(c.dataset.shards),
-          fragments: Number(c.dataset.fragments),
-          fragmentCount: d.fragmentCount(),
-          stage: c.dataset.stage,
-          explode: c.dataset.explode,
-        };
-      })()`,
-    );
-    check(
-      "CHECK 143 — data-fragments matches the tier budget (100/50/20), data-stage starts assembled, data-explode stays backward-compatible",
-      fragInfo.fragments === FRAG_BUDGET[fragInfo.quality] &&
-        fragInfo.fragmentCount === FRAG_BUDGET[fragInfo.quality] &&
-        fragInfo.shards === TIER_BUDGET[fragInfo.quality] &&
-        fragInfo.stage === "assembled" &&
-        fragInfo.explode === "assembled",
-      JSON.stringify(fragInfo),
-    );
-
-    // Stage order + legacy mapping: each designed stage parks at a fixed point
-    // (the forced override holds the timeline, so the capture never races).
-    const STAGE_EXPLODE = {
-      separating: "shattering",
-      fracturing: "shattering",
-      floating: "floating",
-      reassembling: "reassembling",
-      assembled: "assembled",
-    };
-    const STAGE_ORDER = ["separating", "fracturing", "floating", "reassembling", "assembled"];
-    const stageTrail = [];
-    for (const stage of STAGE_ORDER) {
-      await evaluate(
-        cdp,
-        `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter(${JSON.stringify(stage)})`,
-      );
-      await sleep(260);
-      const seen = await evaluate(
-        cdp,
-        `(() => { const c = document.querySelector("[data-scene] canvas"); return { stage: c.dataset.stage, explode: c.dataset.explode, progress: c.__jazariDebug.shatter().progress }; })()`,
-      );
-      stageTrail.push({ forced: stage, ...seen });
-    }
-    check(
-      "CHECK 144 — the five designed stages park in order and map to the legacy data-explode vocabulary",
-      stageTrail.length === 5 &&
-        stageTrail.every((entry) => entry.stage === entry.forced && entry.explode === STAGE_EXPLODE[entry.forced]),
-      JSON.stringify(stageTrail),
-    );
-
-    // Fidelity + resolution, measured from the rest tiling (deterministic).
-    await evaluate(
-      cdp,
-      `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("floating")`,
-    );
-    await sleep(320);
-    const fidelity = await evaluate(
-      cdp,
-      `(() => { const d = document.querySelector("[data-scene] canvas").__jazariDebug; return { m: d.fractureMetrics(), p: d.fragmentProjection() }; })()`,
-    );
-    check(
-      "CHECK 145 — the fracture tiles the traced logo silhouette: raster IoU ≥ 0.95, overlap ≤ 0.02, all five pieces fully fractured",
-      fidelity.m &&
-        fidelity.m.iou >= 0.95 &&
-        fidelity.m.overlapRatio <= 0.02 &&
-        fidelity.m.pieces.length === 5 &&
-        fidelity.m.pieces.every((piece) => piece.ratio >= 0.98),
-      JSON.stringify({ iou: fidelity.m?.iou, overlap: fidelity.m?.overlapRatio, pieces: fidelity.m?.pieces }),
-    );
-    check(
-      "CHECK 146 — the median projected fragment is ≥ 2.5% of the projected logo width (a real exploded view, not a dissolve)",
-      fidelity.p &&
-        fidelity.p.fragments === FRAG_BUDGET[fragInfo.quality] &&
-        fidelity.p.medianRatio >= 0.025 &&
-        fidelity.p.medianWidth > 0 &&
-        fidelity.p.logoWidth > 0,
-      JSON.stringify(fidelity.p),
-    );
-
-    // Neon edge: the fracture faces glow Technology Blue. Raise the neon-glow
-    // uniform at a fixed state (dust hidden) and require the rendered pixels to
-    // brighten blue-ward — a measured proof the neon layer drives real pixels.
-    await evaluate(
-      cdp,
-      `(() => { const d = document.querySelector("[data-scene] canvas").__jazariDebug; d.forceShatter("floating"); d.setDustVisible(false); d.setFragmentsVisible(true); return true; })()`,
-    );
-    await sleep(450);
-    // Clip to the hero so the comparison is exactly the canvas, not the page.
-    const neonClip = await evaluate(
-      cdp,
-      `(() => {
-        const r = document.querySelector("[data-scene]").getBoundingClientRect();
-        const x = Math.max(0, Math.round(r.x));
-        const y = Math.max(0, Math.round(r.y));
-        return { x, y, width: Math.round(Math.min(r.width, window.innerWidth - x)), height: Math.round(Math.min(r.height, window.innerHeight - y)), scale: 1 };
-      })()`,
-    );
-    const neonShot = async () =>
-      Buffer.from(
-        (await cdp.send("Page.captureScreenshot", { format: "png", clip: neonClip, captureBeyondViewport: false })).data,
-        "base64",
-      );
-    const neonLo = decodePng(await neonShot());
-    await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.setFractureGlow(3.6)`);
-    await sleep(320);
-    const neonHi = decodePng(await neonShot());
-    // Only the fracture WALLS scale with uGlow (caps do not), so every pixel
-    // that brightens is a neon fracture face. At the raised glow the blue
-    // channel tone-maps toward saturation, so the hue is judged on the DEFAULT
-    // (low) capture: those neon faces must read blue-dominant there.
-    let neonBrightened = 0;
-    let neonLowBlue = 0;
-    let neonSumB = 0;
-    for (let i = 0; i < neonLo.width * neonLo.height; i += 1) {
-      const at = i * neonLo.channels;
-      const db = neonHi.data[at + 2] - neonLo.data[at + 2];
-      if (db > 12) {
-        neonBrightened += 1;
-        neonSumB += db;
-        const lr = neonLo.data[at];
-        const lg = neonLo.data[at + 1];
-        const lb = neonLo.data[at + 2];
-        if (lb >= lg && lb > lr + 8) neonLowBlue += 1;
-      }
-    }
-    const neonMeanB = neonBrightened ? neonSumB / neonBrightened : 0;
-    const neonBlueFraction = neonBrightened ? neonLowBlue / neonBrightened : 0;
-    check(
-      "CHECK 147 — the fracture faces are neon: they brighten with the glow and read blue at rest (thousands of pixels)",
-      neonBrightened >= 1500 && neonMeanB >= 30 && neonBlueFraction >= 0.6,
-      JSON.stringify({
-        brightened: neonBrightened,
-        meanBlueDelta: +neonMeanB.toFixed(1),
-        blueFraction: +neonBlueFraction.toFixed(3),
-        bluePixels: neonLowBlue,
-      }),
-    );
-    await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.setFractureGlow(0.8)`);
-
-    // Reassembly: the explosion must round-trip home to the exact mark.
-    await evaluate(
-      cdp,
-      `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("reassembling")`,
-    );
-    await sleep(260);
-    const midReturn = await evaluate(
-      cdp,
-      `document.querySelector("[data-scene] canvas").__jazariDebug.shatter().progress`,
-    );
-    await evaluate(
-      cdp,
-      `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("assembled")`,
-    );
-    await sleep(360);
-    const reassembled = await evaluate(
-      cdp,
-      `(() => { const c = document.querySelector("[data-scene] canvas"); const d = c.__jazariDebug; return { stage: c.dataset.stage, explode: c.dataset.explode, progress: d.shatter().progress, iou: d.fractureMetrics().iou }; })()`,
-    );
-    check(
-      "CHECK 148 — the explosion round-trips home: reassembling parks mid-return, assembled restores the mark at the same ≥ 0.95 IoU",
-      midReturn > 0 &&
-        midReturn < 1 &&
-        reassembled.stage === "assembled" &&
-        reassembled.explode === "assembled" &&
-        reassembled.progress <= 0.001 &&
-        reassembled.iou >= 0.95,
-      JSON.stringify({ midReturn, ...reassembled }),
-    );
-
-    // Reduced motion: the mark never fractures (hover and the forced hook inert).
-    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-    await cdp.send("Page.navigate", { url: `${BASE}/?fracture-rm=1` });
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (fracture reduced motion)");
-    await evaluate(cdp, BRING_HERO_INTO_VIEW);
-    await sleep(700);
-    const rmFracturePoint = await evaluate(
-      cdp,
-      `(() => { const r = document.querySelector("[data-scene]").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`,
-    );
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: rmFracturePoint.x, y: rmFracturePoint.y });
-    await evaluate(
-      cdp,
-      `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("floating")`,
-    );
-    await sleep(900);
-    const rmFracture = await evaluate(
-      cdp,
-      `(() => { const c = document.querySelector("[data-scene] canvas"); return { stage: c.dataset.stage, explode: c.dataset.explode, fragments: Number(c.dataset.fragments), shards: Number(c.dataset.shards) }; })()`,
-    );
-    check(
-      "CHECK 149 — reduced motion keeps the mark assembled (no fracture), budgets still reported",
-      rmFracture.stage === "assembled" &&
-        rmFracture.explode === "assembled" &&
-        rmFracture.fragments === FRAG_BUDGET[fragInfo.quality] &&
-        rmFracture.shards === TIER_BUDGET[fragInfo.quality],
-      JSON.stringify(rmFracture),
-    );
-    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
-
-    // Screenshot set `explode-*.png` (stages A-D × light/dark + mobile).
-    // Captured without scrolling: a scroll would release the forced state.
-    await cdp.send("Page.navigate", { url: `${BASE}/?fracture-shots=1` });
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (fracture shots)");
-    await evaluate(cdp, BRING_HERO_INTO_VIEW);
-    await sleep(600);
-    const fractureShot = async (stage, theme, name) => {
-      await evaluate(
-        cdp,
-        `(() => { document.documentElement.classList.toggle("dark", ${theme === "dark"}); const d = document.querySelector("[data-scene] canvas").__jazariDebug; d.setDustVisible(false); d.forceShatter(${JSON.stringify(stage)}); return true; })()`,
-      );
-      await sleep(420);
-      await capture(name);
-    };
-    for (const stage of ["separating", "fracturing", "floating", "reassembling"]) {
-      await fractureShot(stage, "light", `explode-${stage}-light.png`);
-      await fractureShot(stage, "dark", `explode-${stage}-dark.png`);
-    }
-    await evaluate(cdp, `(() => { document.documentElement.classList.remove("dark"); return true; })()`);
-
-    await setViewport(390, 844, true);
-    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
-    await cdp.send("Page.navigate", { url: `${BASE}/?fracture-mobile=1` });
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (fracture mobile)");
-    await evaluate(cdp, BRING_HERO_INTO_VIEW);
-    await sleep(600);
-    await fractureShot("floating", "light", "explode-floating-mobile-light.png");
-    await fractureShot("floating", "dark", "explode-floating-mobile-dark.png");
-    await evaluate(cdp, `(() => { document.documentElement.classList.remove("dark"); return true; })()`);
-    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
-    await setViewport(1440, 900, false);
-
-    // Bundle deltas: the fracture adds real geometry + shader code; keep the
-    // three chunk and the home initial JS within a documented budget.
-    const BUNDLE_BASELINE = { threeRaw: 639071, threeGz: 164135, homeRaw: 707403, homeGz: 217523 };
-    const BUNDLE_BUDGET = { threeRaw: 40000, threeGz: 15000, homeRaw: 20000, homeGz: 8000 };
-    const threeBytes = readFileSync(join(process.cwd(), ".next", "static", "chunks", threeChunk));
-    const threeRaw = threeBytes.length;
-    const threeGz = gzipSync(threeBytes, { level: 9 }).length;
-    const fractureHomeHtml = await (await fetch(`${BASE}/`)).text();
-    const fractureScripts = [
-      ...new Set([...fractureHomeHtml.matchAll(/<script[^>]*src="([^"]+\.js)"/g)].map((m) => m[1])),
-    ];
-    let homeRaw = 0;
-    let homeGz = 0;
-    for (const src of fractureScripts) {
-      const bytes = readFileSync(join(process.cwd(), ".next", src.replace(/^\/_next\//, "").split("?")[0]));
-      homeRaw += bytes.length;
-      homeGz += gzipSync(bytes, { level: 9 }).length;
-    }
-    check(
-      "CHECK 150 — the fracture stays within the bundle budget (three chunk + home initial JS vs the measured baseline)",
-      threeRaw - BUNDLE_BASELINE.threeRaw <= BUNDLE_BUDGET.threeRaw &&
-        threeGz - BUNDLE_BASELINE.threeGz <= BUNDLE_BUDGET.threeGz &&
-        homeRaw - BUNDLE_BASELINE.homeRaw <= BUNDLE_BUDGET.homeRaw &&
-        homeGz - BUNDLE_BASELINE.homeGz <= BUNDLE_BUDGET.homeGz,
-      JSON.stringify({
-        three: { raw: threeRaw, gz: threeGz, dRaw: threeRaw - BUNDLE_BASELINE.threeRaw, dGz: threeGz - BUNDLE_BASELINE.threeGz },
-        home: { scripts: fractureScripts.length, raw: homeRaw, gz: homeGz, dRaw: homeRaw - BUNDLE_BASELINE.homeRaw, dGz: homeGz - BUNDLE_BASELINE.homeGz },
-      }),
-    );
-
-    // Rapid explosion cycles must not leak the WebGL context or the heap.
-    await cdp.send("Page.navigate", { url: `${BASE}/?fracture-cycles=1` });
-    await waitFor(cdp, `document.querySelector("[data-scene]")?.dataset.scene === "webgl"`, 15000, "hero (fracture cycles)");
-    await evaluate(cdp, BRING_HERO_INTO_VIEW);
-    await sleep(600);
-    const readFractureHeap = () =>
-      evaluate(
-        cdp,
-        `(() => { if (window.gc) window.gc(); return performance.memory ? performance.memory.usedJSHeapSize : 0; })()`,
-      );
-    const fractureHeapStart = await readFractureHeap();
-    for (let cycle = 0; cycle < 4; cycle += 1) {
-      await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("floating")`);
-      await sleep(300);
-      await evaluate(cdp, `document.querySelector("[data-scene] canvas").__jazariDebug.forceShatter("assembled")`);
-      await sleep(300);
-    }
-    const fractureCycleState = await evaluate(
-      cdp,
-      `(() => { const c = document.querySelector("[data-scene] canvas"); return { canvases: document.querySelectorAll("[data-scene] canvas").length, stage: c.dataset.stage }; })()`,
-    );
-    const fractureHeapEnd = await readFractureHeap();
-    check(
-      "CHECK 151 — four fracture cycles leave exactly one canvas and a bounded JS heap",
-      fractureCycleState.canvases === 1 &&
-        fractureCycleState.stage === "assembled" &&
-        (fractureHeapEnd === 0 || fractureHeapEnd <= fractureHeapStart * 3),
-      JSON.stringify({
-        canvases: fractureCycleState.canvases,
-        heapStartMB: +(fractureHeapStart / 1048576).toFixed(1),
-        heapEndMB: +(fractureHeapEnd / 1048576).toFixed(1),
-      }),
-    );
-    assertClean("hero-fracture");
-
+    const stillHasThree = scanChunks(["WebGLRenderer"]);
+    check("CHECK S20 — no emitted chunk contains a WebGL renderer (three is gone)", stillHasThree.hits.length === 0, stillHasThree.hits.join(","));
+    console.log(`    · home initial JS: ${bundleHomeRaw} raw / ${bundleHomeGz} gz across ${seenChunks.size} chunks`);
+    check("CHECK S21 — home initial JS is bounded (≤ 900 KB raw)", bundleHomeRaw > 0 && bundleHomeRaw <= 900000, `${bundleHomeRaw} raw / ${bundleHomeGz} gz`);
+    assertClean("bundle");
     // --- favicon-tab: the largest ICO frame, written as-is (real icon) -----
     {
       const favBytes = Buffer.from(await (await fetch(`${BASE}/favicon.ico`)).arrayBuffer());
@@ -4857,15 +4360,11 @@ async function main() {
   /* ---- Summary ----------------------------------------------------------- */
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`Three.js verification: ${results.length - failed.length}/${results.length} checks passed`);
+  console.log(`Hero + Services verification: ${results.length - failed.length}/${results.length} checks passed`);
   if (failed.length > 0) {
     for (const f of failed) console.log(`  FAILED: ${f.name} ${f.detail}`);
     process.exit(1);
   }
-}
-
-function getFloat(value) {
-  return Number.isFinite(value) ? value : Number.NaN;
 }
 
 main().catch((error) => {

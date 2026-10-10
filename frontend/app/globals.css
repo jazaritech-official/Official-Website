@@ -162,6 +162,22 @@
   --hub-wire-packet: var(--growth);
   --hub-wire-packet-r: 2.6px;
   --hub-wire-ripple: color-mix(in srgb, var(--accent) 60%, transparent);
+
+  /* ---- Hero mark + neon service tooltips (Task L) ----------------------
+     Technology Blue is the single neon edge. Growth Green never leaves the
+     leaf rim, the anchor node and the tooltip status dot. On the LIGHT canvas
+     there is no additive blending: the glow is a soft blue halo, never a dark
+     or black silhouette. */
+  --hero-edge: var(--spectrum-2);
+  --hero-leader: color-mix(in srgb, var(--spectrum-2) 55%, transparent);
+  --hero-anchor-ring: color-mix(in srgb, var(--spectrum-1) 42%, transparent);
+  --hero-index: var(--muted-soft);
+  --hero-tooltip-bg: rgba(255, 255, 255, 0.93);
+  --hero-tooltip-border: color-mix(in srgb, var(--spectrum-2) 32%, var(--border));
+  --hero-tooltip-shadow: 0 8px 24px -16px rgba(var(--shadow-tint), 0.34), 0 1px 2px rgba(var(--shadow-tint), 0.06);
+  --hero-tooltip-shadow-lit:
+    0 12px 30px -14px rgba(var(--shadow-tint), 0.44),
+    0 0 0 1px color-mix(in srgb, var(--spectrum-2) 45%, transparent);
 }
 
 /* ============================================================
@@ -223,6 +239,18 @@
   --hub-wire-b: var(--accent);
   --hub-wire-c: #cfe2fb;
   --hub-wire-ripple: color-mix(in srgb, var(--accent) 75%, transparent);
+
+  /* Hero mark + tooltips on the dark canvas — same brand family, lifted. */
+  --hero-edge: var(--spectrum-3);
+  --hero-leader: color-mix(in srgb, var(--spectrum-3) 62%, transparent);
+  --hero-anchor-ring: color-mix(in srgb, var(--spectrum-1) 62%, transparent);
+  --hero-index: var(--muted-soft);
+  --hero-tooltip-bg: rgba(19, 28, 64, 0.92);
+  --hero-tooltip-border: color-mix(in srgb, var(--spectrum-3) 26%, var(--border));
+  --hero-tooltip-shadow: 0 10px 28px -18px rgba(0, 0, 0, 0.8), 0 1px 2px rgba(0, 0, 0, 0.5);
+  --hero-tooltip-shadow-lit:
+    0 14px 34px -16px rgba(0, 0, 0, 0.85),
+    0 0 0 1px color-mix(in srgb, var(--spectrum-3) 50%, transparent);
 
   --shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-card: 0 14px 34px -18px rgba(0, 0, 0, 0.75), 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -788,11 +816,6 @@
     background-image: linear-gradient(120deg, #9fc2ea, var(--accent));
   }
 
-  /* Step transitions (multi-step form) */
-  .step-enter {
-    animation: jt-step-in 360ms var(--ease-out) both;
-  }
-
   /* Success modal confetti — brand palette only */
   .confetti-piece {
     position: absolute;
@@ -931,17 +954,6 @@
   }
 }
 
-@keyframes jt-step-in {
-  from {
-    opacity: 0;
-    transform: translate3d(14px, 0, 0);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 @keyframes jt-confetti {
   0% {
     opacity: 1;
@@ -975,198 +987,433 @@
 }
 
 /* ============================================================
-   7. THREE.JS SCENE LAYERS (progressive enhancement)
+   7. HERO — REAL-LOGO SVG MARK + NEON SERVICE TOOLTIPS (Task L)
+   ------------------------------------------------------------
+   The WebGL scene, its neon dust/shards, the Voronoi fracture and the boxed
+   "chip" support object are GONE. The mark is the owner's own traced artwork
+   (`components/services/logoGeometry.ts`) rendered by the shared
+   `<LogoMarkSvg>`; this file only positions it and animates `transform` /
+   `opacity` / `stroke`. Geometry lives in `components/sections/heroLayout.ts`
+   — one design space shared by the mark, the leaders and the tooltips, so
+   nothing is measured at runtime and nothing can overlap by accident.
    ============================================================ */
 
-/* Static fallback — orbit rings, floating tiles, brand icon. Fades out only
-   after the WebGL scene has rendered its first frame. */
-.hero-decor {
-  transition: opacity 600ms var(--ease-out);
+.hero-visual {
+  position: relative;
+  width: 100%;
+  max-width: 46rem;
+  margin-inline: auto;
 }
 
-[data-scene="webgl"] .hero-decor {
-  opacity: 0;
+.hero-mark-root {
+  position: relative;
+  width: 100%;
+}
+
+.hero-diagram {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1000 / 800;
+  isolation: isolate;
+}
+
+/* ---------- Leader lines + anchor nodes (design space) ------------------ */
+.hero-diagram__leaders {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
   pointer-events: none;
-}
-
-/* Lazy scene layer — starts transparent (fallback visible, zero CLS),
-   crossfades in when `data-scene="webgl"`. Never intercepts pointers, so
-   navbar/links/forms/scroll keep working above or around the canvas. */
-.hero-scene {
   opacity: 0;
-  transition: opacity 700ms var(--ease-out);
-  pointer-events: none;
+  transition: opacity 280ms var(--ease-out);
 }
 
-[data-scene="webgl"] .hero-scene {
+.hero-diagram.is-exploded .hero-diagram__leaders,
+.hero-diagram.is-static .hero-diagram__leaders {
   opacity: 1;
 }
 
-.hero-scene canvas {
+.hero-leader {
+  fill: none;
+  stroke: var(--hero-leader);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition:
+    stroke 220ms var(--ease-out),
+    stroke-width 220ms var(--ease-out);
+}
+
+.hero-anchor {
+  fill: var(--growth);
+  stroke: var(--hero-anchor-ring);
+  stroke-width: 1.2;
+  transition: fill 220ms var(--ease-out);
+}
+
+[data-hero-leader-group].is-lit .hero-leader {
+  stroke: var(--hero-edge);
+  stroke-width: 2.4;
+}
+
+[data-hero-leader-group].is-lit .hero-anchor {
+  fill: var(--hero-edge);
+}
+
+/* ---------- The mark ---------------------------------------------------- */
+.hero-diagram__mark {
   position: absolute;
   inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none; /* only the trigger inside is interactive */
+}
+
+.hero-mark__trigger {
+  position: relative;
   display: block;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
+  width: 30%; /* = HERO_LOGO_BOX.size / HERO_DESIGN.width */
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: var(--radius-2xl);
+  pointer-events: auto;
+  cursor: pointer;
+  animation: jt-hero-float 6s var(--ease-in-out) infinite alternate;
 }
 
-/* Hotspot: Growth-Green core + navy/blue ring, positioned via inline
-   transform (container pixels from the projected 3D anchor). */
-.hero-hotspot {
-  left: 0;
-  top: 0;
-  z-index: 2;
-  width: 14px;
-  height: 14px;
-  margin: -7px 0 0 -7px; /* translate targets the hotspot centre */
-  border-radius: 999px;
-  background-color: var(--growth);
-  opacity: 0; /* revealed after first placement — no top-left flash */
-  box-shadow:
-    0 0 0 4px color-mix(in srgb, var(--primary) 38%, transparent),
-    0 0 14px color-mix(in srgb, var(--growth) 45%, transparent);
-  transition: opacity 300ms var(--ease-out);
-}
-
-/* Connector: thin dashed accent line, hotspot → glass card. */
-.hero-connector {
-  overflow: visible;
-  z-index: 1;
-}
-
-/* Mobile: composition too constrained for the line — card stays. */
-@media (max-width: 640px) {
-  .hero-connector {
-    display: none;
+@keyframes jt-hero-float {
+  from {
+    transform: translate3d(0, -5px, 0) scale(1);
+  }
+  to {
+    transform: translate3d(0, 5px, 0) scale(1.012);
   }
 }
 
-/* ---------------------------------------------------------------------------
-   Hero atmosphere — subtle animated aurora + light rays behind the composition.
-   CSS only, transform/opacity only (no filters, no layout animation). Disabled
-   for prefers-reduced-motion. Purely decorative (aria-hidden).
-   TUNING: blob sizes, opacity and animation durations live here.
---------------------------------------------------------------------------- */
-.hero-aurora {
+/* Off-screen / hidden tab → the idle float is frozen (no wasted frames). */
+.hero-mark-root:not(.is-inview) .hero-mark__trigger {
+  animation-play-state: paused;
+}
+
+.hero-mark__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+@keyframes jt-hero-assemble {
+  from {
+    opacity: 0;
+    transform: translate(calc(var(--tx, 0px) * -0.3), calc(var(--ty, 0px) * -0.3))
+      rotate(calc(var(--rot, 0deg) * -0.3));
+  }
+}
+
+.hero-mark__svg [data-logo-piece] {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 320ms var(--ease-technical);
+  animation: jt-hero-assemble 620ms var(--ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+.hero-diagram.is-exploded .hero-mark__svg [data-logo-piece] {
+  transform: translate(var(--tx, 0px), var(--ty, 0px)) rotate(var(--rot, 0deg));
+  transition:
+    transform 520ms var(--ease-spring-soft),
+    filter 240ms var(--ease-out);
+  transition-delay: calc(var(--i, 0) * 45ms);
+}
+
+/* `will-change` only while a piece is actually moving. */
+.hero-diagram--exploding .hero-mark__svg [data-logo-piece],
+.hero-diagram--reassembling .hero-mark__svg [data-logo-piece] {
+  will-change: transform;
+}
+
+.hero-mark__svg [data-logo-piece="leaf"] {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--growth) 42%, transparent));
+}
+
+.hero-mark__svg [data-logo-piece].is-lit {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--hero-edge) 62%, transparent));
+}
+
+/* Static, pre-blurred duplicate. The `filter` value never changes; only the
+   wrapper's `opacity` animates, so no per-frame filter cost. */
+.hero-mark__glow {
   position: absolute;
-  inset: -15% -10% 0 -10%;
-  overflow: hidden;
+  inset: 0;
   pointer-events: none;
+  opacity: 0.42;
+  transition: opacity 340ms var(--ease-out);
 }
 
-.hero-aurora__blob {
-  position: absolute;
-  border-radius: 999px;
-  opacity: 0.5;
-  will-change: transform, opacity;
-  animation: jt-aurora-drift 24s var(--ease-in-out, ease-in-out) infinite alternate;
+.hero-mark__glow-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  filter: blur(15px) saturate(1.3);
 }
 
-.hero-aurora__blob--a {
-  left: 6%;
-  top: 2%;
-  width: 44rem;
-  height: 44rem;
-  background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 68%);
-}
-
-.hero-aurora__blob--b {
-  right: 0;
-  top: 16%;
-  width: 36rem;
-  height: 36rem;
-  animation-delay: -7s;
-  animation-duration: 29s;
-  background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--primary) 20%, transparent), transparent 70%);
-}
-
-.hero-aurora__blob--c {
-  left: 32%;
-  top: 38%;
-  width: 40rem;
-  height: 40rem;
-  animation-delay: -13s;
-  animation-duration: 33s;
-  opacity: 0.34;
-  background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--growth) 16%, transparent), transparent 72%);
-}
-
-@keyframes jt-aurora-drift {
-  from { transform: translate3d(-3%, -2%, 0) scale(1); }
-  to   { transform: translate3d(4%, 3%, 0) scale(1.09); }
-}
-
-/* Light rays behind the mark — conic streaks, static except for opacity. */
-.hero-rays {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 42rem;
-  height: 42rem;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  opacity: 0.45;
-  background: conic-gradient(
-    from 200deg at 50% 50%,
-    transparent 0deg,
-    color-mix(in srgb, var(--accent) 17%, transparent) 26deg,
-    transparent 52deg,
-    transparent 118deg,
-    color-mix(in srgb, var(--primary) 14%, transparent) 150deg,
-    transparent 182deg,
-    transparent 248deg,
-    color-mix(in srgb, var(--accent) 12%, transparent) 284deg,
-    transparent 322deg
-  );
-  mask-image: radial-gradient(circle at 50% 50%, transparent 26%, #000 44%, transparent 74%);
-  -webkit-mask-image: radial-gradient(circle at 50% 50%, transparent 26%, #000 44%, transparent 74%);
-}
-
-[data-scene="webgl"] .hero-rays {
+.hero-diagram.is-exploded .hero-mark__glow {
   opacity: 0.8;
 }
 
-@media (max-width: 640px) {
-  .hero-aurora__blob--c {
+.hero-diagram.is-static .hero-mark__glow {
+  opacity: 0.65;
+}
+
+/* A hairline blueprint frame behind the mark — gives the composition weight
+   without adding another "piece". */
+.hero-mark__frame {
+  position: absolute;
+  inset: 6%;
+  border-radius: var(--radius-2xl);
+  border: 1px dashed color-mix(in srgb, var(--hero-edge) 26%, transparent);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ---------- Tooltips ---------------------------------------------------- */
+.hero-tooltips {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: none;
+}
+
+.hero-tooltip {
+  position: absolute;
+  left: var(--tt-l);
+  top: var(--tt-t);
+  width: var(--tt-w);
+  height: var(--tt-h);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(7px) scale(0.98);
+  transition:
+    opacity 260ms var(--ease-out),
+    transform 260ms var(--ease-out);
+  transition-delay: calc(var(--i, 0) * 40ms);
+}
+
+.hero-diagram.is-exploded .hero-tooltip,
+.hero-diagram.is-static .hero-tooltip {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.hero-tooltip__link {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 100%;
+  height: 100%;
+  padding: 0.6rem 0.7rem;
+  overflow: hidden;
+  border: 1px solid var(--hero-tooltip-border);
+  border-radius: var(--radius-md);
+  background: var(--hero-tooltip-bg);
+  color: var(--foreground);
+  text-decoration: none;
+  box-shadow: var(--hero-tooltip-shadow);
+  transition:
+    border-color 240ms var(--ease-out),
+    box-shadow 240ms var(--ease-out),
+    transform 240ms var(--ease-out);
+}
+
+/* The neon edge: a static pseudo-element whose OPACITY animates. */
+.hero-tooltip__link::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 1px var(--hero-edge),
+    0 0 18px color-mix(in srgb, var(--hero-edge) 45%, transparent);
+  opacity: 0.3;
+  transition: opacity 260ms var(--ease-out);
+}
+
+.hero-tooltip.is-lit .hero-tooltip__link {
+  border-color: var(--hero-edge);
+  box-shadow: var(--hero-tooltip-shadow-lit);
+  transform: translateY(-2px);
+}
+
+.hero-tooltip.is-lit .hero-tooltip__link::after {
+  opacity: 1;
+}
+
+.hero-tooltip__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.hero-tooltip__index {
+  font-family: var(--font-code);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--hero-index);
+}
+
+.hero-tooltip__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--growth); /* the one micro accent */
+  box-shadow: 0 0 6px color-mix(in srgb, var(--growth) 55%, transparent);
+}
+
+.hero-tooltip__title {
+  display: block;
+  font-size: 0.79rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--foreground);
+}
+
+.hero-tooltip__desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  font-size: 0.66rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.hero-tooltip__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  margin-top: auto;
+}
+
+.hero-tooltip__tag {
+  padding: 0.06rem 0.32rem;
+  border: 1px solid color-mix(in srgb, var(--hero-edge) 30%, transparent);
+  border-radius: var(--radius-pill);
+  font-size: 0.56rem;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.hero-diagram__empty {
+  margin-top: 1rem;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.hero-diagram__hint {
+  margin-top: 0.9rem;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.hero-diagram__hint--touch {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .hero-diagram__hint--desktop {
     display: none;
   }
-  .hero-rays {
-    opacity: 0.3;
+  .hero-diagram__hint--touch {
+    display: inline;
   }
 }
 
+/* ---------- Tablet / mobile: the tooltips become a real list ------------ */
+@media (max-width: 1023px) {
+  .hero-diagram {
+    aspect-ratio: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+
+  .hero-diagram__leaders {
+    display: none;
+  }
+
+  .hero-diagram__mark {
+    position: static;
+    display: flex;
+    justify-content: center;
+  }
+
+  .hero-mark__trigger {
+    width: clamp(10rem, 44vw, 14rem);
+  }
+
+  .hero-tooltips {
+    position: static;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+    pointer-events: auto;
+  }
+
+  .hero-tooltip {
+    position: static;
+    width: auto;
+    height: auto;
+    min-height: 44px;
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+
+  .hero-tooltip__link {
+    height: auto;
+    min-height: 44px;
+  }
+
+  .hero-diagram__hint--desktop {
+    display: none;
+  }
+  .hero-diagram__hint--touch {
+    display: inline;
+  }
+}
+
+/* ---------- Reduced motion: a static, motionless mark ------------------- */
 @media (prefers-reduced-motion: reduce) {
-  .hero-aurora__blob {
+  .hero-mark__trigger {
     animation: none;
   }
-}
 
-/* ============================================================
-   7b. CSS 3D CARD DEPTH (services + products)
-   ============================================================ */
+  .hero-mark__svg [data-logo-piece] {
+    animation: none;
+  }
 
-/* Pointer-follow tilt — driven by `useTilt` custom properties. Declared after
-   `.card-hover:hover` so it wins the specificity tie and can add the lift
-   back into its own transform. */
-.tilt-card {
-  --tilt-x: 0deg;
-  --tilt-y: 0deg;
-  transform: perspective(950px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y));
-  transform-style: preserve-3d;
-  transition:
-    transform 160ms var(--ease-out),
-    box-shadow var(--dur-normal) var(--ease-out),
-    border-color var(--dur-normal) var(--ease-out);
-}
+  .hero-diagram.is-exploded .hero-mark__svg [data-logo-piece],
+  .hero-mark__svg [data-logo-piece] {
+    transition: none;
+  }
 
-.tilt-card:hover {
-  transform: perspective(950px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y)) translateY(-4px);
-}
-
-/* Elevation for icon/badge children inside a tilted card. */
-.tilt-depth {
-  transform: translateZ(18px);
+  .hero-tooltip {
+    transition: none;
+  }
 }
 
 /* ============================================================
@@ -1599,15 +1846,21 @@ html:not(.js-intro) .hairline {
 }
 
 .hub-card__title {
-  font-size: 0.9rem;
+  /* Scales WITH the diagram (Task L): the card slot is a fixed, grid-snapped
+     percentage of the fluid diagram, so rem-locked type would overflow the
+     slot at the narrow end of the desktop range. */
+  font-size: clamp(0.8rem, 0.5rem + 0.32vw, 0.9rem);
   font-weight: 600;
   line-height: 1.25;
 }
 
 /* NOTE: deliberately NO -webkit-line-clamp. Full service descriptions must be
-   readable; the card grows instead of hiding content behind an ellipsis. */
+   readable; the card grows instead of hiding content behind an ellipsis. The
+   size clamp is what keeps that promise from breaking the slot: measured free,
+   card 04 (Business Growth, the centred fold slot) fits its 25.71%-tall slot at
+   1024, 1280, 1366, 1440 and 1920. (Task L — card-04 bottom-spacing fix.) */
 .hub-card__desc {
-  font-size: 0.72rem;
+  font-size: clamp(0.62rem, 0.38rem + 0.29vw, 0.72rem);
   line-height: 1.42;
   color: var(--muted);
 }
@@ -1731,902 +1984,227 @@ html:not(.js-intro) .hairline {
 }
 
 /* ============================================================
-   6c. SERVICES CARDS — water-fill redesign (Task I)
+   6c. SERVICES INDEX — one static blueprint schedule (Task L)
    ------------------------------------------------------------
-   Rest: white card, icon tile, title, ONE short line, up to 3 chips.
-   Hover / focus-within / tap: a liquid layer rises (transform only), the
-   copy turns white and the full description + CTA fade up. Growth Green is
-   the 2px crest line and nothing else. No-JS: everything stays visible.
+   Replaces the "Discipline Atlas" (rail + stage + tour), which is deleted.
+   Everything is visible at once: the whole catalogue is ONE ordered list laid
+   out on the site's `--grid-fine` rhythm, grouped by the backend `category`.
+   There is deliberately NO interactivity styling here — no `cursor: pointer`,
+   no `:hover` transform/background, no expanding rows, no tilt. Entries are
+   plain content; the section-level CTA is the only control.
    ============================================================ */
 
-:root {
-  --service-fill-a: var(--primary); /* Deep Navy */
-  --service-fill-b: var(--accent); /* Technology Blue */
-  /* Lightest stop. Deliberately only slightly lighter than Technology Blue:
-     white copy over it still clears WCAG AA (>= 4.5:1). */
-  --service-fill-c: color-mix(in srgb, var(--accent) 92%, #ffffff);
-  --service-fill-crest: var(--growth);
-  --service-fill-dur: 700ms;
-  --on-fill: #ffffff;
-  /* Worst-case contrast backdrop for white text on the lightest fill stop. */
-  --service-fill-worst: var(--service-fill-c);
-}
-
-.dark {
-  /* Dark canvas: keep the lightest stop dark enough for white copy (>= 4.5:1). */
-  --service-fill-c: color-mix(in srgb, var(--accent) 70%, #0a0f24);
-}
-
-.service-card {
+.services-index {
   position: relative;
-  overflow: hidden;
   isolation: isolate;
-  min-height: 19.5rem;
 }
 
-.service-card__body {
-  position: relative;
-  z-index: 2;
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
-  height: 100%;
-  padding: 1.5rem;
-}
-
-/* Liquid: rises with transform only — never height. */
-.service-card__liquid {
+/* One very slow drifting hairline — a blueprint trace, not an affordance. */
+.services-index__trace {
   position: absolute;
-  inset: 0;
-  z-index: 1;
-  transform: translateY(101%);
-  transition: transform var(--service-fill-dur) var(--ease-out);
-  background: linear-gradient(
-    var(--service-fill-angle, 158deg),
-    var(--service-fill-a),
-    var(--service-fill-b) 58%,
-    var(--service-fill-c)
-  );
-  will-change: transform;
-}
-
-/* Two wave crests, ~200% wide, looping at different speeds/opacities. */
-.service-card__wave {
-  position: absolute;
-  left: -50%;
-  top: -13px;
-  width: 200%;
-  height: 26px;
-  display: block;
-  animation: jt-service-wave 7s linear infinite;
-}
-
-.service-card__wave--a {
-  fill: var(--service-fill-b);
-  opacity: 0.9;
-}
-
-.service-card__wave--b {
-  fill: var(--service-fill-c);
-  opacity: 0.55;
-  animation-duration: 11s;
-  animation-direction: reverse;
-}
-
-/* 2px Growth Green crest — the ONLY green on the card. */
-.service-card__crest {
-  position: absolute;
+  top: 0;
   left: 0;
-  right: 0;
-  top: 13px;
-  height: 2px;
-  background: var(--service-fill-crest);
-  opacity: 0.95;
+  width: 24%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0.45;
+  pointer-events: none;
+  animation: jt-index-trace 26s linear infinite;
 }
 
-@keyframes jt-service-wave {
+@keyframes jt-index-trace {
   from {
-    transform: translateX(0);
+    transform: translateX(-110%);
   }
   to {
-    transform: translateX(-25%);
+    transform: translateX(520%);
   }
 }
 
-/* Short line + chips make way for the full copy when filled. */
-.service-card__short,
-.service-card__chips,
-.service-card__title {
-  transition:
-    color 320ms var(--ease-out),
-    opacity 260ms var(--ease-out);
+.services-index__list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 2.75rem;
+  row-gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-/* Full description + CTA — always in the DOM, revealed on fill. */
-.service-card__details {
-  position: absolute;
-  left: 1.5rem;
-  right: 1.5rem;
-  bottom: 1.35rem;
-  z-index: 2;
+/* Group heading — spans the full schedule width, like a drawing title band.
+   The schedule has to read as ONE screen (owner: the whole section within
+   ~1.15x the 1440x900 viewport), so the band keeps its rhythm but gives up
+   vertical air: 0.75rem above instead of 1.35rem. */
+.services-index__head {
+  grid-column: 1 / -1;
   display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  opacity: 0;
-  transform: translateY(12px);
-  pointer-events: none;
-  transition:
-    opacity 320ms var(--ease-out),
-    transform 480ms var(--ease-out);
-}
-
-.service-card__desc {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 5;
-  line-clamp: 5;
-  overflow: hidden;
-  font-size: 0.84rem;
-  line-height: 1.55;
-}
-
-.service-card__cta {
-  display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding-bottom: 0.2rem;
+}
+
+.services-index__head:first-child {
+  margin-top: 0;
+}
+
+.services-index__head-title {
+  margin: 0;
+  font-family: var(--font-code);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.services-index__head-rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border-strong), transparent);
+}
+
+/* ---------- One discipline --------------------------------------------- */
+.service-entry {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.5rem;
+  min-height: 3.8rem;
+  padding: 0.45rem 0.55rem;
+  border-top: 1px solid var(--border);
+  scroll-margin-top: 6rem;
+}
+
+.service-entry__num {
+  padding-top: 0.1rem;
+  font-family: var(--font-code);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.service-entry__icon {
+  display: inline-flex;
+  padding-top: 0.05rem;
+  color: var(--accent);
+}
+
+.service-entry__body {
+  display: block;
+  min-width: 0;
+}
+
+.service-entry__title {
+  display: block;
   font-size: 0.82rem;
   font-weight: 600;
-  color: var(--on-fill);
-  width: fit-content;
-  border-bottom: 1px solid color-mix(in srgb, var(--on-fill) 55%, transparent);
-  padding-bottom: 2px;
-}
-
-/* Fill triggers. `.js` is set by the theme bootstrap: without JS nothing is
-   hidden and no fill is attempted. */
-.js .service-card[data-filled] .service-card__liquid {
-  transform: translateY(0);
-}
-
-@media (hover: hover) {
-  .js .service-card:hover .service-card__liquid {
-    transform: translateY(0);
-  }
-}
-
-.js .service-card:focus-within .service-card__liquid {
-  transform: translateY(0);
-}
-
-.js .service-card[data-filled] .service-card__title,
-.js .service-card[data-filled] .service-card__desc,
-.js .service-card[data-filled] .service-card__short,
-.js .service-card[data-filled] .service-card__chip,
-.js .service-card[data-filled] .service-card__icon {
-  color: var(--on-fill);
-}
-
-.js .service-card[data-filled] .service-card__chip {
-  border-color: color-mix(in srgb, var(--on-fill) 58%, transparent);
-  background-color: transparent;
-}
-
-/* Icon tile: translucent white over the fill, white glyph (decorative). */
-.js .service-card[data-filled] .service-card__icon {
-  background-color: color-mix(in srgb, var(--on-fill) 18%, transparent);
-}
-
-.js .service-card[data-filled] .service-card__short,
-.js .service-card[data-filled] .service-card__chips {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.js .service-card[data-filled] .service-card__details {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
-}
-
-/* Hover / focus parity on desktop (same visual result as [data-filled]). */
-@media (hover: hover) {
-  .js .service-card:hover .service-card__title,
-  .js .service-card:hover .service-card__icon,
-  .js .service-card:hover .service-card__desc,
-  .js .service-card:hover .service-card__short,
-  .js .service-card:hover .service-card__chip {
-    color: var(--on-fill);
-  }
-
-  .js .service-card:hover .service-card__short,
-  .js .service-card:hover .service-card__chips {
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .js .service-card:hover .service-card__details {
-    opacity: 1;
-    transform: translateY(0);
-    pointer-events: auto;
-  }
-
-  .js .service-card:hover .service-card__chip {
-    border-color: color-mix(in srgb, var(--on-fill) 58%, transparent);
-    background-color: transparent;
-  }
-
-  .js .service-card:hover .service-card__icon {
-    background-color: color-mix(in srgb, var(--on-fill) 18%, transparent);
-  }
-}
-
-.js .service-card:focus-within .service-card__title,
-.js .service-card:focus-within .service-card__icon,
-.js .service-card:focus-within .service-card__desc,
-.js .service-card:focus-within .service-card__short,
-.js .service-card:focus-within .service-card__chip {
-  color: var(--on-fill);
-}
-
-.js .service-card:focus-within .service-card__short,
-.js .service-card:focus-within .service-card__chips {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.js .service-card:focus-within .service-card__details {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
-}
-
-.js .service-card:focus-within .service-card__chip {
-  border-color: color-mix(in srgb, var(--on-fill) 58%, transparent);
-  background-color: transparent;
-}
-
-.js .service-card:focus-within .service-card__icon {
-  background-color: color-mix(in srgb, var(--on-fill) 18%, transparent);
-}
-
-/* The card's own toggle: a real button for touch + keyboard. */
-.service-card__toggle {
-  margin-top: auto;
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.3rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background-color: transparent;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    color 220ms var(--ease-out),
-    border-color 220ms var(--ease-out);
-}
-
-.js .service-card[data-filled] .service-card__toggle,
-.js .service-card:focus-within .service-card__toggle {
-  color: var(--on-fill);
-  border-color: color-mix(in srgb, var(--on-fill) 45%, transparent);
-}
-
-/* No-JS: nothing is hidden, the liquid never rises. */
-html:not(.js) .service-card__details {
-  position: static;
-  opacity: 1;
-  transform: none;
-  pointer-events: auto;
-  margin-top: 0.5rem;
-}
-
-html:not(.js) .service-card__toggle,
-html:not(.js) .service-card__liquid {
-  display: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .service-card__liquid,
-  .service-card__details,
-  .service-card__short,
-  .service-card__chips,
-  .service-card__title {
-    transition: none !important;
-  }
-
-  .service-card__wave {
-    animation: none !important;
-  }
-}
-
-/* ============================================================
-   6d. DISCIPLINE ATLAS (Task K)
-   ------------------------------------------------------------
-   The services section is a two-part instrument panel: a slim mono-numbered
-   index RAIL (left) and a large STAGE (right). The rail rows keep the previous
-   card's class contract (`.service-card*`) because the verification harness
-   asserts it — they are simply restyled into rows. Animations are transform /
-   opacity / stroke-dashoffset only; every one is disabled under
-   `prefers-reduced-motion`. Growth Green stays a micro accent (ticks, crests,
-   one packet head).
-   ============================================================ */
-
-.atlas-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 1.5rem;
-  align-items: start;
-}
-
-.atlas-rail-wrap {
-  position: relative;
-  min-width: 0;
-}
-
-.atlas-tour {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin-bottom: 0.65rem;
-  padding: 0.3rem 0.7rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill, 999px);
-  background-color: transparent;
-  color: var(--muted);
-  font-size: 0.68rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.atlas-tour[aria-pressed="true"] {
-  color: var(--foreground);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-
-/* The one Growth-Green dot in the rail header. */
-.atlas-tour__dot {
-  width: 0.42rem;
-  height: 0.42rem;
-  border-radius: 50%;
-  background: var(--growth);
-}
-
-.atlas-rail {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-  min-width: 0;
-  padding: 0;
-  margin: 0;
-  list-style: none;
-}
-
-/* --- Rail row: the previous card, restyled as a slim blueprint row ------ */
-.atlas-row.service-card {
-  position: relative;
-  overflow: hidden;
-  isolation: isolate;
-  min-height: 6.75rem;
-  border: 1px solid var(--border);
-  border-radius: 0.9rem;
-  background-color: var(--surface);
-  cursor: pointer;
-  transition:
-    border-color 220ms var(--ease-out),
-    transform 220ms var(--ease-out);
-}
-
-.atlas-row.service-card:focus-visible,
-.atlas-row.service-card[aria-selected="true"]:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.atlas-row.service-card[aria-selected="true"] {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-}
-
-/* Outer accent rail on the selected row (active indicator, not a fill). */
-.atlas-row.service-card[aria-selected="true"]::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--accent);
-}
-
-/* The old full-card "liquid" is now a thin wipe across a slim row. */
-.atlas-row .service-card__wave {
-  top: auto;
-  bottom: -13px;
-}
-
-.atlas-row .service-card__crest {
-  top: auto;
-  bottom: 13px;
-}
-
-.atlas-row__body.service-card__body {
-  position: relative;
-  z-index: 2;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 0.65rem;
-  height: auto;
-  padding: 0.7rem 0.85rem;
-}
-
-.atlas-row__index {
-  flex: none;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-  transition: color 260ms var(--ease-out);
-}
-
-/* The selected row's index must stay legible (was --muted on the tinted row). */
-.atlas-row[aria-selected="true"] .atlas-row__index {
+  line-height: 1.22;
   color: var(--foreground);
 }
 
-.atlas-row__icon {
-  flex: none;
-  display: inline-flex;
-  width: 2rem;
-  height: 2rem;
-  align-items: center;
-  justify-content: center;
-  border-radius: 0.6rem;
-  background-color: var(--accent-soft);
-  color: var(--accent);
-}
-
-.atlas-row__text {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.atlas-row__title.service-card__title {
+.service-entry__short {
   display: block;
-  font-size: 0.95rem;
-  font-weight: 600;
-  line-height: 1.25;
-}
-
-.atlas-row__short.service-card__short {
-  display: block;
-  font-size: 0.74rem;
-  line-height: 1.35;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Chips stay in the DOM (the stage shows them) but not in the rail. */
-.atlas-row__chips.service-card__chips {
-  display: none;
-}
-
-.atlas-row__tick {
-  flex: none;
-  margin-left: auto;
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 50%;
-  background: var(--slate);
-  opacity: 0.5;
-}
-
-.atlas-row[aria-selected="true"] .atlas-row__tick {
-  background: var(--accent);
-  opacity: 1;
-}
-
-/* Growth Green is a micro accent only — one tick, never a fill. */
-.atlas-row[data-accent="green-micro"] .atlas-row__tick {
-  background: var(--growth);
-}
-
-/*
- * BUGFIX — the details box used to overflow the row and be clipped by
- * `overflow: hidden` (the description plus the “Hide details” pill ran past the
- * card edge).
- *
- * The atlas keeps a CONSTANT row height by design (see the component header),
- * so the fix is to FIT the details inside that height rather than let the row
- * grow:
- *   · start higher (2.5rem instead of 2.9rem)
- *   · clamp the description to 2 lines instead of 3
- *   · tighter gap + a slightly smaller pill
- * Worst case: 40px offset + 2(≈17.8px) description + 4.8px gap + ≈22px pill
- * ≈ 102.8px < the 108px (6.75rem) row, so nothing is clipped and the row height
- * is unchanged at rest, on hover AND when explicitly expanded.
- */
-.atlas-row__details.service-card__details {
-  position: absolute;
-  left: 0.85rem;
-  right: 0.85rem;
-  top: 2.5rem;
-  bottom: auto;
-  z-index: 2;
-  gap: 0.3rem;
-  max-height: calc(100% - 2.5rem - 0.4rem);
-  overflow: hidden;
-}
-
-/* Clamped to 2 lines (was 3) so description + pill fit the constant row height. */
-.atlas-row__desc.service-card__desc {
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  font-size: 0.74rem;
-  line-height: 1.5;
-}
-
-.atlas-row__toggle.service-card__toggle {
-  margin-top: 0;
-  align-self: flex-start;
-  padding: 0.26rem 0.55rem;
-  font-size: 0.7rem;
-}
-
-/* --- Stage ------------------------------------------------------------- */
-.atlas-stage {
-  position: relative;
-  overflow: hidden;
-  isolation: isolate;
-  min-height: 24rem;
-  padding: 1.5rem;
-  border: 1px solid var(--border);
-  border-radius: 1.4rem;
-  background:
-    radial-gradient(120% 90% at 88% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 62%),
-    var(--surface);
-}
-
-.atlas-stage__head {
-  position: relative;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.atlas-stage__index {
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 0.68rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  margin-top: 0.1rem;
+  font-size: 0.66rem;
+  line-height: 1.32;
   color: var(--muted);
 }
 
-.atlas-stage__cat {
-  font-size: 0.64rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  padding: 0.2rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill, 999px);
-  color: var(--muted);
-}
-
-/* ONE large liquid band — the water idea, as a single surface. */
-.atlas-band {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 3.3rem;
-  height: 24px;
-  z-index: 1;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.atlas-band__wave {
-  position: absolute;
-  left: -50%;
-  top: 0;
-  width: 200%;
-  height: 24px;
-  animation: jt-service-wave 9s linear infinite;
-}
-
-.atlas-band__wave--a {
-  fill: color-mix(in srgb, var(--accent) 58%, transparent);
-  opacity: 0.85;
-}
-
-.atlas-band__wave--b {
-  fill: color-mix(in srgb, var(--primary) 48%, transparent);
-  opacity: 0.6;
-  animation-duration: 13s;
-  animation-direction: reverse;
-}
-
-.atlas-stage__grid {
-  position: relative;
-  z-index: 2;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 1.25rem;
-}
-
-.atlas-stage__body {
-  animation: atlas-stage-in 380ms var(--ease-out);
-}
-
-@keyframes atlas-stage-in {
-  from {
-    opacity: 0;
-    transform: translateX(14px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.atlas-stage__title {
-  margin-top: 4.5rem;
-}
-
-.atlas-stage__desc {
-  margin-top: 0.9rem;
-  max-width: 48ch;
-  font-size: 0.95rem;
-  line-height: 1.7;
-  color: var(--muted);
-}
-
-.atlas-stage__chips {
+.service-entry__tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.45rem;
-  margin-top: 1.1rem;
-  padding: 0;
-  list-style: none;
+  gap: 0.22rem;
+  margin-top: 0.22rem;
 }
 
-.atlas-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.65rem;
+.service-entry__tag {
+  padding: 0.04rem 0.3rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius-pill, 999px);
-  font-size: 0.72rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.58rem;
+  letter-spacing: 0.04em;
   color: var(--muted);
 }
 
-.atlas-stage__cta {
+/* Deep link target — a calm, non-pointer highlight below the navbar. */
+.service-entry:target {
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+
+/* ---------- Section CTA (the only interactive element) ------------------ */
+.services-index__cta {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+
+.services-index__cta-link {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  margin-top: 1.4rem;
-  font-size: 0.9rem;
+  font-size: 0.86rem;
   font-weight: 600;
   color: var(--accent);
+  text-decoration: none;
 }
 
-/* --- Constellation visual --------------------------------------------- */
-.atlas-visual {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 20rem;
+/* ---------- One-time scroll reveal (never required for visibility) ------ */
+.services-index.is-inview .service-entry,
+.services-index.is-inview .services-index__head {
+  animation: jt-index-in 500ms var(--ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 26ms);
 }
 
-.atlas-visual__svg {
-  width: 100%;
-  height: auto;
-  max-width: 25rem;
-  overflow: visible;
-}
-
-.atlas-visual__ring {
-  fill: none;
-  stroke: var(--grid-line-fine, var(--border));
-  stroke-width: 1;
-  stroke-dasharray: 3 7;
-}
-
-.atlas-visual__ring--outer {
-  opacity: 0.6;
-}
-
-.atlas-visual__wire {
-  stroke-width: 1.6;
-  stroke-dasharray: 10 8;
-  animation: atlas-wire-flow 2.4s linear infinite;
-}
-
-@keyframes atlas-wire-flow {
-  to {
-    stroke-dashoffset: -36;
-  }
-}
-
-/* Travelling packets (offset-path is set inline per selection). */
-.atlas-visual__packet {
-  fill: var(--hub-wire-b);
-  offset-rotate: 0deg;
-  animation: atlas-packet 2.8s linear infinite;
-}
-
-/* One packet head is Growth Green (micro accent). */
-.atlas-visual__packet--delayed {
-  fill: var(--hub-wire-packet);
-  animation-delay: 1.2s;
-}
-
-@keyframes atlas-packet {
+@keyframes jt-index-in {
   from {
-    offset-distance: 0%;
-  }
-  to {
-    offset-distance: 100%;
+    opacity: 0;
+    transform: translateY(8px);
   }
 }
 
-.atlas-node circle {
-  fill: color-mix(in srgb, var(--slate) 72%, transparent);
-}
-
-.atlas-node__halo {
-  fill: none;
-  stroke: color-mix(in srgb, var(--slate) 42%, transparent);
-  stroke-width: 1;
-}
-
-.atlas-node[data-accent="navy"] circle {
-  fill: var(--primary);
-}
-
-.atlas-node[data-accent="green-micro"] circle {
-  fill: var(--growth);
-}
-
-.atlas-node.is-active circle {
-  fill: var(--accent);
-}
-
-.atlas-node.is-active .atlas-node__halo {
-  stroke: var(--accent);
-}
-
-.atlas-visual__gauge {
-  fill: none;
-  stroke: color-mix(in srgb, var(--accent) 62%, transparent);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-dashoffset: 163;
-  transform: rotate(-90deg);
-  transform-origin: 260px 260px;
-  transition: stroke-dasharray 480ms var(--ease-out);
-}
-
-.atlas-visual__hub {
-  position: absolute;
-  display: inline-flex;
-  width: 4.5rem;
-  height: 4.5rem;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
-  /* Uses the shared --accent-soft token so the glyph sits on an already
-     audited text background (accent on accent-soft). */
-  background-color: var(--accent-soft);
-}
-
-/* --- Desktop: rail | stage, and body | visual --------------------------- */
-@media (min-width: 1024px) {
-  .atlas-layout {
-    grid-template-columns: minmax(0, 360px) minmax(0, 1fr);
-    gap: 2rem;
-  }
-
-  .atlas-stage {
-    padding: 1.75rem;
-  }
-
-  .atlas-stage__grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 20rem);
-    align-items: center;
-    gap: 1.5rem;
-  }
-
-  .atlas-visual {
-    min-height: 25rem;
-  }
-}
-
-/* --- Mobile: sticky scroll-snapped chip carousel above the stage ------- */
+/* ---------- Tablet / mobile -------------------------------------------- */
 @media (max-width: 1023px) {
-  .atlas-rail-wrap {
-    position: sticky;
-    top: 5.5rem;
-    z-index: 20;
-    padding: 0.5rem 0;
-    background-color: var(--surface);
+  .services-index__list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 1.75rem;
+  }
+}
+
+@media (max-width: 639px) {
+  .services-index__list {
+    grid-template-columns: minmax(0, 1fr);
+    column-gap: 0;
   }
 
-  .atlas-rail {
-    flex-direction: row;
-    gap: 0.5rem;
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
-    -webkit-overflow-scrolling: touch;
-    padding-bottom: 0.4rem;
-  }
-
-  .atlas-row.service-card {
-    flex: 0 0 auto;
+  .service-entry {
+    grid-template-columns: auto minmax(0, 1fr);
     min-height: 0;
-    max-width: 78vw;
-    scroll-snap-align: start;
-    border-radius: var(--radius-pill, 999px);
   }
 
-  .atlas-row.service-card[aria-selected="true"]::before {
+  .service-entry__icon {
     display: none;
   }
 
-  .atlas-row__body.service-card__body {
-    padding: 0.45rem 0.85rem;
-  }
-
-  /* No hover on touch: the chip is number + title only. */
-  .atlas-row__short.service-card__short,
-  .atlas-row__chips.service-card__chips,
-  .atlas-row__details.service-card__details,
-  .atlas-row__tick {
-    display: none;
-  }
-
-  .atlas-stage__title {
-    margin-top: 3.4rem;
-  }
-
-  .atlas-visual {
-    min-height: 17rem;
+  .service-entry__short {
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .atlas-band__wave,
-  .atlas-visual__wire,
-  .atlas-visual__packet {
-    animation: none !important;
+  .services-index__trace {
+    animation: none;
   }
 
-  .atlas-visual__packet {
-    display: none;
-  }
-
-  .atlas-stage__body {
-    animation: none !important;
-  }
-
-  .atlas-visual__gauge,
-  .atlas-row.service-card,
-  .atlas-row__index {
-    transition: none !important;
+  .services-index.is-inview .service-entry,
+  .services-index.is-inview .services-index__head {
+    animation: none;
   }
 }
 
@@ -2638,6 +2216,9 @@ html:not(.js) .service-card__liquid {
 @media (min-width: 1024px) {
   .hub {
     margin-top: 3rem;
+    /* Safety gutter so a card that grows past its slot can never reach the next
+       section (card 04 — Business Growth — is the tallest and sits lowest). */
+    padding-bottom: clamp(1rem, 2.5vw, 2.75rem);
   }
 
   .hub__diagram {
@@ -3934,4 +3515,464 @@ html:not(.js-intro) .plate__tick {
   .plate__tick {
     transform: none;
   }
+}
+
+/* ============================================================
+   12. START-YOUR-PROJECT FORM + SUCCESS DIALOG (Task L)
+   ------------------------------------------------------------
+   Blueprint language: hairlines, mono step labels, corner ticks on the active
+   panel. Three input steps + a Review step. All motion is transform/opacity and
+   is disabled under prefers-reduced-motion.
+   ============================================================ */
+
+.form-panel {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2xl);
+  background: var(--surface-elevated);
+  overflow: hidden;
+}
+
+/* Corner ticks — four hairline brackets on the panel (the active frame). */
+.form-panel__tick {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.form-panel__tick--tl {
+  left: 0.5rem;
+  top: 0.5rem;
+  border-left: 1.5px solid;
+  border-top: 1.5px solid;
+}
+
+.form-panel__tick--tr {
+  right: 0.5rem;
+  top: 0.5rem;
+  border-right: 1.5px solid;
+  border-top: 1.5px solid;
+}
+
+.form-panel__tick--bl {
+  left: 0.5rem;
+  bottom: 0.5rem;
+  border-left: 1.5px solid;
+  border-bottom: 1.5px solid;
+}
+
+.form-panel__tick--br {
+  right: 0.5rem;
+  bottom: 0.5rem;
+  border-right: 1.5px solid;
+  border-bottom: 1.5px solid;
+}
+
+/* ---- Progress rail ------------------------------------------------------ */
+.form-rail__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.form-rail__count {
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.form-rail__label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.form-rail {
+  position: relative;
+  margin-top: 0.65rem;
+  height: 3px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+}
+
+.form-rail__fill {
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--primary), var(--accent));
+  transition: transform 420ms var(--ease-out);
+}
+
+.form-rail__steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-code);
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.form-rail__steps li {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.form-rail__steps li.is-done {
+  color: var(--accent);
+}
+
+/* ---- Error summary ------------------------------------------------------ */
+.form-summary {
+  margin-top: 1.1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+}
+
+.form-summary__title {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.form-summary__list {
+  margin: 0.45rem 0 0;
+  padding-left: 1.1rem;
+  list-style: disc;
+}
+
+.form-summary__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--danger);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* ---- Steps -------------------------------------------------------------- */
+.form-step {
+  margin-top: 1.5rem;
+  animation: jt-form-step 360ms var(--ease-out) backwards;
+}
+
+@keyframes jt-form-step {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.form-step__title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.form-note {
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.form-field__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.form-counter {
+  font-family: var(--font-code);
+  font-size: 0.66rem;
+  color: var(--muted);
+}
+
+.form-textarea {
+  min-height: 6.5rem;
+  resize: vertical;
+}
+
+/* ---- Service chips ------------------------------------------------------ */
+.form-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-height: 4.6rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-elevated);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 200ms var(--ease-out),
+    background-color 200ms var(--ease-out),
+    transform 200ms var(--ease-out);
+}
+
+.form-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+.form-chip.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: var(--shadow-subtle);
+}
+
+.form-chip__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.form-chip__title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+/* Selection is text + glyph, never colour alone. */
+.form-chip__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--accent-contrast);
+}
+
+.form-chip.is-selected .form-chip__check {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.form-chip__helper {
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* ---- Timeline ----------------------------------------------------------- */
+.form-timeline {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.form-timeline__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+}
+
+.form-timeline__option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: 0.78rem;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 200ms var(--ease-out), color 200ms var(--ease-out);
+}
+
+.form-timeline__option.is-selected {
+  border-color: var(--accent);
+  color: var(--foreground);
+  background: var(--accent-soft);
+}
+
+.form-timeline__option input {
+  accent-color: var(--accent);
+}
+
+/* ---- Review ------------------------------------------------------------- */
+.form-review {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.form-review__section {
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.form-review__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-family: var(--font-code);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.form-review__edit {
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: none;
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.form-review__row {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  gap: 0.75rem;
+  margin-top: 0.4rem;
+  font-size: 0.82rem;
+}
+
+.form-review__label {
+  color: var(--muted);
+}
+
+.form-review__value {
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.form-review__value.is-empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ---- Errors / privacy --------------------------------------------------- */
+.form-submit-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  font-size: 0.82rem;
+  color: var(--danger);
+}
+
+.form-privacy {
+  margin-top: 1.1rem;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* ---- Success dialog: what happens next --------------------------------- */
+.success-next-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  text-align: left;
+}
+
+.success-next-step {
+  display: flex;
+  gap: 0.65rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.success-next-step__num {
+  font-family: var(--font-code);
+  font-size: 0.64rem;
+  font-weight: 600;
+  color: var(--growth-ink);
+  padding-top: 0.1rem;
+}
+
+.success-next-step__title {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.success-next-step__copy {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+@media (max-width: 639px) {
+  .form-rail__steps li:not(.is-done) {
+    color: transparent;
+  }
+
+  .form-review__row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .form-step {
+    animation: none;
+  }
+
+  .form-rail__fill {
+    transition: none;
+  }
+}
+
+/* Keyboard focus must be loud on both themes. */
+.form-chip:focus-visible,
+.form-timeline__option:focus-visible,
+.form-review__edit:focus-visible,
+.form-summary__link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }

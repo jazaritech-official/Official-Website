@@ -1,12 +1,24 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { api, ApiError } from "@/lib/api";
 import { useApiData } from "@/hooks/useApiData";
+import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { Button } from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Spinner";
 import { Reveal } from "@/components/motion/Reveal";
 import { SectionIndex } from "@/components/layout/SectionIndex";
+import { restingLine } from "@/lib/serviceCopy";
 import { SuccessModal } from "./SuccessModal";
 import {
   ArrowRightIcon,
@@ -16,10 +28,48 @@ import {
   RefreshIcon,
   ShieldIcon,
 } from "@/components/icons";
-import type { SubmissionResult } from "@/types/api";
+import type { SubmissionResult, SubmissionTimeline } from "@/types/api";
 
-const STEP_LABELS = ["Your name", "Your work", "Contact", "Service"] as const;
-const LAST_STEP = STEP_LABELS.length - 1;
+/**
+ * SECTION 6 — "Start Your Project".
+ *
+ * UX DECISION (Task L, documented in PROJECT_NOTES.md §40)
+ * The old flow asked four questions as four full steps: name → work → contact →
+ * service. "Your work" (a single optional field) did not deserve a screen of its
+ * own, so it moved in with the name and the flow is now **three input steps plus
+ * a Review step**:
+ *
+ *   1. About you         — name + company/domain
+ *   2. How to reach you  — phone and/or email (the rule is stated up front)
+ *   3. What you need     — service, timeline, project details
+ *   4. Review            — every answer, with an "Edit" link per section
+ *
+ * Fewer near-empty screens, an explicit confirm before sending, and no question
+ * is asked twice. Everything is progressive: the form still works with the
+ * keyboard alone, keeps a draft in `sessionStorage` (never `localStorage`, never
+ * after a successful submit) and never depends on JS for reading the fields.
+ */
+
+const STEPS = [
+  { key: "about", label: "About you" },
+  { key: "contact", label: "How to reach you" },
+  { key: "need", label: "What you need" },
+  { key: "review", label: "Review" },
+] as const;
+
+const REVIEW_INDEX = STEPS.length - 1;
+
+const TIMELINES: Array<{ value: SubmissionTimeline; label: string }> = [
+  { value: "asap", label: "As soon as possible" },
+  { value: "1-3-months", label: "Within 1–3 months" },
+  { value: "3-6-months", label: "In 3–6 months" },
+  { value: "exploring", label: "Just exploring" },
+];
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const PHONE_RE = /^\+?[0-9][0-9\s\-().]{6,19}$/;
+const MESSAGE_MAX = 1000;
+const DRAFT_KEY = "jazari:project-draft:v1";
 
 interface FormState {
   name: string;
@@ -27,12 +77,11 @@ interface FormState {
   phone: string;
   email: string;
   service: string;
+  timeline: SubmissionTimeline | "";
+  message: string;
   /** Honeypot field — must stay empty for humans. */
   website: string;
 }
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-const PHONE_RE = /^\+?[0-9][0-9\s\-().]{6,19}$/;
 
 const EMPTY_FORM: FormState = {
   name: "",
@@ -40,7 +89,32 @@ const EMPTY_FORM: FormState = {
   phone: "",
   email: "",
   service: "",
+  timeline: "",
+  message: "",
   website: "",
+};
+
+/** Which step owns each field (also drives the error-summary anchors). */
+const FIELD_STEP: Record<string, number> = {
+  name: 0,
+  domain: 0,
+  phone: 1,
+  email: 1,
+  contact: 1,
+  service: 2,
+  timeline: 2,
+  message: 2,
+};
+
+const FIELD_LABEL: Record<string, string> = {
+  name: "Full name",
+  domain: "Company or domain",
+  phone: "Phone",
+  email: "Email",
+  contact: "Contact details",
+  service: "Service",
+  timeline: "Timeline",
+  message: "Project details",
 };
 
 const PROMISES: { icon: typeof ShieldIcon; title: string; copy: string }[] = [
@@ -61,24 +135,99 @@ const PROMISES: { icon: typeof ShieldIcon; title: string; copy: string }[] = [
   },
 ];
 
+/** Strip protocol / www / trailing slashes so `example.com` and a full URL read the same. */
+function normaliseDomain(value: string): string {
+  return value
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/^www\./i, "")
+    .replace(/[?#].*$/, "")
+    .replace(/\/+$/, "");
+}
+
+function validateStep(index: number, form: FormState): Record<string, string> {
+  const found: Record<string, string> = {};
+
+  if (index === 0) {
+    if (form.name.trim().length < 2) {
+      found.name = "Please tell us your name (at least 2 characters).";
+    }
+    if (normaliseDomain(form.domain).length > 200) {
+      found.domain = "Please keep this under 200 characters.";
+    }
+  }
+
+  if (index === 1) {
+    const email = form.email.trim();
+    const phone = form.phone.trim();
+    if (!email && !phone) {
+      found.contact = "Add a phone number or an email address — either one is enough.";
+    } else {
+      if (email && !EMAIL_RE.test(email)) {
+        found.email = "That email address looks incomplete — please check it for a typo.";
+      }
+      if (phone && !PHONE_RE.test(phone)) {
+        found.phone = "Use an international format, e.g. +880 1712 345678.";
+      }
+    }
+  }
+
+  if (index === 2) {
+    if (!form.service) {
+      found.service = "Pick the closest service — you can refine it with us later.";
+    }
+    if (form.message.trim().length > MESSAGE_MAX) {
+      found.message = `Please keep this under ${MESSAGE_MAX} characters.`;
+    }
+  }
+
+  return found;
+}
+
+/** Friendly, distinct copy for each backend failure mode. */
+function describeSubmitFailure(cause: unknown): string {
+  if (cause instanceof ApiError) {
+    if (cause.status === 429) {
+      return "You've sent several requests already. Please wait a minute and try again — your answers are still here.";
+    }
+    if (cause.status >= 500) {
+      return "Our server had a problem saving your request. Nothing was lost — please try again.";
+    }
+    if (cause.status === 0) {
+      return "We couldn't reach the server. Check your connection and try again — your answers are still here.";
+    }
+    return cause.message;
+  }
+  return "We couldn't reach the server. Check your connection and try again — your answers are still here.";
+}
+
 function Field({
   id,
   label,
   hint,
   error,
+  counter,
   children,
 }: {
   id: string;
   label: string;
   hint?: string;
   error?: string;
+  counter?: string;
   children: ReactNode;
 }) {
   return (
     <div>
-      <label htmlFor={id} className="label">
-        {label}
-      </label>
+      <div className="form-field__head">
+        <label htmlFor={id} className="label">
+          {label}
+        </label>
+        {counter ? (
+          <span className="form-counter" aria-hidden="true">
+            {counter}
+          </span>
+        ) : null}
+      </div>
       {children}
       {error ? (
         <p id={`${id}-error`} className="error-text">
@@ -91,120 +240,200 @@ function Field({
   );
 }
 
-/**
- * Section 6 — guided intake.
- *
- * Four conversational steps (name → work → contact → service), per-step
- * validation, a honeypot for bots, backend-confirmed submission and a premium
- * success dialog showing the server-generated reference ID.
- */
 export function StartProjectForm() {
   const [step, setStep] = useState(0);
-  const [form, setForm] = useState(EMPTY_FORM);
+  const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [showSummary, setShowSummary] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [result, setResult] = useState<SubmissionResult | null>(null);
+  const [submittedService, setSubmittedService] = useState("");
+  const [chipFocus, setChipFocus] = useState(0);
 
   const submittingRef = useRef(false);
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
+  const summaryRef = useRef<HTMLDivElement>(null);
+  const pendingFocusRef = useRef<string | null>(null);
+  const draftLoadedRef = useRef(false);
+  const reduced = useReducedMotion();
+
   const servicesState = useApiData(() => api.services(), "form-services");
+  const services = useMemo(() => servicesState.data ?? [], [servicesState.data]);
 
-  // Move focus to the new step's heading (not on first paint).
+  /*
+   * Draft restore. `sessionStorage` does not exist on the server, so reading it
+   * in a lazy `useState` initialiser would desynchronise hydration (the server
+   * would render empty fields and the client would render the draft). Reading it
+   * after mount is the only hydration-safe option, which means one deliberate
+   * post-mount state update — the documented exception to this lint rule.
+   * The first write-back is skipped by `draftLoadedRef` so an empty form can
+   * never overwrite a stored draft before it has been read.
+   */
   useEffect(() => {
-    if (step > 0) stepHeadingRef.current?.focus();
-  }, [step]);
+    if (draftLoadedRef.current) return;
+    draftLoadedRef.current = true;
+    try {
+      const raw = window.sessionStorage.getItem(DRAFT_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<FormState>;
+      if (!parsed || typeof parsed !== "object") return;
+      const restored = Object.fromEntries(
+        Object.entries(parsed).filter(([key]) => key in EMPTY_FORM && key !== "website"),
+      ) as Partial<FormState>;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- hydration-safe draft restore (see note above)
+      setForm((current) => ({ ...current, ...restored }));
+    } catch {
+      /* storage disabled or corrupted — the form simply starts empty */
+    }
+  }, []);
 
-  const setField = (field: keyof typeof EMPTY_FORM, value: string) => {
+  useEffect(() => {
+    if (!draftLoadedRef.current) return;
+    try {
+      const payload: Record<string, string> = { ...form };
+      delete payload.website; // the honeypot is never persisted
+      const hasContent = Object.values(payload).some((value) => value.trim().length > 0);
+      if (hasContent) window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify(payload));
+      else window.sessionStorage.removeItem(DRAFT_KEY);
+    } catch {
+      /* best effort */
+    }
+  }, [form]);
+
+  const clearDraft = useCallback(() => {
+    try {
+      window.sessionStorage.removeItem(DRAFT_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  /* --- Focus management: new step heading, or the field a summary link targets */
+  useEffect(() => {
+    const field = pendingFocusRef.current;
+    if (field) {
+      pendingFocusRef.current = null;
+      const node = document.getElementById(`jt-${field}`);
+      node?.focus();
+      node?.scrollIntoView({ block: "center", behavior: reduced ? "auto" : "smooth" });
+      return;
+    }
+    if (step > 0 && step < REVIEW_INDEX) stepHeadingRef.current?.focus();
+  }, [step, reduced]);
+
+  const setField = (field: keyof FormState, value: string) => {
     setForm((current) => ({ ...current, [field]: value }));
     setErrors((current) => {
-      if (!current[field]) return current;
+      if (!current[field] && !(field === "phone" || field === "email" ? current.contact : undefined)) {
+        return current;
+      }
       const next = { ...current };
       delete next[field];
+      delete next.contact;
       return next;
     });
   };
 
-  const validateStep = (index: number): Record<string, string> => {
-    const found: Record<string, string> = {};
-
-    if (index === 0 && form.name.trim().length < 2) {
-      found.name = "Please enter your name (at least 2 characters).";
-    }
-
-    if (index === 2) {
-      const email = form.email.trim();
-      const phone = form.phone.trim();
-      if (!email && !phone) {
-        found.contact = "Provide at least a phone number or an email address.";
+  const onFieldBlur = (field: keyof FormState, index: number) => {
+    const found = validateStep(index, { ...form, [field]: String(form[field]) });
+    const contactIssue = field === "phone" || field === "email" ? found.contact : undefined;
+    const own = found[field] ?? contactIssue;
+    setErrors((current) => {
+      const next = { ...current };
+      if (own) {
+        if (contactIssue) next.contact = contactIssue;
+        else next[field] = own;
       } else {
-        if (email && !EMAIL_RE.test(email)) found.email = "Enter a valid email address.";
-        if (phone && !PHONE_RE.test(phone)) found.phone = "Enter a valid phone number.";
+        delete next[field];
+        delete next.contact;
       }
-    }
-
-    if (index === 3 && !form.service) {
-      found.service = "Choose the service you need.";
-    }
-
-    return found;
+      return next;
+    });
+    if (!own) setShowSummary(false);
   };
+
+  /*
+   * Focus MUST land on the error summary, but `summaryRef.current` is still
+   * null in the same tick that `setShowSummary(true)` is called — the element
+   * only exists after the commit. Focus it in an effect instead (rule:
+   * "error summary at the top, focus moved to it, role=alert").
+   */
+  useEffect(() => {
+    if (showSummary) summaryRef.current?.focus();
+  }, [showSummary]);
 
   const goToStep = (index: number) => {
     setErrors({});
+    setShowSummary(false);
     setSubmitError(null);
     setStep(index);
   };
 
   const handleNext = () => {
-    const found = validateStep(step);
+    const found = validateStep(step, form);
     if (Object.keys(found).length > 0) {
       setErrors(found);
+      setShowSummary(true);
+      pendingFocusRef.current = Object.keys(found)[0];
+      summaryRef.current?.focus();
       return;
     }
-    goToStep(Math.min(step + 1, LAST_STEP));
+    goToStep(step + 1);
   };
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
 
-    if (step < LAST_STEP) {
+    if (step < REVIEW_INDEX) {
       handleNext();
       return;
     }
 
-    const found = validateStep(LAST_STEP);
-    if (Object.keys(found).length > 0) {
-      setErrors(found);
+    const all: Record<string, string> = {};
+    for (let index = 0; index < REVIEW_INDEX; index += 1) {
+      Object.assign(all, validateStep(index, form));
+    }
+    if (Object.keys(all).length > 0) {
+      setErrors(all);
+      setShowSummary(true);
+      const first = Object.keys(all)[0];
+      setStep(FIELD_STEP[first] ?? 0);
+      pendingFocusRef.current = first;
+      summaryRef.current?.focus();
       return;
     }
 
-    // Guard against accidental double submission.
     if (submittingRef.current) return;
     submittingRef.current = true;
     setSubmitting(true);
     setSubmitError(null);
+    setShowSummary(false);
 
     try {
       const submission = await api.submitProject({
         name: form.name.trim(),
-        domain: form.domain.trim(),
+        domain: normaliseDomain(form.domain),
         phone: form.phone.trim(),
         email: form.email.trim(),
         service: form.service,
+        timeline: form.timeline,
+        message: form.message.trim(),
         website: form.website,
       });
+      setSubmittedService(form.service);
       setResult(submission);
+      clearDraft();
     } catch (cause) {
       if (cause instanceof ApiError && cause.details && Object.keys(cause.details).length > 0) {
         setErrors(cause.details);
-        const fieldSteps: Record<string, number> = { name: 0, domain: 1, phone: 2, email: 2, contact: 2, service: 3 };
-        const targetStep = Math.min(...Object.keys(cause.details).map((field) => fieldSteps[field] ?? LAST_STEP));
-        setStep(targetStep);
+        setShowSummary(true);
+        const first = Object.keys(cause.details)[0];
+        setStep(FIELD_STEP[first] ?? 0);
+        pendingFocusRef.current = first;
+        summaryRef.current?.focus();
       } else {
-        setSubmitError(
-          cause instanceof ApiError ? cause.message : "Something went wrong. Please try again.",
-        );
+        setSubmitError(describeSubmitFailure(cause));
       }
     } finally {
       submittingRef.current = false;
@@ -212,23 +441,28 @@ export function StartProjectForm() {
     }
   };
 
-  const closeSuccess = () => {
+  const reset = useCallback(() => {
     setResult(null);
     setForm(EMPTY_FORM);
     setErrors({});
     setSubmitError(null);
+    setShowSummary(false);
     setStep(0);
+    clearDraft();
+  }, [clearDraft]);
+
+  const goToField = (field: string) => {
+    pendingFocusRef.current = field;
+    setStep(FIELD_STEP[field] ?? 0);
   };
 
-  const services = servicesState.data ?? [];
   const servicesLoading = servicesState.loading;
+  const servicesEmpty = !servicesLoading && !servicesState.error && services.length === 0;
+  const errorList = Object.keys(errors);
 
   return (
     <section id="start" aria-labelledby="start-heading" className="relative overflow-hidden py-16 sm:py-24">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 -z-10 bg-surface"
-      />
+      <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 bg-surface" />
       <div
         aria-hidden="true"
         className="pointer-events-none absolute -bottom-40 left-1/2 -z-10 h-96 w-96 -translate-x-1/2 rounded-full bg-[radial-gradient(circle,color-mix(in_srgb,var(--accent)_14%,transparent),transparent_70%)]"
@@ -249,8 +483,8 @@ export function StartProjectForm() {
           </Reveal>
           <Reveal delay={150}>
             <p className="mt-4 max-w-md text-sm leading-relaxed text-muted">
-              Four short steps — no account, no forms to print. We reply with an honest scope,
-              timeline and the person who would lead the work.
+              Three short steps and a review — no account, nothing to print. We reply with an honest
+              scope, a timeline and the person who would lead the work.
             </p>
           </Reveal>
 
@@ -273,84 +507,121 @@ export function StartProjectForm() {
 
         {/* -------- Stepper -------- */}
         <Reveal delay={120}>
-          <form onSubmit={handleSubmit} noValidate className="card relative p-6 sm:p-8">
-            {/* Progress */}
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-[0.7rem] font-semibold uppercase tracking-[0.16em] text-muted">
-                Step {step + 1} of {STEP_LABELS.length}
-              </span>
-              <span className="text-xs font-medium text-foreground">{STEP_LABELS[step]}</span>
-            </div>
+          <form onSubmit={handleSubmit} noValidate className="card form-panel relative p-6 sm:p-8">
+            <span aria-hidden="true" className="form-panel__tick form-panel__tick--tl" />
+            <span aria-hidden="true" className="form-panel__tick form-panel__tick--tr" />
+            <span aria-hidden="true" className="form-panel__tick form-panel__tick--bl" />
+            <span aria-hidden="true" className="form-panel__tick form-panel__tick--br" />
 
+            {/* Labelled progress rail */}
+            <div className="form-rail__head">
+              <span className="form-rail__count">
+                Step {Math.min(step + 1, STEPS.length)} of {STEPS.length}
+              </span>
+              <span className="form-rail__label">{STEPS[step].label}</span>
+            </div>
             <div
               role="progressbar"
               aria-valuemin={1}
-              aria-valuemax={STEP_LABELS.length}
+              aria-valuemax={STEPS.length}
               aria-valuenow={step + 1}
               aria-label="Project brief progress"
-              className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-surface-sunken"
+              className="form-rail"
             >
               <div
-                className="h-full origin-left rounded-full bg-accent transition-transform duration-500 ease-out"
-                style={{ transform: `scaleX(${(step + 1) / STEP_LABELS.length})` }}
+                className="form-rail__fill"
+                style={{ transform: `scaleX(${(step + 1) / STEPS.length})` }}
               />
             </div>
-
-            {/* Step dots */}
-            <ol className="mt-4 flex items-center gap-2" aria-hidden="true">
-              {STEP_LABELS.map((label, index) => (
-                <li
-                  key={label}
-                  className={`h-1.5 flex-1 rounded-full transition-colors duration-300 ${
-                    index <= step ? "bg-accent" : "bg-surface-sunken"
-                  }`}
-                />
+            <ol className="form-rail__steps" aria-hidden="true">
+              {STEPS.map((entry, index) => (
+                <li key={entry.key} className={index <= step ? "is-done" : undefined}>
+                  {entry.label}
+                </li>
               ))}
             </ol>
 
+            {/* Error summary — focused on failure, links jump to the field */}
+            {showSummary && errorList.length > 0 ? (
+              <div
+                ref={summaryRef}
+                tabIndex={-1}
+                role="alert"
+                data-form-error-summary
+                className="form-summary"
+              >
+                <p className="form-summary__title">
+                  {errorList.length === 1
+                    ? "One thing needs your attention"
+                    : `${errorList.length} things need your attention`}
+                </p>
+                <ul className="form-summary__list">
+                  {errorList.map((field) => (
+                    <li key={field}>
+                      <button
+                        type="button"
+                        className="form-summary__link"
+                        onClick={() => goToField(field)}
+                      >
+                        {FIELD_LABEL[field] ?? field}: {errors[field]}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
             {/* Fields */}
-            <div key={step} className="step-enter mt-7 min-h-[16.5rem]">
-              <h3 ref={stepHeadingRef} tabIndex={-1} className="text-lg font-semibold outline-none">
+            <div key={step} className="form-step min-h-[16.5rem]">
+              <h3 ref={stepHeadingRef} tabIndex={-1} className="form-step__title outline-none">
                 {step === 0 && "Who are we speaking with?"}
-                {step === 1 && "What are you working on?"}
-                {step === 2 && "How should we reach you?"}
-                {step === 3 && "What do you need built?"}
+                {step === 1 && "How should we reach you?"}
+                {step === 2 && "What do you need built?"}
+                {step === 3 && "Does this look right?"}
               </h3>
 
               {step === 0 && (
-                <div className="mt-5">
-                  <Field id="jt-name" label="Full name" error={errors.name} hint="So we know who to ask for.">
+                <div className="mt-5 space-y-5">
+                  <Field
+                    id="jt-name"
+                    label="Full name"
+                    hint="So we know who to ask for."
+                    error={errors.name}
+                  >
                     <input
                       id="jt-name"
+                      name="name"
                       type="text"
                       autoComplete="name"
                       className="field"
                       placeholder="Amina Rahman"
+                      maxLength={120}
                       value={form.name}
                       onChange={(event) => setField("name", event.target.value)}
+                      onBlur={() => onFieldBlur("name", 0)}
                       aria-invalid={Boolean(errors.name)}
                       aria-describedby={errors.name ? "jt-name-error" : undefined}
                     />
                   </Field>
-                </div>
-              )}
 
-              {step === 1 && (
-                <div className="mt-5">
                   <Field
                     id="jt-domain"
-                    label="Company, domain or work"
-                    hint="Optional — a company name, website or what you do helps us tailor the reply."
+                    label="Company or domain"
+                    hint="Optional — a company name, a website (example.com) or what you do."
                     error={errors.domain}
                   >
                     <input
                       id="jt-domain"
+                      name="domain"
                       type="text"
+                      inputMode="url"
                       autoComplete="organization"
                       className="field"
-                      placeholder="example.com or your company name"
+                      placeholder="example.com"
+                      maxLength={200}
                       value={form.domain}
                       onChange={(event) => setField("domain", event.target.value)}
+                      onBlur={() => onFieldBlur("domain", 0)}
                       aria-invalid={Boolean(errors.domain)}
                       aria-describedby={errors.domain ? "jt-domain-error" : undefined}
                     />
@@ -358,19 +629,21 @@ export function StartProjectForm() {
                 </div>
               )}
 
-              {step === 2 && (
+              {step === 1 && (
                 <div className="mt-5 space-y-5">
-                  <p className="text-sm text-muted">
-                    Give us either a phone number or an email — whichever you prefer replying on.
+                  <p className="form-note">
+                    Give us <strong>either</strong> a phone number <strong>or</strong> an email —
+                    whichever you prefer. You do not need both.
                   </p>
                   <Field
                     id="jt-phone"
                     label="Phone"
                     error={errors.phone}
-                    hint={errors.contact ? undefined : "Include the country code when possible."}
+                    hint={errors.contact ? undefined : "Include the country code, e.g. +880 1712 345678."}
                   >
                     <input
                       id="jt-phone"
+                      name="phone"
                       type="tel"
                       autoComplete="tel"
                       inputMode="tel"
@@ -378,6 +651,7 @@ export function StartProjectForm() {
                       placeholder="+880 1712 345678"
                       value={form.phone}
                       onChange={(event) => setField("phone", event.target.value)}
+                      onBlur={() => onFieldBlur("phone", 1)}
                       aria-invalid={Boolean(errors.phone || errors.contact)}
                       aria-describedby={
                         errors.phone ? "jt-phone-error" : errors.contact ? "contact-error" : undefined
@@ -388,6 +662,7 @@ export function StartProjectForm() {
                   <Field id="jt-email" label="Email" error={errors.email}>
                     <input
                       id="jt-email"
+                      name="email"
                       type="email"
                       autoComplete="email"
                       inputMode="email"
@@ -395,6 +670,7 @@ export function StartProjectForm() {
                       placeholder="you@company.com"
                       value={form.email}
                       onChange={(event) => setField("email", event.target.value)}
+                      onBlur={() => onFieldBlur("email", 1)}
                       aria-invalid={Boolean(errors.email || errors.contact)}
                       aria-describedby={
                         errors.email ? "jt-email-error" : errors.contact ? "contact-error" : undefined
@@ -410,18 +686,18 @@ export function StartProjectForm() {
                 </div>
               )}
 
-              {step === 3 && (
-                <div className="mt-5">
-                  <p className="text-sm text-muted">Pick the closest fit — you can refine it later.</p>
+              {step === 2 && (
+                <div className="mt-5 space-y-5">
+                  <p className="form-note">Pick the closest service — you can refine it later.</p>
 
                   {servicesLoading ? (
-                    <div className="mt-4 grid gap-2.5 sm:grid-cols-2" aria-hidden="true">
+                    <div className="grid gap-2.5 sm:grid-cols-2" aria-hidden="true">
                       {Array.from({ length: 6 }, (_, index) => (
-                        <Skeleton key={index} className="h-[4.4rem] rounded-2xl" />
+                        <Skeleton key={index} className="h-[4.6rem] rounded-2xl" />
                       ))}
                     </div>
                   ) : servicesState.error ? (
-                    <div className="mt-4 rounded-2xl border border-danger/40 bg-danger-soft p-4">
+                    <div className="rounded-2xl border border-danger/40 bg-danger-soft p-4">
                       <p className="text-sm text-danger">{servicesState.error.message}</p>
                       <Button
                         variant="outline"
@@ -433,53 +709,161 @@ export function StartProjectForm() {
                         Reload services
                       </Button>
                     </div>
+                  ) : servicesEmpty ? (
+                    <div
+                      data-form-services="empty"
+                      className="rounded-2xl border border-line bg-surface-elevated p-4"
+                    >
+                      <p className="text-sm text-muted">
+                        Our service list isn&apos;t available right now. You can still send this
+                        brief — describe what you need below and we&apos;ll route it to the right team.
+                      </p>
+                    </div>
                   ) : (
                     <div
                       role="radiogroup"
                       aria-label="Service you need"
                       aria-describedby={errors.service ? "service-error" : undefined}
-                      className="mt-4 grid gap-2.5 sm:grid-cols-2"
+                      className="grid gap-2.5 sm:grid-cols-2"
+                      onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+                        const keys = ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"];
+                        if (!keys.includes(event.key)) return;
+                        event.preventDefault();
+                        const delta = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
+                        const next = (chipFocus + delta + services.length) % services.length;
+                        setChipFocus(next);
+                        setField("service", services[next].title);
+                        document.getElementById(`jt-service-${next}`)?.focus();
+                      }}
                     >
-                      {services.map((service) => {
+                      {services.map((service, index) => {
                         const selected = form.service === service.title;
                         return (
                           <button
                             key={service._id}
+                            id={`jt-service-${index}`}
                             type="button"
                             role="radio"
                             aria-checked={selected}
-                            onClick={() => setField("service", service.title)}
-                            className={`rounded-2xl border p-3.5 text-left transition-all duration-200 ${
-                              selected
-                                ? "border-accent bg-accent-soft shadow-[var(--shadow-subtle)]"
-                                : "border-line bg-surface-elevated hover:-translate-y-0.5 hover:border-accent/50"
-                            }`}
+                            tabIndex={index === chipFocus ? 0 : -1}
+                            onClick={() => {
+                              setChipFocus(index);
+                              setField("service", service.title);
+                            }}
+                            className={`form-chip${selected ? " is-selected" : ""}`}
                           >
-                            <span className="flex items-center justify-between gap-2">
-                              <span className="text-sm font-semibold text-foreground">{service.title}</span>
-                              <span
-                                className={`flex size-5 items-center justify-center rounded-full transition-colors ${
-                                  selected ? "bg-accent text-accent-contrast" : "bg-surface text-transparent"
-                                }`}
-                                aria-hidden="true"
-                              >
-                                <CheckIcon size={12} />
+                            <span className="form-chip__top">
+                              <span className="form-chip__title">{service.title}</span>
+                              <span className="form-chip__check" aria-hidden="true">
+                                {selected ? <CheckIcon size={12} /> : null}
                               </span>
                             </span>
-                            <span className="mt-1 line-clamp-2 block text-xs text-muted">
-                              {service.description}
-                            </span>
+                            <span className="form-chip__helper">{restingLine(service, 84)}</span>
                           </button>
                         );
                       })}
                     </div>
                   )}
 
+                  <fieldset className="form-timeline">
+                    <legend className="label">Timeline</legend>
+                    <div className="form-timeline__options">
+                      {TIMELINES.map((option) => (
+                        <label
+                          key={option.value}
+                          className={`form-timeline__option${
+                            form.timeline === option.value ? " is-selected" : ""
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="timeline"
+                            value={option.value}
+                            checked={form.timeline === option.value}
+                            onChange={() => setField("timeline", option.value)}
+                          />
+                          <span>{option.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+
+                  <Field
+                    id="jt-message"
+                    label="Tell us about your project"
+                    hint="Optional — the problem, the goal, anything already built."
+                    error={errors.message}
+                    counter={`${form.message.length} / ${MESSAGE_MAX}`}
+                  >
+                    <textarea
+                      id="jt-message"
+                      name="message"
+                      rows={4}
+                      className="field form-textarea"
+                      placeholder="We need a customer portal that connects to our existing ERP…"
+                      maxLength={MESSAGE_MAX}
+                      value={form.message}
+                      onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
+                        setField("message", event.target.value)
+                      }
+                      onBlur={() => onFieldBlur("message", 2)}
+                      aria-invalid={Boolean(errors.message)}
+                      aria-describedby={errors.message ? "jt-message-error" : undefined}
+                    />
+                  </Field>
+
                   {errors.service && (
                     <p id="service-error" className="error-text" role="alert">
                       {errors.service}
                     </p>
                   )}
+                </div>
+              )}
+
+              {step === 3 && (
+                <div className="mt-5 space-y-4">
+                  <p className="form-note">
+                    Check everything below. Use the <strong>Edit</strong> links to change an answer —
+                    nothing is sent until you press Send request.
+                  </p>
+                  <dl className="form-review" data-form-review>
+                    {(
+                      [
+                        { step: 0, title: "About you", rows: [["Full name", form.name], ["Company or domain", normaliseDomain(form.domain)]] },
+                        { step: 1, title: "How to reach you", rows: [["Phone", form.phone], ["Email", form.email]] },
+                        {
+                          step: 2,
+                          title: "What you need",
+                          rows: [
+                            ["Service", form.service],
+                            ["Timeline", TIMELINES.find((item) => item.value === form.timeline)?.label ?? ""],
+                            ["Project details", form.message],
+                          ],
+                        },
+                      ] as const
+                    ).map((section) => (
+                      <div key={section.title} className="form-review__section">
+                        <dt className="form-review__head">
+                          <span>{section.title}</span>
+                          <button
+                            type="button"
+                            className="form-review__edit"
+                            onClick={() => goToStep(section.step)}
+                          >
+                            Edit
+                          </button>
+                        </dt>
+                        {section.rows.map(([label, value]) => (
+                          <dd key={label} className="form-review__row">
+                            <span className="form-review__label">{label}</span>
+                            <span className={value ? "form-review__value" : "form-review__value is-empty"}>
+                              {value || "Not provided"}
+                            </span>
+                          </dd>
+                        ))}
+                      </div>
+                    ))}
+                  </dl>
                 </div>
               )}
             </div>
@@ -499,10 +883,18 @@ export function StartProjectForm() {
             </div>
 
             {submitError && (
-              <p role="alert" className="mt-5 rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm text-danger">
-                {submitError}
-              </p>
+              <div role="alert" className="form-submit-error">
+                <p>{submitError}</p>
+                <Button variant="outline" size="sm" type="submit" disabled={submitting}>
+                  Try again
+                </Button>
+              </div>
             )}
+
+            <p className="form-privacy">
+              We use these details only to contact you about your project. They are never sold or
+              shared.
+            </p>
 
             {/* Navigation */}
             <div className="mt-6 flex items-center justify-between gap-3 border-t border-line pt-5">
@@ -514,7 +906,7 @@ export function StartProjectForm() {
                 <span className="text-xs text-muted">Takes about a minute</span>
               )}
 
-              {step < LAST_STEP ? (
+              {step < REVIEW_INDEX ? (
                 <Button size="sm" onClick={handleNext} iconRight={<ArrowRightIcon size={15} />}>
                   Continue
                 </Button>
@@ -523,7 +915,7 @@ export function StartProjectForm() {
                   type="submit"
                   size="sm"
                   loading={submitting}
-                  disabled={servicesLoading || services.length === 0}
+                  disabled={submitting || servicesLoading}
                   iconRight={<ArrowRightIcon size={15} />}
                 >
                   {submitting ? "Sending…" : "Send request"}
@@ -536,7 +928,13 @@ export function StartProjectForm() {
         <SuccessModal
           open={result !== null}
           referenceId={result?.referenceId ?? ""}
-          onClose={closeSuccess}
+          service={submittedService}
+          onBackHome={() => {
+            reset();
+            window.location.hash = "#home";
+          }}
+          onSendAnother={reset}
+          onClose={reset}
         />
       </div>
     </section>

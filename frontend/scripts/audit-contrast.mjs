@@ -93,6 +93,22 @@ function readHexTokens(block) {
   return out;
 }
 
+/**
+ * `--token: rgba(r, g, b, a);` -> `[r, g, b, a]` (null when absent).
+ *
+ * Used by the glass tooltip card, whose background is translucent, so its
+ * effective colour depends on what it sits on — it is composited below rather
+ * than read as a hex.
+ */
+function readRgbaToken(block, name) {
+  const re = new RegExp(
+    `--${name}\\s*:\\s*rgba\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*([\\d.]+)\\s*\\)`,
+  );
+  const match = re.exec(block);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3]), Number(match[4])];
+}
+
 /* --------------------------------------------------------------- test plan */
 
 /**
@@ -166,26 +182,33 @@ const EXEMPT = [
 ];
 
 /*
- * Discipline Atlas (Task K) text pairs.
+ * Task L — text pairs introduced by the two redesigned surfaces.
  *
- * The atlas renders text ONLY on the tokens already audited above:
- *   · discipline title          → foreground on surface
- *   · rail short line / index   → muted on surface
- *   · stage description / chips → muted on surface
- *   · stage CTA                 → accent on surface
- *   · hovered/filled row copy   → white on the `--service-fill-c` worst-case
- *     stop (the row reuses the exact same gradient as the previous card, so the
- *     existing service-fill check covers it).
- * No new text-on-background token pair is introduced, so PAIRS is unchanged.
+ * Hero service tooltips (the exploded real-logo mark):
+ *   · index  → muted-soft on `--hero-tooltip-bg`
+ *   · title  → foreground on `--hero-tooltip-bg`
+ *   · body   → muted      on `--hero-tooltip-bg`
+ * `--hero-tooltip-bg` is translucent (rgba), so it is composited over the
+ * surface it is painted on, exactly as the browser renders it — see the
+ * TOOLTIP_BG block below. Everything else on the new surfaces (Services Index
+ * entries, the form Review step, the success timeline) renders `foreground` /
+ * `muted` / `growth-ink` on `background` and `surface`, already audited above.
  */
 
 /* -------------------------------------------------------------------- run */
 
 const css = readFileSync(CSS_PATH, "utf8");
-const LIGHT = readHexTokens(readBlock(css, ":root {"));
+const LIGHT_BLOCK = readBlock(css, ":root {");
+const DARK_BLOCK = readBlock(css, "\n.dark {");
+const LIGHT = readHexTokens(LIGHT_BLOCK);
 // Match the theme block itself, not the `@custom-variant` declaration earlier
 // in the file, which also contains the literal `.dark`.
-const DARK = readHexTokens(readBlock(css, "\n.dark {"));
+const DARK = readHexTokens(DARK_BLOCK);
+/** The translucent tooltip card, per theme: `[r, g, b, alpha]` or null. */
+const TOOLTIP_BG = {
+  light: readRgbaToken(LIGHT_BLOCK, "hero-tooltip-bg"),
+  dark: readRgbaToken(DARK_BLOCK, "hero-tooltip-bg"),
+};
 const THEMES = { light: LIGHT, dark: DARK };
 // `primary-contrast` and `white` are cross-theme constants.
 for (const tokens of Object.values(THEMES)) {
@@ -218,6 +241,21 @@ for (const [theme, tokens] of Object.entries(THEMES)) {
     const bg = tokens[bgToken];
     if (!fg || !bg) continue;
     push(theme, fgToken, bgToken, fg, bg, AA_NORMAL);
+  }
+
+  /*
+   * Hero service tooltip: text on the translucent glass card.
+   * The card is `rgba(...)` over the section surface, so composite it first and
+   * then measure the real rendered ratio.
+   */
+  const tip = TOOLTIP_BG[theme];
+  const tipBase = tokens.surface ?? page;
+  if (tip && tipBase) {
+    const tipBg = [0, 1, 2].map((i) => tip[i] * tip[3] + tipBase[i] * (1 - tip[3]));
+    for (const fgToken of ["foreground", "muted", "muted-soft"]) {
+      const fg = tokens[fgToken];
+      if (fg) push(theme, fgToken, "hero-tooltip-bg", fg, tipBg, AA_NORMAL);
+    }
   }
 
   /*

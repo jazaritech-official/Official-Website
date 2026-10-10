@@ -215,12 +215,19 @@ export interface Service {
 
 /* --- Intake --------------------------------------------------------------- */
 
+/** Optional intake extras (Task L) — always optional and backward compatible. */
+export type SubmissionTimeline = "asap" | "1-3-months" | "3-6-months" | "exploring";
+
 export interface SubmissionInput {
   name: string;
   domain?: string;
   phone?: string;
   email?: string;
   service: string;
+  /** "Tell us about your project" — free text, ≤ 1000 characters. */
+  message?: string;
+  /** Optional timeline bucket; omitted when the visitor skips the question. */
+  timeline?: SubmissionTimeline | "";
   /** Honeypot — must stay empty for humans. */
   website?: string;
 }
@@ -240,6 +247,10 @@ export interface Submission {
   phone: string;
   email: string;
   service: string;
+  /** Optional free-text brief (Task L) — empty string when not supplied. */
+  message: string;
+  /** Optional timeline bucket (Task L) — empty string when not supplied. */
+  timeline: SubmissionTimeline | "";
   referenceId: string;
   visitorIp: string;
   status: SubmissionStatus;

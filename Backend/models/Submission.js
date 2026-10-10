@@ -44,6 +44,22 @@ const submissionSchema = new mongoose.Schema(
       trim: true,
       maxlength: [120, "Service is too long."],
     },
+    // OPTIONAL, backward-compatible intake fields (Task L). Submissions created
+    // before these existed have no value and stay perfectly valid.
+    message: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: [1000, "Message is too long (max 1000 characters)."],
+    },
+    timeline: {
+      type: String,
+      default: "",
+      enum: {
+        values: ["", "asap", "1-3-months", "3-6-months", "exploring"],
+        message: "Timeline must be one of asap, 1-3-months, 3-6-months or exploring.",
+      },
+    },
     // Human-friendly ID generated server-side and shown to the visitor.
     referenceId: {
       type: String,
