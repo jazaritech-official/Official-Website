@@ -178,6 +178,54 @@
   --hero-tooltip-shadow-lit:
     0 12px 30px -14px rgba(var(--shadow-tint), 0.44),
     0 0 0 1px color-mix(in srgb, var(--spectrum-2) 45%, transparent);
+
+  /* ---- Task M: the delivery choreography ------------------------------
+     At rest the tooltips are calm ghost slots — outline plus dimmed text — so
+     the diagram never jumps and reads as designed before any hover. */
+  --hero-ghost-opacity: 0.42;
+  --hero-badge-ring: color-mix(in srgb, var(--spectrum-2) 46%, transparent);
+  --hero-trail: var(--spectrum-3);
+  --hero-split-ms: 220ms;
+
+  /* ---- Extended ILLUSTRATION palette (Task M scenes ONLY) --------------
+     Owner-requested colour for the 14 service scenes and nothing else: every
+     scene is decorative and lives on the dark navy VIP card, so one palette
+     serves both themes (see the scene sheet in PROJECT_NOTES.md). Slightly
+     desaturated on purpose — never neon-rainbow. Chrome, real text and every
+     real control keep using the brand tokens above. */
+  --scene-1: #5b8fe6; /* electric blue */
+  --scene-2: #57c8e8; /* cyan */
+  --scene-3: #9b7ce8; /* violet */
+  --scene-4: #e07bb0; /* magenta-pink */
+  --scene-5: #e8b45f; /* amber */
+  --scene-6: #e8836b; /* coral */
+  --scene-7: #6fce9b; /* emerald */
+  --scene-8: #7b86e2; /* indigo */
+
+  /* ---- VIP preview card (Task M services) -----------------------------
+     A dark navy glass surface in BOTH themes, so its text tokens are fixed. */
+  --vip-surface: rgba(17, 25, 58, 0.96);
+  --vip-surface-solid: #111a3a;
+  --vip-border: color-mix(in srgb, var(--spectrum-3) 34%, transparent);
+  --vip-text: #eef2fb;
+  --vip-muted: #b9c4dd;
+  --vip-soft: #8f9dbf;
+  --vip-grid: rgba(167, 179, 200, 0.08);
+  --vip-shadow: 0 30px 70px -30px rgba(4, 8, 22, 0.85), 0 1px 2px rgba(4, 8, 22, 0.5);
+  --vip-radius: var(--radius-2xl);
+
+  /* ---- Showcase Tile (Task M products) -------------------------------- */
+  --tile-surface: var(--surface-elevated);
+  --tile-border: var(--border);
+  --tile-shadow: 0 12px 34px -22px rgba(var(--shadow-tint), 0.34), 0 1px 2px rgba(var(--shadow-tint), 0.05);
+  --tile-shadow-hover: 0 26px 60px -26px rgba(var(--shadow-tint), 0.42), 0 1px 2px rgba(var(--shadow-tint), 0.06);
+  --tile-spotlight: radial-gradient(
+    120% 90% at 50% 26%,
+    color-mix(in srgb, var(--spectrum-2) 18%, transparent),
+    transparent 68%
+  );
+  --tile-stage-light: #f2f5fa; /* dark logo → light stage */
+  --tile-stage-dark: #0e1533; /* light logo → dark stage */
 }
 
 /* ============================================================
@@ -251,6 +299,18 @@
   --hero-tooltip-shadow-lit:
     0 14px 34px -16px rgba(0, 0, 0, 0.85),
     0 0 0 1px color-mix(in srgb, var(--spectrum-3) 50%, transparent);
+  --hero-ghost-opacity: 0.46;
+  --hero-badge-ring: color-mix(in srgb, var(--spectrum-3) 52%, transparent);
+  --hero-trail: var(--spectrum-2);
+  /* The VIP card is a dark navy surface in both themes; these mirror :root so
+     the card's own text tokens stay identical whatever the page theme is. */
+  --vip-surface: rgba(17, 25, 58, 0.96);
+  --vip-surface-solid: #111a3a;
+  --vip-text: #eef2fb;
+  --vip-muted: #b9c4dd;
+  --vip-soft: #8f9dbf;
+  --tile-stage-light: #e9eef6;
+  --tile-stage-dark: #0b1129;
 
   --shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-card: 0 14px 34px -18px rgba(0, 0, 0, 0.75), 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -1017,7 +1077,10 @@
   isolation: isolate;
 }
 
-/* ---------- Leader lines + anchor nodes (design space) ------------------ */
+/* ---------- Leader wires + anchor nodes (design space) ------------------
+   The wiring is ALWAYS drawn — a deliberate engineered busbar between the mark
+   and its tooltip columns, exactly 1.2px, no doubled strokes. It comes up to
+   full strength only while the logo is delivering (see the state rules). */
 .hero-diagram__leaders {
   position: absolute;
   inset: 0;
@@ -1025,11 +1088,11 @@
   height: 100%;
   overflow: visible;
   pointer-events: none;
-  opacity: 0;
-  transition: opacity 280ms var(--ease-out);
+  opacity: 0.4;
+  transition: opacity 300ms var(--ease-out);
 }
 
-.hero-diagram.is-exploded .hero-diagram__leaders,
+.hero-mark-root.is-flying .hero-diagram__leaders,
 .hero-diagram.is-static .hero-diagram__leaders {
   opacity: 1;
 }
@@ -1040,9 +1103,55 @@
   stroke-width: 1.2;
   stroke-linecap: round;
   stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
   transition:
     stroke 220ms var(--ease-out),
-    stroke-width 220ms var(--ease-out);
+    stroke-width 220ms var(--ease-out),
+    opacity 220ms var(--ease-out);
+}
+
+/* The trail: the SAME route, lit up behind the fragment as it travels.
+   `pathLength=1` on the path means dasharray/offset are fractions of the real
+   length, so no measurement (and no layout read) is ever needed. */
+.hero-leader__trail {
+  fill: none;
+  stroke: var(--hero-trail);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  opacity: 0.95;
+  transition: stroke-dashoffset 560ms linear;
+}
+
+.hero-mark-root[data-hero-state="flying"] .hero-leader__trail,
+.hero-mark-root[data-hero-state="docked"] .hero-leader__trail {
+  stroke-dashoffset: 0;
+}
+
+.hero-mark-root[data-hero-state="returning"] .hero-leader__trail,
+.hero-mark-root[data-hero-state="assembled"] .hero-leader__trail,
+.hero-mark-root[data-hero-state="splitting"] .hero-leader__trail,
+.hero-mark-root[data-hero-state="merging"] .hero-leader__trail {
+  stroke-dashoffset: 1;
+  transition-duration: 480ms;
+}
+
+/* Once docked, one slow highlight keeps travelling along every wire. */
+.hero-mark-root[data-hero-state="docked"] .hero-leader__trail {
+  stroke-dasharray: 0.12 1;
+  animation: jt-hero-wire 6.5s linear infinite;
+}
+
+@keyframes jt-hero-wire {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
 }
 
 .hero-anchor {
@@ -1081,20 +1190,21 @@
   border-radius: var(--radius-2xl);
   pointer-events: auto;
   cursor: pointer;
-  animation: jt-hero-float 6s var(--ease-in-out) infinite alternate;
 }
 
-@keyframes jt-hero-float {
+/* The idle "breathing" is OPACITY on the neon halo only — the mark itself never
+   moves, so the pieces and the flying fragments stay pixel-aligned. */
+@keyframes jt-hero-breathe {
   from {
-    transform: translate3d(0, -5px, 0) scale(1);
+    opacity: 0.36;
   }
   to {
-    transform: translate3d(0, 5px, 0) scale(1.012);
+    opacity: 0.6;
   }
 }
 
-/* Off-screen / hidden tab → the idle float is frozen (no wasted frames). */
-.hero-mark-root:not(.is-inview) .hero-mark__trigger {
+/* Off-screen / hidden tab → the idle breathing is frozen (no wasted frames). */
+.hero-mark-root:not(.is-inview) .hero-mark__glow {
   animation-play-state: paused;
 }
 
@@ -1121,18 +1231,56 @@
   animation-delay: calc(var(--i, 0) * 45ms);
 }
 
-.hero-diagram.is-exploded .hero-mark__svg [data-logo-piece] {
+.hero-diagram[data-hero-split="true"] .hero-mark__svg [data-logo-piece],
+.hero-mark-root[data-hero-state="splitting"] .hero-mark__svg [data-logo-piece],
+.hero-mark-root[data-hero-state="flying"] .hero-mark__svg [data-logo-piece],
+.hero-mark-root[data-hero-state="docked"] .hero-mark__svg [data-logo-piece],
+.hero-mark-root[data-hero-state="returning"] .hero-mark__svg [data-logo-piece] {
   transform: translate(var(--tx, 0px), var(--ty, 0px)) rotate(var(--rot, 0deg));
   transition:
-    transform 520ms var(--ease-spring-soft),
-    filter 240ms var(--ease-out);
-  transition-delay: calc(var(--i, 0) * 45ms);
+    transform var(--hero-split-ms, 220ms) var(--ease-spring-soft),
+    opacity 80ms linear;
+  transition-delay: calc(var(--i, 0) * 22ms);
 }
 
-/* `will-change` only while a piece is actually moving. */
-.hero-diagram--exploding .hero-mark__svg [data-logo-piece],
-.hero-diagram--reassembling .hero-mark__svg [data-logo-piece] {
+/* While the slices are in flight the pieces are invisible: the fragments are the
+   same geometry in the same place, so the 80 ms cross-fade has no seam. */
+.hero-mark-root[data-hero-state="flying"] .hero-mark__svg [data-logo-piece],
+.hero-mark-root[data-hero-state="docked"] .hero-mark__svg [data-logo-piece],
+.hero-mark-root[data-hero-state="returning"] .hero-mark__svg [data-logo-piece] {
+  opacity: 0;
+}
+
+/* `will-change` only while something is actually moving. */
+.hero-mark-root[data-hero-state="splitting"] .hero-mark__svg [data-logo-piece],
+.hero-mark-root[data-hero-state="merging"] .hero-mark__svg [data-logo-piece],
+.hero-mark-root.is-flying .hero-frag__move {
   will-change: transform;
+}
+
+/* ---------- The fragments: real slices of the real artwork -------------- */
+.hero-diagram__fragments {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 3; /* above the mark and above the tooltip surfaces */
+  opacity: 0;
+  transition: opacity 80ms linear;
+}
+
+.hero-mark-root[data-hero-state="flying"] .hero-diagram__fragments,
+.hero-mark-root[data-hero-state="docked"] .hero-diagram__fragments,
+.hero-mark-root[data-hero-state="returning"] .hero-diagram__fragments {
+  opacity: 1;
+}
+
+.hero-frag__spin {
+  /* Rotation and scale happen about the slice's OWN centre (the pivot group
+     above already moved the local origin there), never about the diagram box. */
+  transform-origin: 0 0;
 }
 
 .hero-mark__svg [data-logo-piece="leaf"] {
@@ -1151,6 +1299,7 @@
   pointer-events: none;
   opacity: 0.42;
   transition: opacity 340ms var(--ease-out);
+  animation: jt-hero-breathe 6s var(--ease-in-out) infinite alternate;
 }
 
 .hero-mark__glow-svg {
@@ -1160,7 +1309,8 @@
   filter: blur(15px) saturate(1.3);
 }
 
-.hero-diagram.is-exploded .hero-mark__glow {
+.hero-diagram[data-hero-split="true"] .hero-mark__glow,
+.hero-mark-root.is-flying .hero-mark__glow {
   opacity: 0.8;
 }
 
@@ -1189,27 +1339,34 @@
   pointer-events: none;
 }
 
+/* At rest every tooltip is a calm GHOST SLOT: the layout is final, the text is
+   in the DOM and readable, it is simply held back so the delivery has somewhere
+   to go. Hovering/focusing a row, or the mark delivering into it, brings the
+   row up to full emphasis. */
 .hero-tooltip {
   position: absolute;
   left: var(--tt-l);
   top: var(--tt-t);
   width: var(--tt-w);
   height: var(--tt-h);
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(7px) scale(0.98);
+  pointer-events: auto;
+  opacity: var(--hero-ghost-opacity);
+  transform: none;
   transition:
     opacity 260ms var(--ease-out),
     transform 260ms var(--ease-out);
-  transition-delay: calc(var(--i, 0) * 40ms);
+  transition-delay: calc(var(--i, 0) * 26ms);
 }
 
-.hero-diagram.is-exploded .hero-tooltip,
-.hero-diagram.is-static .hero-tooltip {
+.hero-mark-root[data-hero-state="docked"] .hero-tooltip,
+.hero-diagram.is-static .hero-tooltip,
+.hero-tooltip.is-lit {
   opacity: 1;
-  transform: none;
-  pointer-events: auto;
 }
+
+/* The docked fragment arrives here: a small ignition, then the text comes up.
+   The row itself does NOT move — the docked slice has to land pixel-exactly on
+   the badge socket, and the socket lives inside this box. */
 
 .hero-tooltip__link {
   position: relative;
@@ -1261,6 +1418,51 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.4rem;
+  /* Clears the badge socket, in the same card-local design units. */
+  padding-left: var(--badge-head-pad, 0);
+}
+
+/* ---------- The badge socket a fragment docks into ----------------------
+   Positioned and sized in card-local design units, so the docked fragment (drawn
+   by the diagram overlay on the very same geometry) lands exactly here. */
+.hero-tooltip__badge {
+  position: absolute;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--hero-badge-ring);
+  background: color-mix(in srgb, var(--hero-tooltip-bg) 62%, transparent);
+  opacity: 0.5;
+  transition: opacity 220ms var(--ease-out), border-color 220ms var(--ease-out);
+}
+
+.hero-mark-root[data-hero-state="docked"] .hero-tooltip__badge {
+  opacity: 0;
+  border-color: var(--hero-edge);
+}
+
+/* A single soft ring pulse at the socket as the fragment touches down. */
+.hero-tooltip__badge::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  border: 1px solid var(--hero-edge);
+  opacity: 0;
+}
+
+.hero-mark-root[data-hero-state="docked"] .hero-tooltip__badge::after {
+  animation: jt-hero-socket 620ms var(--ease-out) 1 backwards;
+}
+
+@keyframes jt-hero-socket {
+  from {
+    opacity: 0.9;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.55);
+  }
 }
 
 .hero-tooltip__index {
@@ -1327,6 +1529,12 @@
   text-align: center;
   font-size: 0.72rem;
   color: var(--muted);
+  transition: opacity 300ms var(--ease-out);
+}
+
+/* Once the mark has delivered, the invitation has done its job. */
+.hero-mark-root[data-hero-state="docked"] .hero-diagram__hint {
+  opacity: 0;
 }
 
 .hero-diagram__hint--touch {
@@ -1352,6 +1560,12 @@
   }
 
   .hero-diagram__leaders {
+    display: none;
+  }
+
+  /* The delivery choreography is a desktop composition; on touch the tooltips
+     are the real list below the mark (which is where the slices would land). */
+  .hero-diagram__fragments {
     display: none;
   }
 
@@ -1398,17 +1612,23 @@
 
 /* ---------- Reduced motion: a static, motionless mark ------------------- */
 @media (prefers-reduced-motion: reduce) {
-  .hero-mark__trigger {
+  .hero-mark__glow {
     animation: none;
+    opacity: 0.6;
   }
 
   .hero-mark__svg [data-logo-piece] {
     animation: none;
-  }
-
-  .hero-diagram.is-exploded .hero-mark__svg [data-logo-piece],
-  .hero-mark__svg [data-logo-piece] {
     transition: none;
+  }
+
+  .hero-leader__trail {
+    animation: none;
+    stroke-dashoffset: 1;
+  }
+
+  .hero-diagram__fragments {
+    display: none;
   }
 
   .hero-tooltip {
@@ -1984,14 +2204,21 @@ html:not(.js-intro) .hairline {
 }
 
 /* ============================================================
-   6c. SERVICES INDEX — one static blueprint schedule (Task L)
+   6c. SERVICES INDEX — one blueprint schedule + "hover me" (Task L → Task M)
    ------------------------------------------------------------
    Replaces the "Discipline Atlas" (rail + stage + tour), which is deleted.
    Everything is visible at once: the whole catalogue is ONE ordered list laid
    out on the site's `--grid-fine` rhythm, grouped by the backend `category`.
-   There is deliberately NO interactivity styling here — no `cursor: pointer`,
-   no `:hover` transform/background, no expanding rows, no tilt. Entries are
-   plain content; the section-level CTA is the only control.
+
+   TASK M CHANGES THE AFFORDANCE, NOT THE LAYOUT. Task L banned hover styling
+   (the entries navigate nowhere), and the owner has since asked for the
+   opposite: each row now INVITES a look and opens the VIP preview card
+   (6c-ter). The rules that still hold:
+     · `cursor: default` — nothing here navigates, so no pointer cursor;
+     · no expanding rows, no layout-shifting hover, no tilt;
+     · entries stay plain content and the section CTA remains a real link.
+   Every cue animates `transform`/`opacity` only, and every loop is gated on
+   `.is-inview` / `[data-inview="true"]` so nothing runs off-screen.
    ============================================================ */
 
 .services-index {
@@ -2066,14 +2293,254 @@ html:not(.js-intro) .hairline {
 
 /* ---------- One discipline --------------------------------------------- */
 .service-entry {
+  position: relative;
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr);
   align-items: start;
   gap: 0.5rem;
   min-height: 3.8rem;
-  padding: 0.45rem 0.55rem;
+  /* Task M added the invitation cues; the schedule still has to read as ONE
+     screen (owner: the whole section within ~1.15x the 1440x900 viewport), so
+     the row gives back 0.09rem of padding rather than growing the section. */
+  padding: 0.36rem 0.55rem;
   border-top: 1px solid var(--border);
   scroll-margin-top: 6rem;
+  /* NOT `pointer`: the row opens a preview, it never navigates (Task M). */
+  cursor: default;
+  /* The shimmer sweep and the accent bar are clipped to the row. `contain: paint`
+     is what makes that clipping complete: an `overflow: hidden` box still reports
+     the transformed child in its OWN scrollable overflow region, and the
+     "no entry is clipped" check reads `scrollWidth` (the sweep travels from
+     -110% to +110%). Paint containment keeps the row's scroll box its own box. */
+  overflow: hidden;
+  contain: paint;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+/* Keyboard focus must be unmistakable — drawn INSIDE so `overflow: hidden`
+   (which clips the sweep) can never cut the ring off. */
+.service-entry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+
+.service-entry:hover,
+.service-entry.is-active {
+  background-color: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* Left accent bar — grows from the middle on hover/focus/preview. */
+.service-entry__bar {
+  position: absolute;
+  top: 0.35rem;
+  bottom: 0.35rem;
+  left: 0;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--spectrum-1), var(--spectrum-3));
+  transform: scaleY(0);
+  transform-origin: center;
+  transition: transform var(--dur-normal) var(--ease-out);
+}
+
+.service-entry:hover .service-entry__bar,
+.service-entry:focus-visible .service-entry__bar,
+.service-entry.is-active .service-entry__bar {
+  transform: scaleY(1);
+}
+
+/* "▶ Preview" invitation cue — fades in on hover/focus. */
+.service-entry__cue {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: var(--font-code);
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  opacity: 0;
+  transform: translateX(4px);
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+  pointer-events: none;
+}
+
+.service-entry__cue-glyph {
+  font-size: 0.5rem;
+}
+
+.service-entry:hover .service-entry__cue,
+.service-entry:focus-visible .service-entry__cue,
+.service-entry.is-active .service-entry__cue {
+  opacity: 1;
+  transform: none;
+}
+
+.service-entry:hover .service-entry__cue-glyph,
+.service-entry:focus-visible .service-entry__cue-glyph {
+  animation: jt-cue-pulse 1.6s var(--ease-standard) infinite;
+}
+
+@keyframes jt-cue-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: translateX(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(2px);
+  }
+}
+
+/* Idle "nudge": ONE row at a time every ~4 s invites a hover, then lets go. */
+.service-entry__nudge {
+  position: absolute;
+  bottom: 0.35rem;
+  right: 0.5rem;
+  font-family: var(--font-code);
+  font-size: 0.55rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.service-entry.is-nudged .service-entry__nudge {
+  animation: jt-nudge-tag 3.4s var(--ease-standard) both;
+}
+
+@keyframes jt-nudge-tag {
+  0% {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  12%,
+  72% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 0;
+    transform: none;
+  }
+}
+
+/* The nudge underline draws in from the left and withdraws. */
+.service-entry.is-nudged::after {
+  content: "";
+  position: absolute;
+  left: 0.55rem;
+  right: 0.55rem;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: jt-nudge-rule 3.4s var(--ease-out) both;
+  pointer-events: none;
+}
+
+@keyframes jt-nudge-rule {
+  0% {
+    transform: scaleX(0);
+  }
+  16%,
+  72% {
+    transform: scaleX(1);
+  }
+  100% {
+    transform: scaleX(0);
+  }
+}
+
+/* One-time sequential shimmer across the schedule when it scrolls into view.
+   The clip wrapper is what keeps the travelling band out of the ROW's scroll
+   box (an `overflow: hidden` row still reports a transformed child in its own
+   scrollable overflow region — which is exactly what the "no entry is clipped"
+   check reads — so the band gets a clipping parent of its own). */
+.service-entry__sweep-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.service-entry__sweep {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    color-mix(in srgb, var(--spectrum-2) 16%, transparent) 45%,
+    transparent 90%
+  );
+  transform: translateX(-110%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+[data-services-state="loaded"].is-inview .service-entry__sweep {
+  animation: jt-index-sweep 900ms var(--ease-out) backwards;
+  animation-delay: calc(var(--sweep-i, 0) * 60ms);
+}
+
+@keyframes jt-index-sweep {
+  0% {
+    opacity: 0;
+    transform: translateX(-110%);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(110%);
+  }
+}
+
+/* Section subtitle invitation + its animated pointer glyph. */
+.services-index__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.12rem;
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.services-index__hand {
+  display: inline-block;
+  color: var(--accent);
+  animation: jt-hand 2.8s var(--ease-standard) infinite;
+  animation-play-state: paused;
+}
+
+.services-index[data-inview="true"] .services-index__hand {
+  animation-play-state: running;
+}
+
+@keyframes jt-hand {
+  0%,
+  100% {
+    transform: translateX(0) rotate(0deg);
+  }
+  40% {
+    transform: translateX(4px) rotate(-6deg);
+  }
+  60% {
+    transform: translateX(2px) rotate(0deg);
+  }
 }
 
 .service-entry__num {
@@ -2205,6 +2672,405 @@ html:not(.js-intro) .hairline {
   .services-index.is-inview .service-entry,
   .services-index.is-inview .services-index__head {
     animation: none;
+  }
+
+  /* Task M cues: the invitation keeps its function, drops its motion. */
+  .services-index__hand,
+  .service-entry__sweep,
+  .service-entry__nudge,
+  .service-entry__cue-glyph,
+  .service-entry.is-nudged::after {
+    animation: none;
+  }
+
+  .service-entry__sweep {
+    opacity: 0;
+  }
+
+  .service-entry__bar,
+  .service-entry__cue {
+    transition: none;
+  }
+}
+
+/* ============================================================
+   6c-ter. VIP PREVIEW CARD — one floating card, fourteen scenes (Task M)
+   ------------------------------------------------------------
+   The card is a dark navy surface in BOTH themes (it floats over content, so
+   it needs its own fixed text tokens — `--vip-text/-muted/-soft`). It is
+   `position: fixed`, placed by JavaScript ONCE per open (one layout read, none
+   during animation) with flip + clamp collision handling; on a coarse pointer
+   or below 1024 px it becomes a bottom sheet instead.
+
+   Layering, back to front:
+     1. `.vip`        rounded clip + ambient shadow + static outer edge;
+     2. `.vip__ring`  the rotating brand-gradient border (transform: rotate on
+                      the independent `rotate` property, plus a slow opacity
+                      pulse — the "ignition");
+     3. `.vip__inner` the opaque navy surface, inset by 1 px so only the ring's
+                      1 px band shows through;
+     4. `.vip__grid`  a static blueprint grid; 5. the real content.
+   ============================================================ */
+
+.vip {
+  position: fixed;
+  left: var(--vip-left, 16px);
+  top: var(--vip-top, 16px);
+  z-index: 60;
+  width: min(440px, 90vw);
+  height: 340px;
+  overflow: hidden;
+  border-radius: var(--vip-radius);
+  background-color: var(--vip-surface-solid);
+  box-shadow: var(--vip-shadow), 0 0 0 1px var(--vip-border), 0 0 34px -8px color-mix(in srgb, var(--spectrum-2) 55%, transparent);
+  animation: vip-in 200ms var(--ease-out) both;
+  /* The pointer must be able to travel row → card without a gap flicker. */
+  pointer-events: auto;
+}
+
+@keyframes vip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.vip__ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 150%;
+  aspect-ratio: 1 / 1;
+  translate: -50% -50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    var(--spectrum-2) 38deg,
+    transparent 96deg,
+    transparent 170deg,
+    var(--spectrum-4) 214deg,
+    transparent 280deg,
+    var(--spectrum-3) 320deg,
+    transparent 360deg
+  );
+  opacity: 0.5;
+  animation:
+    vip-spin 22s linear infinite,
+    vip-ignite 6s var(--ease-standard) infinite;
+  pointer-events: none;
+}
+
+@keyframes vip-spin {
+  to {
+    rotate: 360deg;
+  }
+}
+
+@keyframes vip-ignite {
+  0%,
+  100% {
+    opacity: 0.42;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+.vip__inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  margin: 1px;
+  padding: 0.85rem 1rem 1rem;
+  border-radius: calc(var(--vip-radius) - 1px);
+  background-color: var(--vip-surface-solid);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--spectrum-2) 9%, transparent),
+    transparent 42%
+  );
+  overflow: hidden;
+}
+
+.vip__grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, var(--vip-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--vip-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+  mask-image: radial-gradient(140% 120% at 50% 0%, #000 30%, transparent 78%);
+  -webkit-mask-image: radial-gradient(140% 120% at 50% 0%, #000 30%, transparent 78%);
+  pointer-events: none;
+}
+
+.vip__bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.vip__index {
+  font-family: var(--font-code);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--vip-soft);
+}
+
+.vip__live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--font-code);
+  font-size: 0.58rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--vip-muted);
+}
+
+.vip__live::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background-color: var(--growth);
+  animation: jt-vip-live 2.4s var(--ease-standard) infinite;
+}
+
+@keyframes jt-vip-live {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* The scene stage — a fresh mount per service, so switching rows reads as a
+   180 ms cross-fade with an 8 px lift instead of a hard cut. */
+.vip__scene {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 140px;
+  margin-top: 0.35rem;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  animation: vip-scene-in 180ms var(--ease-out) 60ms both;
+}
+
+@keyframes vip-scene-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.vip__skeleton {
+  position: absolute;
+  inset: 12% 8%;
+  border-radius: var(--radius-md);
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    color-mix(in srgb, var(--spectrum-2) 14%, transparent) 50%,
+    transparent 100%
+  );
+  animation: jt-vip-skeleton 1.4s linear infinite;
+}
+
+@keyframes jt-vip-skeleton {
+  from {
+    transform: translateX(-60%);
+  }
+  to {
+    transform: translateX(60%);
+  }
+}
+
+.vip__meta {
+  position: relative;
+  margin-top: 0.6rem;
+}
+
+.vip__title {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--vip-text);
+}
+
+.vip__desc {
+  margin: 0.3rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.42;
+  color: var(--vip-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.vip__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.5rem 0 0;
+}
+
+.vip__chip {
+  padding: 0.1rem 0.42rem;
+  border: 1px solid color-mix(in srgb, var(--spectrum-3) 30%, transparent);
+  border-radius: var(--radius-pill);
+  font-size: 0.62rem;
+  letter-spacing: 0.03em;
+  color: var(--vip-muted);
+}
+
+.vip__foot {
+  position: relative;
+  margin-top: auto;
+  padding-top: 0.6rem;
+}
+
+.vip__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--vip-text);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--vip-text) 34%, transparent);
+  padding-bottom: 0.1rem;
+}
+
+.vip__cta:hover,
+.vip__cta:focus-visible {
+  border-bottom-color: var(--vip-text);
+}
+
+.vip__cta-arrow {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.vip__cta:hover .vip__cta-arrow,
+.vip__cta:focus-visible .vip__cta-arrow {
+  transform: translateX(4px);
+}
+
+/* ---------- Mobile: the same card as a bottom sheet --------------------- */
+.vip--sheet {
+  left: 0;
+  right: 0;
+  top: auto;
+  bottom: 0;
+  width: 100%;
+  height: auto;
+  max-height: 70vh;
+  border-radius: var(--vip-radius) var(--vip-radius) 0 0;
+  animation: vip-sheet-in 220ms var(--ease-out) both;
+}
+
+@keyframes vip-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.vip--sheet .vip__inner {
+  margin: 1px 1px 0;
+  border-radius: calc(var(--vip-radius) - 1px) calc(var(--vip-radius) - 1px) 0 0;
+  padding-top: 1.5rem;
+}
+
+.vip--sheet .vip__scene {
+  min-height: 120px;
+}
+
+.vip__handle {
+  position: absolute;
+  top: 0.45rem;
+  left: 50%;
+  z-index: 2;
+  width: 3rem;
+  height: 1.5rem;
+  margin-left: -1.5rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.vip__handle span {
+  display: block;
+  width: 2.4rem;
+  height: 3px;
+  margin: 0.35rem auto 0;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--vip-muted) 60%, transparent);
+}
+
+.vip-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  border: 0;
+  padding: 0;
+  background: rgba(6, 10, 26, 0.55);
+  animation: vip-scrim-in 180ms var(--ease-out) both;
+}
+
+@keyframes vip-scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vip,
+  .vip--sheet {
+    animation: none;
+  }
+
+  .vip__ring,
+  .vip__live::before,
+  .vip__skeleton {
+    animation: none;
+  }
+
+  .vip__ring {
+    opacity: 0.6;
+  }
+
+  .vip__scene {
+    animation: none;
+  }
+
+  .vip__cta-arrow {
+    transition: none;
   }
 }
 
@@ -3250,269 +4116,471 @@ html:not(.dark) .logo-item[data-tone="light"] .logo-item__img {
   }
 }
 /* ============================================================
-   7d. SPECIMEN PLATE — product cards
-   A product presented as a mounted specimen on a blueprint plate: a framed
-   specimen window + mono plate id + drawn-in spec ticks + one Growth-Green
-   status node + a spectrum trace to the Visit action. Deliberately different
-   from the services cards and the logo marquee.
+   7d. SHOWCASE TILE — product cards (Task M)
+   A product presented on ONE opaque tile: a soft spotlight stage with the logo
+   centred on it and a ground-line reflection, a quiet plate id, one Growth-Green
+   LIVE node, an inline highlight line and a Visit row. The old "Specimen Plate"
+   (gridded window, corner ticks, dashed rules, spectrum trace) was replaced at
+   the owner's request — it showed the page's blueprint grid through the card and
+   was visually busy. Nothing is translucent here: the tile surface is opaque, so
+   the page grid can never read through it.
    ============================================================ */
 
-.plate {
+.tile {
   position: relative;
   isolation: isolate;
   display: flex;
   height: 100%;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background-color: var(--surface-elevated);
-  background-image:
-    linear-gradient(to right, color-mix(in srgb, var(--grid-tick) 26%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb, var(--grid-tick) 26%, transparent) 1px, transparent 1px);
-  background-size: 24px 24px;
+  padding: 1px; /* the 1px ring the gradient sweep travels along */
+  border-radius: var(--radius-xl);
+  background: var(--tile-border);
+  box-shadow: var(--tile-shadow);
   transition:
-    transform var(--dur-normal) var(--ease-out),
-    box-shadow var(--dur-normal) var(--ease-out),
-    border-color var(--dur-normal) var(--ease-out);
+    transform var(--dur-normal) var(--ease-spring-soft),
+    box-shadow var(--dur-normal) var(--ease-out);
 }
 
-.plate:hover,
-.plate:focus-within {
-  transform: translateY(-4px);
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
-  box-shadow: var(--shadow-card);
+.tile:hover,
+.tile:focus-within {
+  transform: translateY(-6px);
+  box-shadow: var(--tile-shadow-hover);
 }
 
-.plate__body {
+/* The border sweep: an oversized conic gradient rotating inside the 1px ring.
+   `transform: rotate()` on a pseudo-element — never `@property`, never
+   box-shadow, never a layout property. */
+.tile__ring {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 240ms var(--ease-out);
+}
+
+.tile__ring::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 240%;
+  aspect-ratio: 1;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg 120deg,
+    var(--accent) 190deg,
+    var(--spectrum-3) 232deg,
+    transparent 300deg 360deg
+  );
+}
+
+.tile:hover .tile__ring,
+.tile:focus-within .tile__ring {
+  opacity: 1;
+}
+
+.tile:hover .tile__ring::before,
+.tile:focus-within .tile__ring::before {
+  animation: jt-tile-sweep 1150ms var(--ease-out) 1;
+}
+
+@keyframes jt-tile-sweep {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+.tile__inner {
   position: relative;
+  z-index: 1;
   display: flex;
   flex: 1;
   flex-direction: column;
-  padding: 1.4rem 1.5rem 1.5rem;
+  overflow: hidden;
+  padding: var(--space-card);
+  border-radius: calc(var(--radius-xl) - 1px);
+  background: var(--tile-surface);
 }
 
-.plate__head {
+/* One sheen that crosses the surface per hover. */
+.tile__sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    104deg,
+    transparent 38%,
+    color-mix(in srgb, var(--background) 26%, transparent) 50%,
+    transparent 62%
+  );
+}
+
+.tile:hover .tile__sheen,
+.tile:focus-within .tile__sheen {
+  opacity: 1;
+  animation: jt-tile-sheen 900ms var(--ease-out) 1;
+}
+
+@keyframes jt-tile-sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* ---------- Header row: plate id + the one live node ------------------- */
+.tile__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
 }
 
-.plate__id {
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
+.tile__id {
+  font-family: var(--font-code);
+  font-size: 0.6rem;
   font-weight: 600;
   letter-spacing: 0.16em;
-  text-transform: uppercase;
   color: var(--muted-soft);
 }
 
-.plate__node {
+.tile__node {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.66rem;
+  font-size: 0.62rem;
   font-weight: 600;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--muted);
 }
 
-.plate__node::before {
+.tile__node::before {
   content: "";
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 999px;
   background-color: var(--growth);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--growth) 24%, transparent);
+  animation: jt-tile-breathe 4.6s var(--ease-in-out) infinite alternate;
 }
 
-/* Specimen window — framed, faintly gridded, tone-aware backdrop. */
-.plate__window {
+@keyframes jt-tile-breathe {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ---------- Stage: the logo on a soft spotlight ------------------------ */
+.tile__stage {
   position: relative;
   display: grid;
   place-items: center;
-  aspect-ratio: 16 / 10;
+  aspect-ratio: 16 / 9;
   margin-top: 1rem;
   overflow: hidden;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background-color: var(--surface);
 }
 
-.plate__window::before {
-  content: "";
+.tile__spotlight {
   position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    linear-gradient(to right, color-mix(in srgb, var(--grid-tick) 34%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb, var(--grid-tick) 34%, transparent) 1px, transparent 1px);
-  background-size: 16px 16px;
-  opacity: 0.55;
+  inset: -6%;
+  background: var(--tile-spotlight);
+  opacity: 0.75;
+  transform: translate3d(0, 0, 0);
+  animation: jt-tile-drift 16s var(--ease-in-out) infinite alternate;
+  transition: opacity var(--dur-normal) var(--ease-out);
 }
 
-/* Tone-aware contrast aid: a dark logo sits on white, a light logo on navy. */
-.plate__window[data-tone="dark"] {
-  background-color: #ffffff;
-}
-.plate__window[data-tone="light"] {
-  background-color: #101a3d;
-}
-.plate__window[data-tone="colorful"] {
-  background-color: var(--surface-elevated);
+@keyframes jt-tile-drift {
+  from {
+    transform: translate3d(-5px, -3px, 0);
+  }
+  to {
+    transform: translate3d(5px, 4px, 0);
+  }
 }
 
-.plate__corner {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border-color: color-mix(in srgb, var(--accent) 65%, transparent);
-  border-style: solid;
-  border-width: 0;
+.tile:hover .tile__spotlight,
+.tile:focus-within .tile__spotlight {
+  opacity: 1;
 }
-.plate__corner--tl { top: 6px; left: 6px; border-top-width: 2px; border-left-width: 2px; }
-.plate__corner--tr { top: 6px; right: 6px; border-top-width: 2px; border-right-width: 2px; }
-.plate__corner--bl { bottom: 6px; left: 6px; border-bottom-width: 2px; border-left-width: 2px; }
-.plate__corner--br { bottom: 6px; right: 6px; border-bottom-width: 2px; border-right-width: 2px; }
 
-.plate__logo {
+/* Tone-aware contrast aid: a dark logo sits on a light stage, a light logo on a
+   dark stage. A colourless/unknown logo gets no stage tint at all — never a
+   coloured pill. */
+.tile__stage[data-tone="dark"] {
+  background-color: var(--tile-stage-light);
+}
+.tile__stage[data-tone="light"] {
+  background-color: var(--tile-stage-dark);
+}
+
+.tile__logo {
   position: relative;
   z-index: 1;
-  max-width: 62%;
-  max-height: 62%;
-  transition: transform var(--dur-normal) var(--ease-out);
-}
-.plate:hover .plate__logo,
-.plate:focus-within .plate__logo {
-  transform: translateY(-3px) scale(1.04);
+  max-width: 58%;
+  max-height: 68%;
+  object-fit: contain;
+  transition: transform var(--dur-normal) var(--ease-spring-soft);
 }
 
-.plate__monogram {
+.tile:hover .tile__logo,
+.tile:focus-within .tile__logo,
+.tile:hover .tile__monogram,
+.tile:focus-within .tile__monogram {
+  /* The tilt follows the pointer through two custom properties set by ONE
+     rAF-throttled handler — fine pointers only, never under reduced motion. */
+  transform: scale(1.06) rotate(var(--tile-tilt, 0deg))
+    translate3d(var(--tile-shift-x, 0px), var(--tile-shift-y, 0px), 0);
+}
+
+.tile__monogram {
   position: relative;
   z-index: 1;
   font-size: 1.9rem;
   font-weight: 600;
 }
 
-.plate__title {
-  margin-top: 1.1rem;
-  font-size: 1.15rem;
+/* Ground-line reflection: a hairline plus its soft bloom. */
+.tile__ground {
+  position: absolute;
+  left: 50%;
+  bottom: 12%;
+  width: 54%;
+  height: 1px;
+  transform: translateX(-50%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 46%, transparent),
+    transparent
+  );
+}
+
+.tile__ground::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 78%;
+  height: 14px;
+  transform: translate(-50%, 0);
+  background: radial-gradient(
+    50% 100% at 50% 0%,
+    color-mix(in srgb, var(--accent) 16%, transparent),
+    transparent 70%
+  );
+}
+
+/* ---------- Meta ------------------------------------------------------- */
+.tile__title {
+  margin-top: 1.15rem;
+  font-size: 1.12rem;
   font-weight: 600;
   line-height: 1.25;
   color: var(--foreground);
   overflow-wrap: anywhere;
 }
 
-.plate__category {
+.tile__category {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  margin-top: 0.55rem;
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
+  margin-top: 0.5rem;
+  font-family: var(--font-code);
+  font-size: 0.64rem;
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
 }
-.plate__category::before {
+
+.tile__category::before {
   content: "";
-  width: 12px;
-  height: 2px;
-  border-radius: 999px;
-  background-color: var(--spectrum-2);
+  width: 11px;
+  height: 1px;
+  background-color: var(--muted-soft);
 }
 
-.plate__specs {
+.tile__highlights {
   display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  margin-top: 1.1rem;
-}
-.plate__spec {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.6rem;
-  font-size: 0.86rem;
-  line-height: 1.4;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.85rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
   color: var(--muted);
 }
-.plate__tick {
-  flex: none;
-  margin-top: 0.5rem;
-  width: 14px;
-  height: 2px;
-  border-radius: 999px;
-  background-color: var(--spectrum-2);
-  transform: scaleX(0);
-  transform-origin: left center;
-  transition: transform 460ms var(--ease-out);
-  transition-delay: calc(var(--spec-index, 0) * 70ms);
-}
-.reveal.is-visible .plate__tick {
-  transform: scaleX(1);
-}
-html:not(.js-intro) .plate__tick {
-  transform: scaleX(1);
+
+.tile__highlight {
+  opacity: 0.72;
+  transform: translateY(3px);
+  transition:
+    opacity var(--dur-normal) var(--ease-out),
+    transform var(--dur-normal) var(--ease-out);
+  transition-delay: calc(var(--highlight-index, 0) * 50ms);
 }
 
-.plate__foot {
+.tile:hover .tile__highlight,
+.tile:focus-within .tile__highlight {
+  opacity: 1;
+  transform: none;
+}
+
+.tile__dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background-color: var(--border-strong);
+}
+
+/* ---------- Action row ------------------------------------------------- */
+.tile__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
   margin-top: auto;
-  padding-top: 1.3rem;
+  padding-top: 1.4rem;
 }
 
-/* Spectrum trace — runs from the specimen window to the Visit action. */
-.plate__trace {
-  height: 2px;
-  width: 100%;
-  border-radius: 999px;
-  background-image: linear-gradient(
-    90deg,
-    var(--spectrum-1),
-    var(--spectrum-2),
-    var(--spectrum-3),
-    var(--spectrum-4),
-    var(--spectrum-5)
-  );
+.tile__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.tile__action-arrow {
+  transition: transform var(--dur-normal) var(--ease-out);
+}
+
+.tile:hover .tile__action-arrow,
+.tile:focus-within .tile__action-arrow {
+  transform: translateX(4px);
+}
+
+/* The underline draws in from the left on hover. */
+.tile__action-rule {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 1px;
+  background: currentColor;
   transform: scaleX(0);
   transform-origin: left center;
   transition: transform var(--dur-normal) var(--ease-out);
 }
-.plate:hover .plate__trace,
-.plate:focus-within .plate__trace {
+
+.tile:hover .tile__action-rule,
+.tile:focus-within .tile__action-rule {
   transform: scaleX(1);
 }
 
-.plate__action {
+.tile__action-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.tile__muted-action {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  margin-top: 0.9rem;
   font-size: 0.86rem;
-  font-weight: 600;
-  color: var(--accent);
+  color: var(--muted);
 }
-.plate__action:hover {
-  color: var(--accent-hover);
+
+/* ---------- Featured tile: logo left, meta right at >= 1024px ---------- */
+@media (min-width: 1024px) {
+  .tile--featured .tile__inner {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "head head"
+      "stage meta"
+      "stage foot";
+    align-items: start;
+    column-gap: 1.75rem;
+  }
+
+  .tile--featured .tile__head {
+    grid-area: head;
+  }
+
+  .tile--featured .tile__stage {
+    grid-area: stage;
+    align-self: center;
+    aspect-ratio: 4 / 3;
+    margin-top: 1.25rem;
+  }
+
+  .tile--featured .tile__meta {
+    grid-area: meta;
+    margin-top: 1.25rem;
+  }
+
+  .tile--featured .tile__title {
+    margin-top: 0;
+  }
+
+  .tile--featured .tile__foot {
+    grid-area: foot;
+    align-self: end;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .plate,
-  .plate__logo,
-  .plate__trace,
-  .plate__tick {
+  .tile {
     transition: none;
   }
-  .plate:hover,
-  .plate:focus-within,
-  .plate:hover .plate__logo,
-  .plate:focus-within .plate__logo {
+  .tile:hover,
+  .tile:focus-within {
     transform: none;
   }
-  .plate__trace,
-  .plate__tick {
+  .tile__spotlight,
+  .tile__node::before {
+    animation: none;
+  }
+  .tile:hover .tile__ring,
+  .tile:focus-within .tile__ring,
+  .tile__sheen,
+  .tile:hover .tile__sheen,
+  .tile:focus-within .tile__sheen {
+    display: none;
+  }
+  .tile__logo,
+  .tile__highlight,
+  .tile__action-arrow,
+  .tile__action-rule {
+    transition: none;
+  }
+  .tile:hover .tile__logo,
+  .tile:focus-within .tile__logo,
+  .tile:hover .tile__monogram,
+  .tile:focus-within .tile__monogram,
+  .tile:hover .tile__highlight,
+  .tile:focus-within .tile__highlight,
+  .tile:hover .tile__action-arrow,
+  .tile:focus-within .tile__action-arrow,
+  .tile:hover .tile__action-rule,
+  .tile:focus-within .tile__action-rule {
     transform: none;
   }
 }

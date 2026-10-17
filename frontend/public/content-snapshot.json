@@ -1,6 +1,6 @@
 {
   "_generated": "GENERATED - NEVER HAND-EDIT. Produced by `npm run snapshot:content` from the public API. Public data only; no secrets.",
-  "generatedAt": "2026-10-10T12:51:29.341Z",
+  "generatedAt": "2026-10-17T14:30:53.818Z",
   "source": "http://localhost:5000/api",
   "counts": {
     "logos": 2,
@@ -9,10 +9,10 @@
   },
   "logos": [
     {
-      "_id": "6aca2f00cbeb8a1a52d4a0c0",
+      "_id": "6ad233773cb679626722a2a8",
       "name": "Showcase Fixture A",
       "displayName": "Showcase Fixture A",
-      "secureUrl": "https://res.cloudinary.com/x5yym0zn/image/upload/v1791635199/jazari/logos/processed/qtfee7cklz9wvg1esdng.png",
+      "secureUrl": "https://res.cloudinary.com/x5yym0zn/image/upload/v1792160629/jazari/logos/processed/mkwmfdhrafzv7oqrm3n7.png",
       "alt": "Showcase Fixture A",
       "websiteUrl": "",
       "sortOrder": 0,
@@ -32,10 +32,10 @@
       ]
     },
     {
-      "_id": "6aca2f02cbeb8a1a52d4a0c3",
+      "_id": "6ad2337b3cb679626722a2ab",
       "name": "Showcase Fixture B",
       "displayName": "Showcase Fixture B",
-      "secureUrl": "https://res.cloudinary.com/x5yym0zn/image/upload/v1791635202/jazari/logos/processed/r4maodduoy1dnibi28dz.png",
+      "secureUrl": "https://res.cloudinary.com/x5yym0zn/image/upload/v1792160633/jazari/logos/processed/q6legnqk5lcxqw8c3poz.png",
       "alt": "Showcase Fixture B",
       "websiteUrl": "",
       "sortOrder": 0,
@@ -57,7 +57,7 @@
   ],
   "products": [
     {
-      "_id": "6aca25db054087c51f763947",
+      "_id": "6ad231d273b68ff5cbc34c8c",
       "name": "Jazari Commerce Suite",
       "logo": null,
       "productUrl": "",
@@ -69,10 +69,10 @@
         "Admin analytics for sales performance"
       ],
       "sortOrder": 10,
-      "createdAt": "2026-10-10T11:47:39.564Z"
+      "createdAt": "2026-10-16T14:16:50.888Z"
     },
     {
-      "_id": "6aca25db054087c51f763948",
+      "_id": "6ad231d273b68ff5cbc34c8d",
       "name": "Jazari Flow",
       "logo": null,
       "productUrl": "",
@@ -84,10 +84,10 @@
         "Automatic updates with zero downtime"
       ],
       "sortOrder": 20,
-      "createdAt": "2026-10-10T11:47:39.565Z"
+      "createdAt": "2026-10-16T14:16:50.888Z"
     },
     {
-      "_id": "6aca25db054087c51f763949",
+      "_id": "6ad231d273b68ff5cbc34c8e",
       "name": "Jazari Pulse",
       "logo": null,
       "productUrl": "",
@@ -98,10 +98,10 @@
         "Scalable architecture for growing teams"
       ],
       "sortOrder": 30,
-      "createdAt": "2026-10-10T11:47:39.565Z"
+      "createdAt": "2026-10-16T14:16:50.889Z"
     },
     {
-      "_id": "6aca25db054087c51f76394a",
+      "_id": "6ad231d273b68ff5cbc34c8f",
       "name": "Jazari Desk",
       "logo": null,
       "productUrl": "",
@@ -112,12 +112,12 @@
         "Role-based access for departments"
       ],
       "sortOrder": 40,
-      "createdAt": "2026-10-10T11:47:39.565Z"
+      "createdAt": "2026-10-16T14:16:50.889Z"
     }
   ],
   "services": [
     {
-      "_id": "6aca25db5e6898ab0fc988fb",
+      "_id": "6ad231d24666755a75c8a68a",
       "slug": "software-solutions",
       "accent": "blue",
       "category": "engineering",
@@ -135,7 +135,7 @@
       "title": "Software Solutions"
     },
     {
-      "_id": "6aca25db5e6898ab0fc988fc",
+      "_id": "6ad231d24666755a75c8a68b",
       "slug": "business-growth",
       "accent": "green-micro",
       "category": "growth",
@@ -153,7 +153,7 @@
       "title": "Business Growth"
     },
     {
-      "_id": "6aca25db5e6898ab0fc988fd",
+      "_id": "6ad231d24666755a75c8a68c",
       "slug": "graphic-designing",
       "accent": "blue",
       "category": "design",
@@ -171,7 +171,7 @@
       "title": "Graphic Designing"
     },
     {
-      "_id": "6aca25db5e6898ab0fc988fe",
+      "_id": "6ad231d24666755a75c8a68d",
       "slug": "marketing",
       "accent": "blue",
       "category": "growth",
@@ -189,7 +189,7 @@
       "title": "Marketing"
     },
     {
-      "_id": "6aca25db5e6898ab0fc988ff",
+      "_id": "6ad231d24666755a75c8a68e",
       "slug": "ai-solutions",
       "accent": "blue",
       "category": "engineering",
@@ -207,7 +207,7 @@
       "title": "AI Solutions"
     },
     {
-      "_id": "6aca25db5e6898ab0fc98900",
+      "_id": "6ad231d24666755a75c8a68f",
       "slug": "e-commerce",
       "accent": "blue",
       "category": "engineering",
@@ -225,7 +225,7 @@
       "title": "E-commerce"
     },
     {
-      "_id": "6aca25db5e6898ab0fc98901",
+      "_id": "6ad231d24666755a75c8a690",
       "slug": "mobile-app-development",
       "accent": "blue",
       "category": "engineering",
@@ -243,7 +243,7 @@
       "title": "Mobile App Development"
     },
     {
-      "_id": "6aca25db5e6898ab0fc98902",
+      "_id": "6ad231d24666755a75c8a691",
       "slug": "web-development",
       "accent": "blue",
       "category": "engineering",
@@ -261,7 +261,7 @@
       "title": "Web Development"
     },
     {
-      "_id": "6aca25db5e6898ab0fc98903",
+      "_id": "6ad231d24666755a75c8a692",
       "slug": "ui-ux-design",
       "accent": "blue",
       "category": "design",
@@ -279,7 +279,7 @@
       "title": "UI/UX Design"
     },
     {
-      "_id": "6aca25db5e6898ab0fc98904",
+      "_id": "6ad231d24666755a75c8a693",
       "slug": "cloud-and-devops",
       "accent": "blue",
       "category": "operations",
@@ -297,7 +297,7 @@
       "title": "Cloud and DevOps"
     },
     {
-      "_id": "6aca25db5e6898ab0fc98905",
+      "_id": "6ad231d24666755a75c8a694",
       "slug": "cybersecurity",
       "accent": "navy",
       "category": "security",
@@ -315,7 +315,7 @@
       "title": "Cybersecurity"
     },
     {
-      "_id": "6aca25db5e6898ab0fc98906",
+      "_id": "6ad231d24666755a75c8a695",
       "slug": "data-and-analytics",
       "accent": "blue",
       "category": "operations",
@@ -333,7 +333,7 @@
       "title": "Data and Analytics"
     },
     {
-      "_id": "6aca25db5e6898ab0fc98907",
+      "_id": "6ad231d24666755a75c8a696",
       "slug": "it-consulting",
       "accent": "navy",
       "category": "operations",
@@ -351,7 +351,7 @@
       "title": "IT Consulting"
     },
     {
-      "_id": "6aca25db5e6898ab0fc98908",
+      "_id": "6ad231d24666755a75c8a697",
       "slug": "automation",
       "accent": "blue",
       "category": "engineering",

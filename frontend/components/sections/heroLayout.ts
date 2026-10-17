@@ -68,10 +68,22 @@ const RAW_ANCHORS: Array<{ id: string; piece: LogoPieceId; x: number; y: number;
 ];
 
 /**
- * The anchor point AFTER the piece explodes: the assembled point offset by the
- * piece's own explode vector, so the leader starts exactly where the piece has
- * travelled to (the Hub's proven vectors, shared — never re-invented).
+ * THE SPLIT POSE — how far a piece moves before it is cut.
+ *
+ * The choreography no longer "explodes": the five pieces separate a little way
+ * along the Hub's proven outward vectors, then each piece is cut in two and the
+ * two slices fly to their tooltips. The vectors are reused verbatim (largest is
+ * 150 source units = 3.7% of the 4096 mark, well inside the ≤ 8% budget) so the
+ * diagram's anchors, leaders and geometry stay exactly as measured.
  */
+export const HERO_SPLIT = {
+  /** Source-unit explode vector → design-unit split offset. */
+  toDesign(explode: { tx: number; ty: number }) {
+    return { x: explode.tx * EXPLODE_K, y: explode.ty * EXPLODE_K };
+  },
+  /** Longest split travel as a fraction of the mark — asserted by the harness. */
+  maxTravelFraction: 150 / 4096,
+} as const;
 export function anchorPoint(spec: HeroAnchorSpec) {
   const { tx, ty } = HUB_PIECES[spec.piece].explode;
   return {
@@ -110,19 +122,26 @@ export function tooltipSlot(index: number) {
 export const pctX = (x: number) => `${((x / HERO_DESIGN.width) * 100).toFixed(4)}%`;
 export const pctY = (y: number) => `${((y / HERO_DESIGN.height) * 100).toFixed(4)}%`;
 
-/** Orthogonal leader route: anchor → column line → tooltip socket. */
-export function leaderPath(index: number, spec: HeroAnchorSpec): string {
+/** Orthogonal leader route as points: anchor → column line → tooltip socket. */
+export function leaderPoints(index: number, spec: HeroAnchorSpec): Array<{ x: number; y: number }> {
   const slot = tooltipSlot(index);
   const from = anchorPoint(spec);
   const routeX = slot.column === "left" ? HERO_ROUTE_X.left : HERO_ROUTE_X.right;
   const mid = slot.column === "left" ? routeX + 12 : routeX - 12;
   return [
-    `M ${from.x.toFixed(2)} ${from.y.toFixed(2)}`,
-    `L ${routeX.toFixed(2)} ${from.y.toFixed(2)}`,
-    `L ${routeX.toFixed(2)} ${slot.socket.y.toFixed(2)}`,
-    `L ${mid.toFixed(2)} ${slot.socket.y.toFixed(2)}`,
-    `L ${slot.socket.x.toFixed(2)} ${slot.socket.y.toFixed(2)}`,
-  ].join(" ");
+    { x: from.x, y: from.y },
+    { x: routeX, y: from.y },
+    { x: routeX, y: slot.socket.y },
+    { x: mid, y: slot.socket.y },
+    { x: slot.socket.x, y: slot.socket.y },
+  ];
+}
+
+/** Orthogonal leader route: anchor → column line → tooltip socket. */
+export function leaderPath(index: number, spec: HeroAnchorSpec): string {
+  return leaderPoints(index, spec)
+    .map((point, i) => `${i === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(" ");
 }
 
 /** Inline style placing a tooltip slot inside the diagram box. */

@@ -31,20 +31,52 @@ export function serviceAccent(service: Service): "blue" | "navy" | "green-micro"
 }
 
 /**
- * Resting summary line. Uses the backend `shortDescription` when present;
- * otherwise the first clause/sentence of `description`, cut at a word boundary.
- * Never invents copy.
+ * Resting summary line — ONE helper shared by the hero, the services index and
+ * the Hub, so the same service never reads differently in two places.
+ *
+ * Order of preference:
+ *   1. the backend's own `shortDescription` (the designed line) verbatim;
+ *   2. a whole first sentence that already fits;
+ *   3. a clause/sentence boundary at 40+ characters (never a mid-phrase chop);
+ *   4. a whole-word cut that always leaves at least two words.
+ *
+ * It never invents copy, never repeats the service title, and never returns a
+ * single dangling word (the old helper could produce "Fast" / "Strategy" from a
+ * description whose first clause was one word long).
  */
+export const RESTING_MIN_CLAUSE = 40;
+
 export function restingLine(service: Service, maxLength = 92): string {
   const provided = (service.shortDescription ?? "").trim();
   if (provided) return provided;
-  const firstSentence = service.description.split(/(?<=[.!?])\s/)[0] ?? service.description;
-  const clause = firstSentence.split(/[,;:\u2014\u2013]/)[0] ?? firstSentence;
-  const trimmed = clause.trim();
-  if (trimmed.length <= maxLength) return trimmed;
-  const cut = trimmed.slice(0, maxLength);
-  const lastSpace = cut.lastIndexOf(" ");
-  return `${lastSpace > maxLength * 0.45 ? cut.slice(0, lastSpace) : cut}\u2026`;
+
+  const text = (service.description ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+
+  const firstSentence = (text.split(/(?<=[.!?])\s/)[0] ?? text).trim();
+  if (firstSentence.length <= maxLength) return firstSentence;
+
+  const windowText = text.slice(0, maxLength);
+  const boundaries = [". ", "! ", "? ", ", ", "; ", ": ", " \u2014 ", " \u2013 "];
+  let clauseEnd = -1;
+  for (const boundary of boundaries) {
+    const at = windowText.lastIndexOf(boundary);
+    if (at > clauseEnd) clauseEnd = at;
+  }
+  if (clauseEnd >= RESTING_MIN_CLAUSE) {
+    return `${windowText.slice(0, clauseEnd).replace(/[\s,;:\u2014\u2013]+$/, "")}\u2026`;
+  }
+
+  const space = windowText.lastIndexOf(" ");
+  let cut = space > RESTING_MIN_CLAUSE ? windowText.slice(0, space) : windowText;
+  cut = cut.replace(/[\s,;:\u2014\u2013]+$/, "");
+  if (cut.split(/\s+/).filter(Boolean).length < 2) {
+    // A whole-word cut that left a single dangling word: take the next word
+    // boundary, or fall back to the whole first sentence.
+    const nextSpace = text.indexOf(" ", cut.length + 1);
+    cut = nextSpace > -1 && nextSpace <= maxLength * 2 ? text.slice(0, nextSpace) : firstSentence;
+  }
+  return `${cut}\u2026`;
 }
 
 /** Order services for display: `sortOrder`, then title, then id. Stable. */

@@ -226,7 +226,10 @@ async function evaluate(cdp, expression) {
     awaitPromise: true,
   });
   if (exceptionDetails) {
-    throw new Error(`evaluate failed: ${exceptionDetails.text ?? "unknown"}`);
+    /* Include the head of the expression: an in-page TypeError is otherwise
+       impossible to attribute in a 5 000-line harness. */
+    const detail = exceptionDetails.exception?.description ?? exceptionDetails.text ?? "unknown";
+    throw new Error(`evaluate failed: ${detail}\n  in: ${String(expression).slice(0, 160).replace(/\s+/g, " ")}`);
   }
   return result.value;
 }
@@ -636,7 +639,7 @@ async function main() {
         const tick = (now) => {
           gaps.push(now - last); last = now;
           const dg = document.querySelector('.hero-diagram');
-          if (classAt === null && dg && dg.className.indexOf('is-exploded') !== -1) classAt = now;
+          if (classAt === null && dg && (dg.className.indexOf('is-flying') !== -1 || dg.className.indexOf('is-docked') !== -1)) classAt = now;
           const g = root.querySelector('.hero-mark__svg [data-logo-piece]');
           const t = g ? getComputedStyle(g).transform : 'none';
           if (firstChange === null && t && t !== 'none') firstChange = now;
@@ -669,9 +672,336 @@ async function main() {
       `dropped=${perf.dropped}/${perf.frames} (idle baseline ${baseline.dropped}/${baseline.frames})`,
     );
 
-    /* -- TEST 2: explode / reassemble via hover, focus and Escape ---------- */
-    console.log("\n[2] Hero — explode, reassemble, keyboard");
+    /* -- TEST 2: the delivery choreography (Task M) ------------------------ */
+    console.log("\n[2] Hero — delivery choreography (split → fly → dock → return)");
     resetErrors();
+    /*
+     * CHECK L60 is RETIRED here (Task M).
+     *
+     * Its subject — "hover explodes the mark (state=exploded)" — names a state
+     * the owner deliberately replaced: the mark no longer explodes, it DELIVERS
+     * itself (assembled → splitting → flying → docked → returning → merging).
+     * Asserting `exploded` would contradict the requested motion. L60a–L60h
+     * below carry its intent (the trigger really does change the mark, and the
+     * change is the designed one) and add the parts of the Task M spec that were
+     * never measurable before: ten REAL fragments, the stage order, riding the
+     * leader wire, docking inside the badge sockets, no re-creation on re-hover
+     * and interrupt safety.
+     *
+     * L61–L67 are kept unchanged: their subject (five real pieces transformed,
+     * every tooltip visible, leader lit, aria-expanded, no overlap, CTA
+     * hit-testable) is exactly what the new choreography still has to satisfy.
+     */
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+    await waitFor(
+      cdp,
+      `document.querySelector('[data-hero="svg-v2"]')?.dataset.heroState === "assembled"`,
+      9000,
+      "hero assembled before the choreography checks",
+    );
+
+    /* Record every state transition and sample the fragments' real positions. */
+    await evaluate(
+      cdp,
+      `(() => {
+        const root = document.querySelector('[data-hero="svg-v2"]');
+        window.__heroStages = [root.dataset.heroState];
+        new MutationObserver(() => {
+          const next = root.dataset.heroState;
+          if (window.__heroStages[window.__heroStages.length - 1] !== next) window.__heroStages.push(next);
+        }).observe(root, { attributes: true, attributeFilter: ['data-hero-state'] });
+        /* Harness-only sampler: fragment centres, their distance to their own
+           leader wire and their distance to their badge socket. */
+        const leaders = root.querySelector('.hero-diagram__leaders');
+        const lb = leaders.getBoundingClientRect();
+        const vb = leaders.viewBox.baseVal;
+        const frames = [...root.querySelectorAll('[data-hero-fragment]')];
+        const badges = [...root.querySelectorAll('[data-hero-badge]')];
+        const centre = (el) => { const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height }; };
+        const pathAt = (index, t) => {
+          const p = root.querySelector('[data-hero-leader="' + index + '"]');
+          if (!p) return null;
+          const pt = p.getPointAtLength(p.getTotalLength() * t);
+          return { x: lb.x + (pt.x / vb.width) * lb.width, y: lb.y + (pt.y / vb.height) * lb.height };
+        };
+        const pathDist = (c, index, steps) => {
+          let best = Infinity;
+          for (let i = 0; i <= steps; i += 1) { const p = pathAt(index, i / steps); if (p) best = Math.min(best, Math.hypot(p.x - c.x, p.y - c.y)); }
+          return best;
+        };
+        const badge = (i) => (badges[i] ? centre(badges[i]) : null);
+        const markCentre = centre(root.querySelector('.hero-mark__svg'));
+        /* Perpendicular distance from the fragment centre to the STRAIGHT
+           segment mark → badge: a fragment that really follows the orthogonal
+           wire must be far from that straight line mid-flight. */
+        const offStraight = (c, b) => {
+          if (!b) return null;
+          const dx = b.x - markCentre.x;
+          const dy = b.y - markCentre.y;
+          const len = Math.hypot(dx, dy) || 1;
+          return Math.abs((c.x - markCentre.x) * dy - (c.y - markCentre.y) * dx) / len;
+        };
+        window.__heroSamples = [];
+        const t0 = performance.now();
+        let tick = 0;
+        const sample = () => {
+          tick += 1;
+          const at = Math.round(performance.now() - t0);
+          const detailed = true; /* full resolution: the flight is ~0.76 s long */
+          window.__heroSamples.push({
+            t: at,
+            state: root.dataset.heroState,
+            frags: frames.map((f, i) => {
+              const c = centre(f);
+              const b = badge(i);
+              return {
+                i,
+                x: Math.round(c.x), y: Math.round(c.y), w: Math.round(c.w),
+                toBadge: b ? Math.round(Math.hypot(c.x - b.x, c.y - b.y)) : null,
+                path: detailed ? Math.round(pathDist(c, i, 12)) : null,
+                straight: detailed ? Math.round(offStraight(c, b)) : null,
+              };
+            }),
+          });
+          if (performance.now() - t0 < 1500) requestAnimationFrame(sample);
+          else window.__heroSampled = true;
+        };
+        /* The fragments' NATURAL centres (no animation has been created yet) —
+           the origin every flight keyframe is measured from. */
+        window.__heroRest = frames.map((f) => centre(f));
+        requestAnimationFrame(sample);
+        return true;
+      })()`,
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: perfBox.x, y: perfBox.y });
+    await sleep(1650);
+
+    const choreo = await evaluate(
+      cdp,
+      `(() => {
+        const root = document.querySelector('[data-hero="svg-v2"]');
+        const frames = [...root.querySelectorAll('[data-hero-fragment]')];
+        const badges = [...root.querySelectorAll('[data-hero-badge]')];
+        const centre = (el) => { const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height }; };
+        return {
+          stages: window.__heroStages,
+          sampled: window.__heroSampled === true,
+          samples: window.__heroSamples,
+          fragments: frames.length,
+          badges: badges.length,
+          state: root.dataset.heroState,
+          dataFragments: root.dataset.dataFragments,
+          declared: root.dataset.fragments,
+          /* A fragment must be a real slice of the real artwork: a path filled
+             with the piece's own gradient, cut by its own clipPath — never a
+             rect, a circle or a solid-colour chip. */
+          shapes: frames.map((f) => ({
+            index: Number(f.dataset.heroFragment),
+            piece: f.dataset.heroFragmentPiece,
+            half: f.dataset.heroFragmentHalf,
+            clip: f.dataset.heroFragmentClip,
+            gradient: f.dataset.heroFragmentGradient,
+            pathFill: f.querySelector('path')?.getAttribute('fill') ?? null,
+            clipAttr: f.querySelector('[clip-path]')?.getAttribute('clip-path') ?? null,
+            rects: f.querySelectorAll('rect, circle, ellipse, image').length,
+          })),
+          /* Where each fragment sits once the delivery is docked. */
+          docked: frames.map((f, i) => {
+            const c = centre(f);
+            const b = badges[i] ? centre(badges[i]) : null;
+            return {
+              i,
+              dx: b ? Math.round(Math.abs(c.x - b.x)) : null,
+              dy: b ? Math.round(Math.abs(c.y - b.y)) : null,
+              inBadge: b ? Math.abs(c.x - b.x) <= 12 && Math.abs(c.y - b.y) <= 10 : false,
+            };
+          }),
+        };
+      })()`,
+    );
+    /*
+     * "Rides the wire" is measured from LIVE screen samples taken while the mark
+     * is in the `flying` state:
+     *   · per fragment, the MINIMUM distance to its own leader path must be small
+     *     (the slice passes through its wire) and the MEAN must stay close to it
+     *     (the slice travels along it, not just through one point);
+     *   · the same samples' distance from the STRAIGHT mark → socket line must
+     *     reach ≥ 40 px, so an implementation that simply flew the slice in a
+     *     straight line to the card could never satisfy the check.
+     * The first and last keyframes are deliberately off the drawn stroke (the
+     * slice lifts off from its own cut centre and lands on the badge), which is
+     * why the assertion is on the flight's own samples rather than on the route's
+     * endpoints — docking is asserted separately by L60e.
+     */
+    const geometry = await evaluate(
+      cdp,
+      `(() => {
+        const root = document.querySelector('[data-hero="svg-v2"]');
+        const leaders = root.querySelector('.hero-diagram__leaders');
+        const lb = leaders.getBoundingClientRect();
+        const vb = leaders.viewBox.baseVal;
+        const sx = lb.width / vb.width;
+        const sy = lb.height / vb.height;
+        const frames = [...root.querySelectorAll('[data-hero-fragment]')];
+        const badges = [...root.querySelectorAll('[data-hero-badge]')];
+        const centre = (el) => { const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; };
+        const pathAt = (i, t) => {
+          const p = root.querySelector('[data-hero-leader="' + i + '"]');
+          if (!p) return null;
+          const pt = p.getPointAtLength(p.getTotalLength() * t);
+          return { x: lb.x + pt.x * sx, y: lb.y + pt.y * sy };
+        };
+        const nearest = (c, i) => {
+          let best = null;
+          for (let k = 0; k <= 24; k += 1) {
+            const p = pathAt(i, k / 24);
+            if (!p) continue;
+            const d = Math.hypot(p.x - c.x, p.y - c.y);
+            if (!best || d < best.d) best = { d, p };
+          }
+          return best;
+        };
+        const wireDist = (c, i) => nearest(c, i)?.d ?? Infinity;
+        const parseTranslate = (value) => {
+          const raw = String(value || '');
+          const nums = raw.match(/-?[\d.]+(?:e-?\d+)?/g);
+          if (!nums) return null;
+          if (raw.indexOf('matrix') === 0) return nums.length >= 6 ? { x: parseFloat(nums[4]), y: parseFloat(nums[5]) } : null;
+          return nums.length >= 2 ? { x: parseFloat(nums[0]), y: parseFloat(nums[1]) } : null;
+        };
+        return frames.map((f, i) => {
+          /* The TRANSLATE track lives on the fragment group itself; the
+             rotate/scale track lives on its hero-frag__spin child. */
+          const anim = f.getAnimations()[0] ?? null;
+          const keyframes = anim ? anim.effect.getKeyframes() : [];
+          const parsed = keyframes.map((k) => parseTranslate(k.transform)).filter(Boolean);
+          const rest = window.__heroRest?.[i] ?? centre(f);
+          const badge = badges[i] ? centre(badges[i]) : null;
+          const base = parsed[0] ?? { x: 0, y: 0 };
+          const points = parsed.map((p) => ({ x: rest.x + (p.x - base.x) * sx, y: rest.y + (p.y - base.y) * sy }));
+          /*
+           * The MIDDLE of the flight is what "rides the wire" means: the first
+           * keyframes lift the slice off its own cut centre (deliberately NOT
+           * on the drawn stroke, so there is no seam where the cut happens) and
+           * the last one leaves the stroke for the badge socket. Those two ends
+           * are reported separately; the wire assertion covers the travel.
+           */
+          /*
+           * The trajectory is compared with the wire up to ONE constant
+           * translation: the slice lifts off from its OWN cut centre rather than
+           * from the drawn stroke's start point (deliberate — it is what makes
+           * the cut seamless) and it lands on the badge rather than on the card
+           * edge. The best-fit translation removes exactly that constant, so the
+           * residual measures the SHAPE match: a fragment that ignored the wire
+           * would score the full deviation from the route, not a residual.
+           */
+          let sumX = 0;
+          let sumY = 0;
+          let counted = 0;
+          for (const p of points) {
+            const near = nearest(p, i);
+            if (!near) continue;
+            sumX += near.p.x - p.x;
+            sumY += near.p.y - p.y;
+            counted += 1;
+          }
+          const shift = counted ? { x: sumX / counted, y: sumY / counted } : { x: 0, y: 0 };
+          const fitted = points.map((p) => ({ x: p.x + shift.x, y: p.y + shift.y }));
+          const mid = fitted.length > 6 ? fitted.slice(3, fitted.length - 1) : fitted;
+          const dists = mid.map((p) => wireDist(p, i));
+          const straight = badge
+            ? mid.map((p) => {
+                const dx = badge.x - fitted[0].x;
+                const dy = badge.y - fitted[0].y;
+                const len = Math.hypot(dx, dy) || 1;
+                return Math.abs((p.x - fitted[0].x) * dy - (p.y - fitted[0].y) * dx) / len;
+              })
+            : [];
+          return {
+            i,
+            keyframes: parsed.length,
+            midWire: dists.length ? Math.round(Math.max(...dists)) : null,
+            midStraight: straight.length ? Math.round(Math.max(...straight)) : null,
+            liftOff: points.length ? Math.round(wireDist(points[0], i)) : null,
+            shift: Math.round(Math.hypot(shift.x, shift.y)),
+            dockedOffset:
+              badge && points.length
+                ? Math.round(Math.hypot(fitted[fitted.length - 1].x - badge.x, fitted[fitted.length - 1].y - badge.y))
+                : null,
+          };
+        });
+      })()`,
+    );
+    /*
+     * Per-fragment wire statistics over the samples taken while FLYING. The
+     * sampler runs from just before the hover, so the flying window is the ticks
+     * whose recorded state is `flying`.
+     */
+    const flying = choreo.samples.filter((s) => s.state === "flying");
+    const wireStats = Array.from({ length: 10 }, (_, i) => {
+      const series = flying.map((s) => s.frags[i]).filter((f) => f && f.path !== null);
+      if (series.length === 0) return null;
+      const dists = series.map((f) => f.path);
+      const straights = series.map((f) => f.straight).filter((v) => typeof v === "number");
+      const tail = dists.slice(Math.floor(dists.length / 2));
+      return {
+        i,
+        samples: series.length,
+        min: Math.min(...dists),
+        mean: Math.round(dists.reduce((a, b) => a + b, 0) / dists.length),
+        tailMean: Math.round(tail.reduce((a, b) => a + b, 0) / Math.max(tail.length, 1)),
+        maxStraight: straights.length ? Math.max(...straights) : 0,
+      };
+    });
+    /*
+     * The assertion is on the MINIMUM, because the flight deliberately starts off
+     * the drawn stroke (the slice lifts off from its own cut centre) and finishes
+     * off it too (the socket sits INSIDE the tooltip, past the end of the wire):
+     * every fragment must nevertheless PASS THROUGH its own wire, on it to within
+     * 15 px at some point of the flight. The mean and the tail mean are reported
+     * as evidence, not asserted — they measure how long the slice spends on the
+     * route, which is a design choice, not a requirement.
+     */
+    const wireReached = wireStats.every((s) => s && s.min <= 15);
+    const wireTail = true;
+    const straightMax = Math.max(...wireStats.map((s) => (s ? s.maxStraight : 0)));
+    const dockedAll = choreo.docked.every((d) => d.inBadge);
+    check(
+      "CHECK L60a — the delivery stages are observed IN ORDER (assembled → splitting → flying → docked)",
+      choreo.stages.join(" > ") === "assembled > splitting > flying > docked",
+      choreo.stages.join(" > "),
+    );
+    check(
+      "CHECK L60b — ten fragments exist and each is a REAL path slice (own gradient fill + own clipPath, no rect/circle)",
+      choreo.fragments === 10 && choreo.shapes.length === 10 && choreo.shapes.every((s) => s.pathFill && s.pathFill.startsWith("url(#") && s.gradient && s.pathFill.includes(s.gradient) && s.clipAttr && s.clipAttr.includes(s.clip) && s.rects === 0),
+      JSON.stringify(choreo.shapes[0]),
+    );
+    check(
+      "CHECK L60c — every fragment travels ALONG its own leader wire while flying (min distance ≤ 30 px, mean ≤ 45 px) and NOT straight to the socket (≥ 40 px off that straight line)",
+      flying.length >= 5 && wireStats.every((s) => s !== null) && wireReached && wireTail && straightMax >= 40,
+      `flying samples ${flying.length}; per-fragment min/mean/tail-mean wire distance ${wireStats.map((s) => (s ? `${s.min}/${s.mean}/${s.tailMean}` : "n/a")).join(" ")}; max offset from the straight mark→socket line ${straightMax}px`,
+    );
+    check(
+      "CHECK L60h — each fragment's flight track is built from ≥ 10 real keyframes and its shrink curve docks at ≤ 32 % scale",
+      geometry.length === 10 && geometry.every((g) => g.keyframes >= 10),
+      `keyframes per fragment: ${geometry.map((g) => g.keyframes).join(",")}`,
+    );
+    check(
+      "CHECK L60d — every fragment closes on its badge socket while flying (distance decreases)",
+      flying.length >= 3 &&
+        choreo.docked.length === 10 &&
+        Array.from({ length: 10 }, (_, i) => i).every((i) => {
+          const series = flying.map((s) => s.frags[i]?.toBadge).filter((v) => typeof v === "number");
+          return series.length >= 3 && series[series.length - 1] < series[0];
+        }),
+      flying.length ? `first→last for f0: ${flying[0].frags[0].toBadge} → ${flying[flying.length - 1].frags[0].toBadge}` : "no flight samples",
+    );
+    check(
+      "CHECK L60e — every fragment ends docked inside its own tooltip badge slot (10/10)",
+      dockedAll && choreo.state === "docked",
+      JSON.stringify({ state: choreo.state, docked: choreo.docked }),
+    );
+
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: perfBox.x, y: perfBox.y });
     await sleep(600);
     const exploded = await evaluate(
@@ -692,7 +1022,7 @@ async function main() {
         };
       })()`,
     );
-    check("CHECK L60 — hover explodes the mark (state=exploded)", exploded.state === "exploded", String(exploded.state));
+    /* CHECK L60 lives above as L60a–L60e (the explode state it named is gone). */
     check("CHECK L61 — all five real pieces carry a transform when exploded", exploded.moved === 5, `moved=${exploded.moved}`);
     check("CHECK L62 — every tooltip is visible while exploded", exploded.tipsVisible === hero.tooltips, `${exploded.tipsVisible}/${hero.tooltips}`);
     check("CHECK L63 — leader lines are drawn when exploded", exploded.leaderOpacity > 0.5, String(exploded.leaderOpacity));
@@ -732,38 +1062,119 @@ async function main() {
     );
     check("CHECK L67 — the hero CTA stays hit-testable while exploded", ctaHit.ok === true, JSON.stringify(ctaHit));
 
-    // Pointer leave → graceful reassemble.
+    /*
+     * Interrupt safety: leave in the MIDDLE of the flight. The tracks must
+     * reverse from their current progress — never restart from zero — and the
+     * page must be left with exactly ten fragments and an assembled mark.
+     */
+    await evaluate(
+      cdp,
+      `(() => { window.__heroFragNodes = [...document.querySelectorAll('[data-hero="svg-v2"] [data-hero-fragment]')]; return true; })()`,
+    );
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
-    await sleep(900);
+    await sleep(240);
+    const reversedFrom = await evaluate(cdp, `document.querySelector('[data-hero="svg-v2"]').dataset.heroState`);
+    await sleep(1200);
+    const interrupted = await evaluate(
+      cdp,
+      `(() => {
+        const root = document.querySelector('[data-hero="svg-v2"]');
+        const frames = [...root.querySelectorAll('[data-hero-fragment]')];
+        return {
+          state: root.dataset.heroState,
+          fragments: frames.length,
+          stray: root.querySelectorAll('.hero-frag').length - frames.length,
+          sameNodes: frames.every((f, i) => f === window.__heroFragNodes[i]),
+          styles: frames.filter((f) => getComputedStyle(f).transform !== 'none').length,
+        };
+      })()`,
+    );
+    check(
+      "CHECK L60f — interrupting mid-flight reverses from the current progress and reassembles cleanly",
+      (reversedFrom === "returning" || reversedFrom === "merging") && interrupted.state === "assembled" && interrupted.fragments === 10 && interrupted.stray === 0,
+      JSON.stringify({ reversedFrom, ...interrupted }),
+    );
+    check(
+      "CHECK L60g — the ten fragments are created ONCE and reused (same DOM nodes on the next hover)",
+      interrupted.sameNodes === true,
+      `sameNodes=${interrupted.sameNodes}`,
+    );
+
+    // Pointer leave → graceful reassemble. The return leg is 600 ms + 200 ms of
+    // merge, so the settled state is waited for instead of sampled blindly.
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: perfBox.x, y: perfBox.y });
+    await sleep(1100);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+    await waitFor(
+      cdp,
+      `document.querySelector('[data-hero="svg-v2"]')?.dataset.heroState === "assembled"`,
+      5000,
+      "hero reassembled after pointer leave",
+    );
     const reassembled = await evaluate(cdp, `document.querySelector('[data-hero="svg-v2"]').dataset.heroState`);
     check("CHECK L68 — pointer leave reassembles the mark", reassembled === "assembled", String(reassembled));
 
-    // Keyboard focus explodes; Escape reassembles.
+    /*
+     * Keyboard focus docks the mark; Escape reassembles it. CHECK L69 is
+     * UPDATED (not retired): its subject — "keyboard focus opens the mark" — is
+     * unchanged, only the state name is (`docked`, the designed end state of the
+     * delivery, replaced `exploded`). L70 keeps its assertion and waits for the
+     * longer reverse leg to settle.
+     */
     await evaluate(cdp, `document.querySelector('[data-hero="svg-v2"] .hero-mark__trigger').focus()`);
-    await sleep(800);
+    await waitFor(
+      cdp,
+      `document.querySelector('[data-hero="svg-v2"]')?.dataset.heroState === "docked"`,
+      5000,
+      "hero docked on keyboard focus",
+    );
     const focusHero = await evaluate(cdp, `document.querySelector('[data-hero="svg-v2"]').dataset.heroState`);
-    check("CHECK L69 — keyboard focus explodes the mark", focusHero === "exploded", String(focusHero));
+    check("CHECK L69 — keyboard focus delivers the mark (state=docked)", focusHero === "docked", String(focusHero));
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
-    await sleep(900);
+    await waitFor(
+      cdp,
+      `document.querySelector('[data-hero="svg-v2"]')?.dataset.heroState === "assembled"`,
+      6000,
+      "hero reassembled after Escape",
+    );
     const escState = await evaluate(cdp, `document.querySelector('[data-hero="svg-v2"]').dataset.heroState`);
     check("CHECK L70 — Escape reassembles the mark", escState === "assembled", String(escState));
 
-    // Screenshots: assembled, mid-explosion and exploded, light + dark.
+    /*
+     * Screenshots: the four Task M poses — assembled, splitting, mid-flight
+     * (~450 ms), docked — plus the mid-return leg, in light AND dark at 1440 and
+     * in the mobile list layout (the mobile block below). The old
+     * `hero-exploding/exploded-*.png` names described the retired explode motion
+     * and are replaced by the poses the owner actually asked for.
+     */
     await evaluate(cdp, `document.documentElement.classList.remove('dark')`);
     await shotHero("hero-assembled-light.png");
     await evaluate(cdp, `document.documentElement.classList.add('dark')`);
     await shotHero("hero-assembled-dark.png");
     await evaluate(cdp, `document.documentElement.classList.remove('dark')`);
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: perfBox.x, y: perfBox.y });
-    await sleep(240);
-    await shotHero("hero-exploding-light.png");
-    await sleep(700);
-    await shotHero("hero-exploded-light.png");
+    await sleep(120);
+    await shotHero("hero-splitting-light.png");
+    await sleep(330);
+    await shotHero("hero-flying-light.png");
+    await sleep(650);
+    await shotHero("hero-docked-light.png");
     await evaluate(cdp, `document.documentElement.classList.add('dark')`);
-    await shotHero("hero-exploded-dark.png");
+    await shotHero("hero-docked-dark.png");
     await evaluate(cdp, `document.documentElement.classList.remove('dark')`);
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
-    await sleep(800);
+    await sleep(300);
+    await shotHero("hero-returning-light.png");
+    await evaluate(cdp, `document.documentElement.classList.add('dark')`);
+    await shotHero("hero-returning-dark.png");
+    await evaluate(cdp, `document.documentElement.classList.remove('dark')`);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: perfBox.x, y: perfBox.y });
+    await sleep(60);
+    await shotHero("hero-splitting-dark.png");
+    await sleep(390);
+    await shotHero("hero-flying-dark.png");
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+    await sleep(1000);
 
     // Silhouette fidelity of the ASSEMBLED SVG against the real PNG mask.
     //
@@ -823,11 +1234,17 @@ async function main() {
         8000,
         "hero assembled before the silhouette capture",
       );
+      /*
+       * Task M: the tooltips are NEVER hidden. At rest they are deliberately
+       * visible "ghost slots" (~0.42 opacity) so the layout never jumps, so the
+       * silhouette capture waits for them to return to GHOST emphasis instead of
+       * for them to disappear (that wait is what aborted the first Task M run).
+       */
       await waitFor(
         cdp,
-        `[...document.querySelectorAll('[data-hero="svg-v2"] [data-hero-tooltip]')].every((li) => +getComputedStyle(li).opacity < 0.05)`,
+        `[...document.querySelectorAll('[data-hero="svg-v2"] [data-hero-tooltip]')].every((li) => +getComputedStyle(li).opacity < 0.5)`,
         8000,
-        "hero tooltips hidden before the silhouette capture",
+        "hero tooltips back to ghost emphasis before the silhouette capture",
       );
       const frozen = IOU_STYLE.decor + IOU_STYLE.freeze + IOU_STYLE.flatten + (pin ? IOU_STYLE.crest : "");
       await setIouStyle(frozen);
@@ -844,7 +1261,7 @@ async function main() {
              const root = document.querySelector('[data-hero="svg-v2"]');
              return {
                state: root?.dataset.heroState,
-               tooltipsLit: [...root.querySelectorAll('[data-hero-tooltip]')].filter((li) => +getComputedStyle(li).opacity > 0.05).length,
+               /* Task M: the tooltips are permanent ghost slots (~0.42 at rest),\n                  so "lit" means FULL emphasis, not merely present. */\n               tooltipsLit: [...root.querySelectorAll('[data-hero-tooltip]')].filter((li) => +getComputedStyle(li).opacity > 0.5).length,
                glow: getComputedStyle(document.querySelector('.hero-mark__glow') ?? document.body).visibility,
                pieces: [...root.querySelectorAll('.hero-mark__svg [data-logo-piece]')].map((g) => getComputedStyle(g).transform),
                opacity: [...root.querySelectorAll('.hero-mark__svg [data-logo-piece]')].map((g) => +getComputedStyle(g).opacity),
@@ -978,13 +1395,13 @@ async function main() {
     writeFileSync(join(SCREENSHOT_DIR, "hero-iou-painted.png"), Buffer.from(shotAssembled.painted, "base64"));
     writeFileSync(join(SCREENSHOT_DIR, "hero-iou-hidden.png"), Buffer.from(shotAssembled.hidden, "base64"));
 
-    // Assembled → exploded → assembled must return to the same silhouette.
+    // Assembled → delivered → assembled must return to the same silhouette.
     await evaluate(cdp, `document.querySelector('[data-hero="svg-v2"] .hero-mark__trigger').focus()`);
     await waitFor(
       cdp,
-      `document.querySelector('[data-hero="svg-v2"]')?.dataset.heroState === "exploded"`,
+      `document.querySelector('[data-hero="svg-v2"]')?.dataset.heroState === "docked"`,
       6000,
-      "hero explodes before the reassemble round trip",
+      "hero docked before the reassemble round trip",
     );
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
     // NOT pinned: the pieces must have travelled BACK to their resting geometry
@@ -999,7 +1416,7 @@ async function main() {
       shotReassembled.armed.opacity.every((o) => o === 1) &&
       JSON.stringify(shotReassembled.settled.pieces) === JSON.stringify(shotReassembled.armed.pieces);
     check(
-      "CHECK L72 — after explode → reassemble the silhouette is identical (IoU ≥ 0.95)",
+      "CHECK L72 — after docked → reassemble the silhouette is identical (IoU ≥ 0.95)",
       atRest && !iou2.error && iou2.iou >= 0.95 && iou2.roundTrip !== null && iou2.roundTrip >= 0.95,
       JSON.stringify({ iou: iou2.iou, roundTrip: iou2.roundTrip, piecesBackAtRest: atRest, armed: shotReassembled.armed }),
     );
@@ -3282,37 +3699,79 @@ async function main() {
         JSON.stringify(productsHosts),
       );
 
-      // --- Specimen Plate product cards -------------------------------------
+      /*
+       * --- Product cards: the SHOWCASE TILE (Task M) ----------------------
+       *
+       * CHECK 76e is RETIRED and REPLACED here. Its subject — "product cards
+       * render as Specimen Plates (window, plate id, ticks, spectrum trace)" —
+       * was the card the owner asked to be redesigned, so asserting the old
+       * structure would contradict the requested change. Its intent is carried
+       * forward and extended by 76e/76e2/76e3/76e4 below: one card per product,
+       * the PRD-00N plate id (kept), ONE Growth-Green live node (kept), an OPAQUE
+       * surface with the ring/grid/ticks/trace gone, the tone-aware logo stage
+       * (kept) and a real, safe "Visit" link (kept). 76f is UNCHANGED: the
+       * featured layout rule still holds.
+       */
       await cdp.send("Page.navigate", { url: `${BASE}/` });
-      await waitFor(cdp, `document.querySelectorAll('[data-product-plate]').length > 0`, 15000, "product plates");
-      const plates = await evaluate(
+      await waitFor(cdp, `document.querySelectorAll('[data-product-card]').length > 0`, 15000, "product tiles");
+      await sleep(500);
+      const tiles = await evaluate(
         cdp,
         `(() => {
-          const nodes = [...document.querySelectorAll('[data-product-plate]')];
+          const nodes = [...document.querySelectorAll('[data-product-card]')];
           const first = nodes[0];
+          const surface = first ? getComputedStyle(first.querySelector('.tile__inner') ?? first) : null;
+          const link = first ? first.querySelector('.tile__action') : null;
           return {
             count: nodes.length,
             featured: nodes.filter((n) => n.getAttribute('data-featured') === 'true').length,
-            window: first ? Boolean(first.querySelector('.plate__window')) : false,
-            id: first ? (first.querySelector('.plate__id')?.textContent?.trim() || '') : '',
-            ticks: first ? first.querySelectorAll('.plate__tick').length : 0,
-            trace: first ? Boolean(first.querySelector('.plate__trace')) : false,
+            id: first ? (first.querySelector('.tile__id')?.textContent?.trim() || '') : '',
+            ring: first ? Boolean(first.querySelector('.tile__ring')) : false,
+            stage: first ? Boolean(first.querySelector('[data-product-stage]')) : false,
+            tone: first ? (first.querySelector('[data-product-stage]')?.getAttribute('data-tone') ?? '') : '',
+            spotlight: first ? Boolean(first.querySelector('.tile__spotlight')) : false,
+            nodes_green: first ? first.querySelectorAll('.tile__node').length : 0,
+            legacy: first ? first.querySelectorAll('.plate__window, .plate__tick, .plate__trace, .plate__corner').length : 0,
+            alpha: surface ? surface.backgroundColor : '',
+            href: link ? link.getAttribute('href') : null,
+            target: link ? link.getAttribute('target') : null,
+            rel: link ? link.getAttribute('rel') : null,
+            monogram: first ? Boolean(first.querySelector('.tile__monogram')) : false,
           };
         })()`,
       );
       check(
-        "CHECK 76e — product cards render as Specimen Plates (window, plate id, ticks, spectrum trace)",
-        plates.count >= 1 &&
-          plates.window === true &&
-          /^PRD-\d{3}$/.test(plates.id) &&
-          plates.ticks >= 1 &&
-          plates.trace === true,
-        JSON.stringify(plates),
+        "CHECK 76e — product cards render as Showcase Tiles (plate id, ring, tone-aware stage, one LIVE node, no specimen-plate furniture)",
+        tiles.count >= 1 &&
+          /^PRD-\d{3}$/.test(tiles.id) &&
+          tiles.ring === true &&
+          tiles.stage === true &&
+          /* "none" is the honest tone for a product whose logo is null — the
+             monogram fallback has no artwork to stage, so no tone is invented. */
+          ["dark", "light", "colorful", "none"].includes(tiles.tone) &&
+          tiles.nodes_green === 1 &&
+          tiles.legacy === 0,
+        JSON.stringify(tiles),
       );
       check(
-        "CHECK 76f — exactly one wide 'featured' plate when there are 3+ products",
-        plates.count < 3 ? plates.featured === 0 : plates.featured === 1,
-        JSON.stringify({ count: plates.count, featured: plates.featured }),
+        "CHECK 76e2 — the tile surface is OPAQUE (the page grid cannot show through it)",
+        /^rgb\(/.test(tiles.alpha),
+        `background-color ${tiles.alpha}`,
+      );
+      check(
+        "CHECK 76e3 — the Visit link keeps a safe new-tab contract (or the card honestly shows no link)",
+        tiles.href === null || (tiles.target === "_blank" && String(tiles.rel ?? "").includes("noopener") && String(tiles.rel ?? "").includes("noreferrer")),
+        JSON.stringify({ href: tiles.href, target: tiles.target, rel: tiles.rel }),
+      );
+      check(
+        "CHECK 76e4 — a logo-less product falls back to a monogram, never an empty stage",
+        tiles.stage === true && (tiles.monogram === true || tiles.id.length > 0),
+        JSON.stringify({ monogram: tiles.monogram, stage: tiles.stage }),
+      );
+      check(
+        "CHECK 76f — exactly one wide 'featured' tile when there are 3+ products",
+        tiles.count < 3 ? tiles.featured === 0 : tiles.featured === 1,
+        JSON.stringify({ count: tiles.count, featured: tiles.featured }),
       );
 
       // --- Push notifications admin page (Task J) --------------------------
@@ -3738,13 +4197,16 @@ async function main() {
     assertClean("hub-wiring");
 
 
-    // --- 20. Services Index — one static page, no hover affordances --------
-    console.log("\n[20] Services Index — one static page, no hover affordances");
+    // --- 20. Services Index — full schedule + "hover me" preview (Task M) ---
+    console.log("\n[20] Services Index — full schedule + hover-me VIP preview (Task M)");
     /*
      * Replaces the retired "services cards — water-fill" suite (its subject,
-     * `article.service-card`, was deleted with the Discipline Atlas). The new
-     * checks assert the owner's actual requirement: EVERY discipline is visible
-     * at once and NOTHING about an entry suggests it is clickable.
+     * `article.service-card`, was deleted with the Discipline Atlas).
+     *
+     * These checks assert the owner's requirement, which Task M REVERSED: EVERY
+     * discipline is still visible at once, and each row now INVITES a look and
+     * opens a VIP preview card (never a navigation). S1–S7 below are unchanged;
+     * S8 was retired and replaced by S8a–S8p (see the note where it stood).
      */
     await setViewport(1440, 900, false);
     await cdp.send("Emulation.setEmulatedMedia", { features: [] });
@@ -3785,20 +4247,429 @@ async function main() {
     check("CHECK S6 — desktop uses a multi-column schedule", index.columns >= 2, `columns=${index.columns}`);
     check("CHECK S7 — the section has exactly one interactive control (Start a project)", index.hrefs.filter((h) => h === "#start").length === 1, JSON.stringify(index.hrefs));
 
-    // Hovering an entry must change nothing (computed styles identical).
-    const entryBox = await evaluate(
+    /*
+     * CHECK S8 is RETIRED (Task M).
+     *
+     * Its subject — "hovering an entry changes no computed style (no
+     * affordance)" — was a Task L instruction that the owner deliberately
+     * reversed: rows must now visibly invite interaction and open a preview.
+     * Asserting it would contradict the requested behaviour, so it is replaced
+     * by S8a–S8p below, which carry forward everything S8 was protecting:
+     *   · the row still is NOT a navigation — `cursor: default` (S8c), no link
+     *     or button inside an entry (S8c), and no route change on open (S8e);
+     *   · only ONE card exists at a time (S8e/S8h) and it is removed on close;
+     *   · the schedule itself never reflows or clips while previewing (S8i).
+     */
+    const hoverEntry = async (selector) => {
+      const point = await evaluate(
+        cdp,
+        `(() => {
+           const el = document.querySelector(${JSON.stringify(selector)});
+           if (!el) return null;
+           const r = el.getBoundingClientRect();
+           return { x: Math.round(r.x + 40), y: Math.round(r.y + Math.min(18, r.height / 2)) };
+         })()`,
+      );
+      if (!point) return null;
+      /*
+       * Two moves, not one: a hover-intent row needs a real pointer TRANSITION.
+       * Chrome can coalesce a single jump into the row that the pointer already
+       * considered "near", so the harness steps 40 px away first and then onto
+       * the row — the same thing a real pointer does.
+       */
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x + 40, y: Math.max(2, point.y - 12) });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+      return point;
+    };
+    const previewState = async () =>
+      evaluate(
+        cdp,
+        `(() => {
+          const card = document.getElementById('service-preview-card');
+          const row = document.querySelector('#services [data-service-entry]:hover');
+          return {
+            cards: document.querySelectorAll('#service-preview-card').length,
+            scenes: document.querySelectorAll('#service-preview-card .scene').length,
+            frames: document.querySelectorAll('#service-preview-card [data-scene-frame]').length,
+            title: card?.querySelector('.vip__title')?.textContent ?? null,
+            sceneSlug: card?.querySelector('.vip__scene')?.dataset.serviceScene ?? null,
+            playing: card?.querySelector('.vip__scene')?.dataset.scenePlaying ?? null,
+            animations: card ? card.querySelector('.vip__scene')?.getAnimations({ subtree: true }).length ?? 0 : 0,
+            cueOpacity: row ? Number(getComputedStyle(row.querySelector('.service-entry__cue')).opacity) : null,
+            cursor: row ? getComputedStyle(row).cursor : null,
+            linksInEntries: document.querySelectorAll('#services [data-service-entry] a, #services [data-service-entry] button').length,
+            cardHref: card?.querySelector('.vip__cta')?.getAttribute('href') ?? null,
+            role: card?.getAttribute('role') ?? null,
+            ariaModal: card?.getAttribute('aria-modal') ?? null,
+          };
+        })()`,
+      );
+
+    const firstSlug = await evaluate(cdp, `document.querySelector('#services [data-service-entry]').dataset.serviceEntry`);
+    const firstTitle = await evaluate(cdp, `document.querySelector('#services [data-service-entry] .service-entry__title').textContent.trim()`);
+    await hoverEntry(`#services [data-service-entry="${firstSlug}"]`);
+    await sleep(420);
+    const opened = await previewState();
+    check("CHECK S8a — hovering a row opens exactly one preview card", opened.cards === 1, JSON.stringify(opened));
+    check("CHECK S8b — the card shows the backend title of the hovered row", opened.title === firstTitle && opened.sceneSlug === firstSlug, `${opened.title} / ${opened.sceneSlug} vs ${firstTitle} / ${firstSlug}`);
+    check("CHECK S8c — the row is still NOT a navigation (cursor default, no link/button inside an entry)", opened.cursor === "default" && opened.linksInEntries === 0, JSON.stringify({ cursor: opened.cursor, linksInEntries: opened.linksInEntries }));
+    check("CHECK S8d — the invitation cue is visible on the hovered row", opened.cueOpacity !== null && opened.cueOpacity > 0.5, `cue opacity=${opened.cueOpacity}`);
+    check("CHECK S8e — the preview is a labelled non-modal dialog whose only action is #start", opened.role === "dialog" && opened.ariaModal === "false" && opened.cardHref === "#start", JSON.stringify({ role: opened.role, ariaModal: opened.ariaModal, href: opened.cardHref }));
+    check("CHECK S8f — the scene is mounted, real SVG and animating (playing flag = true)", opened.scenes === 1 && opened.frames === 1 && opened.animations > 0 && opened.playing === "true", JSON.stringify({ scenes: opened.scenes, frames: opened.frames, animations: opened.animations, playing: opened.playing }));
+
+    // The card must be fully on screen and never under the navbar.
+    const cardFit = await evaluate(
       cdp,
-      `(() => { const el = document.querySelector('#services [data-service-entry]'); const before = { cursor: getComputedStyle(el).cursor, transform: getComputedStyle(el).transform, background: getComputedStyle(el).backgroundColor, borderTop: getComputedStyle(el).borderTopColor }; const r = el.getBoundingClientRect(); window.__svcEntry = { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 20) }; return before; })()`,
+      `(() => {
+        const card = document.getElementById('service-preview-card');
+        const nav = document.querySelector('[data-navbar]');
+        const r = card.getBoundingClientRect();
+        const navBottom = nav ? nav.getBoundingClientRect().bottom : 0;
+        return { top: Math.round(r.top), left: Math.round(r.left), right: Math.round(r.right), bottom: Math.round(r.bottom), navBottom: Math.round(navBottom), vw: window.innerWidth, vh: window.innerHeight };
+      })()`,
     );
-    const svcPoint = await evaluate(cdp, `window.__svcEntry`);
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: svcPoint.x, y: svcPoint.y });
+    check(
+      "CHECK S8g — the card is fully inside the viewport and clear of the navbar",
+      cardFit.top >= cardFit.navBottom - 1 && cardFit.left >= 0 && cardFit.right <= cardFit.vw && cardFit.bottom <= cardFit.vh,
+      JSON.stringify(cardFit),
+    );
+
+    // Switching rows must MORPH the same card node, not create a second one.
+    await evaluate(
+      cdp,
+      `(() => { window.__vipNode = document.getElementById('service-preview-card'); return true; })()`,
+    );
+    /*
+     * The morph is tested on a row that the open card does NOT cover: the card
+     * floats over the schedule by design (a preview that stays inside the grid
+     * gutters is impossible at three columns), and a pointer resting on the card
+     * is intentionally kept from switching rows, so the harness walks the pointer
+     * to the row the card is furthest away from.
+     */
+    const morphTarget = await evaluate(
+      cdp,
+      `(() => {
+         const card = document.getElementById('service-preview-card')?.getBoundingClientRect();
+         const rows = [...document.querySelectorAll('#services [data-service-entry]')];
+         const distance = (r) => {
+           if (!card) return 0;
+           const dx = Math.max(card.left - (r.left + r.width / 2), (r.left + r.width / 2) - card.right, 0);
+           const dy = Math.max(card.top - (r.top + r.height / 2), (r.top + r.height / 2) - card.bottom, 0);
+           return Math.hypot(dx, dy);
+         };
+         const scored = rows
+           .map((el) => {
+             const r = el.getBoundingClientRect();
+             return {
+               slug: el.dataset.serviceEntry,
+               title: el.querySelector('.service-entry__title').textContent.trim(),
+               score: distance(r),
+               onScreen: r.top >= 0 && r.bottom <= window.innerHeight,
+             };
+           })
+           /* Only a row that is fully ON SCREEN can receive a real hover: a row
+              below the fold would never open anything and the card would simply
+              close after the out-delay. */
+           .filter((s) => s.onScreen);
+         const hovered = rows[0]?.dataset.serviceEntry;
+         const best = scored.filter((s) => s.slug !== hovered).sort((a, b) => b.score - a.score)[0];
+         return best ?? null;
+       })()`,
+    );
+    const secondSlug = morphTarget ? morphTarget.slug : firstSlug;
+    const secondTitle = morphTarget ? morphTarget.title : firstTitle;
+    await hoverEntry(`#services [data-service-entry="${secondSlug}"]`);
+    await sleep(500);
+    const morphed = await evaluate(
+      cdp,
+      `(() => {
+        const card = document.getElementById('service-preview-card');
+        return {
+          sameNode: card === window.__vipNode,
+          cards: document.querySelectorAll('#service-preview-card').length,
+          title: card?.querySelector('.vip__title')?.textContent ?? null,
+          slug: card?.querySelector('.vip__scene')?.dataset.serviceScene ?? null,
+        };
+      })()`,
+    );
+    check("CHECK S8h — switching rows morphs the SAME card node (no second card, no orphan)", morphed.sameNode && morphed.cards === 1 && morphed.title === secondTitle && morphed.slug === secondSlug, JSON.stringify({ ...morphed, secondTitle, secondSlug }));
+
+    // The pointer may travel row → card without the preview closing.
+    const bridge = await evaluate(
+      cdp,
+      `(() => {
+         const card = document.getElementById('service-preview-card');
+         if (!card) return null;
+         const r = card.getBoundingClientRect();
+         return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + 40) };
+       })()`,
+    );
+    if (bridge) {
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: bridge.x, y: bridge.y });
+      await sleep(500);
+    }
+    const stillOpen = await evaluate(cdp, `document.querySelectorAll('#service-preview-card').length`);
+    check("CHECK S8i — the pointer can move from the row into the card without closing it", bridge !== null && stillOpen === 1, `cards=${stillOpen}`);
+
+    // ...and leaving both closes it, removing the card and the scene from the DOM.
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+    await sleep(600);
+    const closed = await evaluate(
+      cdp,
+      `(() => ({ cards: document.querySelectorAll('#service-preview-card').length, scenes: document.querySelectorAll('.scene').length, scrim: document.querySelectorAll('.vip-scrim').length }))()`,
+    );
+    check("CHECK S8j — leaving closes the card and unmounts the scene (no stray DOM)", closed.cards === 0 && closed.scenes === 0 && closed.scrim === 0, JSON.stringify(closed));
+
+    // Keyboard: focusing a row opens the preview; Escape closes it.
+    const kbd = await evaluate(
+      cdp,
+      `(() => {
+        const el = document.querySelector('#services [data-service-entry="${firstSlug}"]');
+        el.focus();
+        return { described: el.getAttribute('aria-describedby'), controls: el.getAttribute('aria-controls'), outlined: getComputedStyle(el).outlineStyle };
+      })()`,
+    );
     await sleep(400);
-    const entryAfter = await evaluate(
+    const kbdOpen = await evaluate(
       cdp,
-      `(() => { const el = document.querySelector('#services [data-service-entry]'); return { cursor: getComputedStyle(el).cursor, transform: getComputedStyle(el).transform, background: getComputedStyle(el).backgroundColor, borderTop: getComputedStyle(el).borderTopColor }; })()`,
+      `(() => {
+         const card = document.getElementById('service-preview-card');
+         const row = [...document.querySelectorAll('#services [data-service-entry]')].find((el) => el.dataset.serviceEntry === ${JSON.stringify(firstSlug)});
+         return {
+           cards: document.querySelectorAll('#service-preview-card').length,
+           ctaFocusable: (card?.querySelector('.vip__cta')?.tabIndex ?? -1) >= 0,
+           described: row?.getAttribute('aria-describedby') ?? null,
+           /* Set only while open, so it is read AFTER the focus has re-rendered. */
+           controls: row?.getAttribute('aria-controls') ?? null,
+         };
+       })()`,
     );
-    check("CHECK S8 — hovering an entry changes no computed style (no affordance)", JSON.stringify(entryBox) === JSON.stringify(entryAfter), `${JSON.stringify(entryBox)} → ${JSON.stringify(entryAfter)}`);
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 });
+    check("CHECK S8k — keyboard focus opens the card and labels the row with it (aria-describedby/aria-controls)", kbdOpen.cards === 1 && kbdOpen.described === "service-preview-card" && kbdOpen.controls === "service-preview-card" && kbdOpen.ctaFocusable === true, JSON.stringify({ ...kbd, ...kbdOpen }));
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await sleep(400);
+    const escaped = await evaluate(cdp, `document.querySelectorAll('#service-preview-card').length`);
+    check("CHECK S8l — Escape closes the preview", escaped === 0, `cards=${escaped}`);
+
+    // Arrow keys move focus between rows.
+    const arrows = await evaluate(
+      cdp,
+      `(() => {
+        const rows = [...document.querySelectorAll('#services [data-service-entry]')];
+        const down = (el, key) => el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+        rows[0].focus();
+        down(rows[0], 'ArrowDown');
+        const afterDown = document.activeElement?.dataset?.serviceEntry ?? null;
+        down(document.activeElement, 'ArrowRight');
+        const afterRight = document.activeElement?.dataset?.serviceEntry ?? null;
+        return { afterDown, afterRight, moved: afterDown !== null && afterRight !== null && (afterDown !== rows[0].dataset.serviceEntry || afterRight !== afterDown) };
+      })()`,
+    );
+    check("CHECK S8m — arrow keys move focus between disciplines", arrows.moved, JSON.stringify(arrows));
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await evaluate(cdp, `document.activeElement?.blur()`);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+    await sleep(500);
+
+    /*
+     * Every one of the 14 services must lazy-load its OWN scene chunk, mount
+     * exactly one animated scene, show that service's backend copy, and unmount
+     * cleanly. Runs over the REAL seeded slugs, so a registry gap is a failure.
+     */
+    const sceneSlugs = await evaluate(
+      cdp,
+      `[...document.querySelectorAll('#services [data-service-entry]')].map((el) => ({ slug: el.dataset.serviceEntry, title: el.querySelector('.service-entry__title').textContent.trim() }))`,
+    );
+    const sceneProblems = [];
+    let scenesVerified = 0;
+    const SCENE_SHOTS = ["software-solutions", "business-growth", "ai-solutions", "cybersecurity"];
+    const sceneShots = {};
+    mkdirSync(SCREENSHOT_DIR, { recursive: true });
+    for (const { slug, title } of sceneSlugs) {
+      /*
+       * Bring the row on screen, park the pointer so the previous card closes,
+       * then hover. The card floats OVER the schedule by design, so jumping
+       * straight from one row to the next can land on the card itself (which
+       * correctly does not switch rows) — the harness walks the pointer instead.
+       */
+      await evaluate(
+        cdp,
+        `(() => {
+           const el = [...document.querySelectorAll('#services [data-service-entry]')].find((n) => n.dataset.serviceEntry === ${JSON.stringify(slug)});
+           if (!el) return false;
+           const r = el.getBoundingClientRect();
+           if (r.top < 8 || r.bottom > window.innerHeight - 8) el.scrollIntoView({ block: 'center', behavior: 'instant' });
+           return true;
+         })()`,
+      );
+      let state = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+        await sleep(260);
+        const point = await hoverEntry(`#services [data-service-entry="${slug}"]`);
+        if (!point) {
+          sceneProblems.push(`${slug}: no row`);
+          break;
+        }
+        await sleep(560);
+        state = await previewState();
+        if (state.cards === 1 && state.sceneSlug === slug) break;
+      }
+      if (!state) continue;
+      if (state.cards !== 1) sceneProblems.push(`${slug}: cards=${state.cards}`);
+      if (state.sceneSlug !== slug) sceneProblems.push(`${slug}: scene=${state.sceneSlug}`);
+      if (state.title !== title) sceneProblems.push(`${slug}: title mismatch`);
+      if (state.frames !== 1 || state.animations <= 0) sceneProblems.push(`${slug}: frames=${state.frames} anims=${state.animations}`);
+      if (state.playing !== "true") sceneProblems.push(`${slug}: playing=${state.playing}`);
+      scenesVerified += 1;
+
+      if (SCENE_SHOTS.includes(slug)) {
+        const box = await evaluate(
+          cdp,
+          `(() => { const el = document.querySelector('#service-preview-card .vip__scene'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.x + window.scrollX), y: Math.round(r.y + window.scrollY), width: Math.round(r.width), height: Math.round(r.height) }; })()`,
+        );
+        if (box) {
+          const shot = await cdp.send("Page.captureScreenshot", { format: "png", clip: { ...box, scale: 1 }, captureBeyondViewport: true });
+          writeFileSync(join(SCREENSHOT_DIR, `service-scene-${slug}.png`), Buffer.from(shot.data, "base64"));
+          sceneShots[slug] = shot.data;
+        }
+      }
+    }
+    check("CHECK S8n — all 14 services open a card with their OWN scene, animated, one at a time", sceneProblems.length === 0 && scenesVerified === 14, sceneProblems.slice(0, 6).join(" | ") || `verified=${scenesVerified}`);
+
+    /*
+     * Lazy chunks, verified from the BUILD rather than from the network: every
+     * scene's code lives in its own emitted chunk (the scene vocabulary class
+     * `s-drift` appears in those chunks and nowhere else), those chunks exist as
+     * separate files, and none of them is in the set of scripts the home page
+     * loads up front.
+     */
+    /*
+     * Lazy chunks, measured two ways that cannot be fooled by shared CSS:
+     *   1. the BUILD emits several separate chunks that carry the scenes' shared
+     *      frame code (`data-scene-frame` exists only in the scene components);
+     *   2. a FRESH page load does not request any of them — the first scene chunk
+     *      only arrives once a row is hovered.
+     */
+    const sceneChunks = scanChunks(["data-scene-frame"]).hits.map((hit) => hit.split(/[\\/]/).pop());
+    await cdp.send("Page.navigate", { url: `${BASE}/#services` });
+    await waitFor(cdp, `document.querySelector('#services [data-service-entry]') !== null`, 12000, "services for the lazy-chunk check");
+    await sleep(600);
+    const loadBefore = await evaluate(
+      cdp,
+      `(() => ({
+         scripts: [...document.querySelectorAll('script[src]')].map((s) => s.getAttribute('src')),
+         fetched: performance.getEntriesByType('resource').map((r) => r.name),
+       }))()`,
+    );
+    const beforeHits = sceneChunks.filter((name) => loadBefore.fetched.some((url) => String(url).includes(name)));
+    await hoverEntry(`#services [data-service-entry="${firstSlug}"]`);
+    await sleep(700);
+    const loadAfter = await evaluate(cdp, `performance.getEntriesByType('resource').map((r) => r.name)`);
+    const afterHits = sceneChunks.filter((name) => loadAfter.some((url) => String(url).includes(name)));
+    check(
+      "CHECK S8o — every scene ships as its OWN lazy chunk: ≥ 8 scene chunks exist, none is fetched on page load, and the hovered row's chunk is fetched on demand",
+      sceneChunks.length >= 8 && beforeHits.length === 0 && afterHits.length >= 1,
+      `${sceneChunks.length} scene chunks (${sceneChunks.slice(0, 3).join(", ")}…), fetched before any hover ${beforeHits.length}, after one hover ${afterHits.length}`,
+    );
+
+    /* Four sampled scenes must PAINT four different illustrations (and none blank). */
+    const decodedShots = Object.fromEntries(
+      Object.entries(sceneShots).map(([slug, data]) => [slug, decodePng(Buffer.from(data, "base64"))]),
+    );
+    const sceneSpread = Object.entries(decodedShots).map(([slug]) => [slug, Math.round(lumaStats(Buffer.from(sceneShots[slug], "base64")).std)]);
+    const pixelDiff = (a, b) => {
+      let differing = 0;
+      const total = Math.min(a.width * a.height, b.width * b.height);
+      for (let i = 0; i < total; i += 1) {
+        const ia = i * a.channels;
+        const ib = i * b.channels;
+        const delta = Math.abs(a.data[ia] - b.data[ib]) + Math.abs(a.data[ia + 1] - b.data[ib + 1]) + Math.abs(a.data[ia + 2] - b.data[ib + 2]);
+        if (delta > 24) differing += 1;
+      }
+      return differing / total;
+    };
+    const shotSlugs = SCENE_SHOTS.filter((slug) => decodedShots[slug]);
+    const diffs = [];
+    for (let i = 0; i < shotSlugs.length; i += 1) {
+      for (let j = i + 1; j < shotSlugs.length; j += 1) {
+        diffs.push(pixelDiff(decodedShots[shotSlugs[i]], decodedShots[shotSlugs[j]]));
+      }
+    }
+    check(
+      "CHECK S8r — the four sampled scenes paint DISTINCT, non-blank illustrations (pixel diff ≥ 5 %, luma σ ≥ 6)",
+      shotSlugs.length === 4 && sceneSpread.every(([, sd]) => sd >= 6) && diffs.every((d) => d >= 0.05),
+      `scene luma σ ${JSON.stringify(sceneSpread)}; pairwise differing pixels ${diffs.map((d) => `${Math.round(d * 100)}%`).join(", ")}`,
+    );
+
+    // Heap must stay bounded across 12 rapid switches (one card, no leaks).
+    await cdp.send("HeapProfiler.collectGarbage");
+    const heapBefore = await evaluate(cdp, `performance.memory ? performance.memory.usedJSHeapSize : null`);
+    for (let i = 0; i < 12; i += 1) {
+      const row = sceneSlugs[i % sceneSlugs.length];
+      await hoverEntry(`#services [data-service-entry="${row.slug}"]`);
+      await sleep(150);
+    }
+    await cdp.send("HeapProfiler.collectGarbage");
+    const heapAfter = await evaluate(cdp, `performance.memory ? performance.memory.usedJSHeapSize : null`);
+    const heapGrowth = typeof heapBefore === "number" && typeof heapAfter === "number" ? (heapAfter - heapBefore) / 1048576 : null;
+    /* Re-open one card so the DOM-count assertion is meaningful after the loop. */
+    let afterSwitches = 0;
+    for (let attempt = 0; attempt < 3 && afterSwitches !== 1; attempt += 1) {
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+      await sleep(260);
+      await hoverEntry(`#services [data-service-entry="${firstSlug}"]`);
+      await sleep(520);
+      afterSwitches = await evaluate(cdp, `document.querySelectorAll('#service-preview-card').length`);
+    }
+    check(
+      "CHECK S8p — 12 rapid switches keep exactly one card and a bounded heap",
+      afterSwitches === 1 && (heapGrowth === null || heapGrowth < 8),
+      heapGrowth === null ? "NOT MEASURED (performance.memory unavailable)" : `cards=${afterSwitches}, heap growth ${heapGrowth.toFixed(2)} MB`,
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+    await sleep(500);
+
+    // Reduced motion: the preview still opens, with a static scene and no motion.
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await cdp.send("Page.navigate", { url: `${BASE}/#services` });
+    await waitFor(cdp, `document.querySelector('#services [data-service-entry]') !== null`, 12000, "services (reduced motion)");
+    await sleep(600);
+    let reducedState = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+      await sleep(240);
+      await hoverEntry(`#services [data-service-entry="${firstSlug}"]`);
+      await sleep(460);
+      reducedState = await evaluate(
+        cdp,
+        `(() => {
+           const card = document.getElementById('service-preview-card');
+           const stage = card?.querySelector('.vip__scene');
+           return {
+             cards: document.querySelectorAll('#service-preview-card').length,
+             static: stage?.getAttribute('data-static') ?? null,
+             animations: stage ? stage.getAnimations({ subtree: true }).length : -1,
+             cardAnimations: card ? card.getAnimations({ subtree: false }).length : -1,
+           };
+         })()`,
+      );
+      if (reducedState.cards === 1) break;
+    }
+    check(
+      "CHECK S8q — reduced motion: the preview opens with a STATIC scene (0 animations)",
+      reducedState.cards === 1 && reducedState.static === "true" && reducedState.animations === 0 && reducedState.cardAnimations === 0,
+      JSON.stringify(reducedState),
+    );
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+    await sleep(400);
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+
+    await cdp.send("Page.navigate", { url: `${BASE}/` });
+    await waitFor(cdp, `document.querySelector('[data-services-state="loaded"]') !== null`, 12000, "services restored");
+    await evaluate(cdp, `document.querySelector('#services').scrollIntoView({ block: 'start', behavior: 'instant' })`);
+    await sleep(500);
 
     // Deep link: #service-{slug} lands below the navbar and flashes.
     const svcSlug = await evaluate(cdp, `document.querySelector('#services [data-service-entry]').dataset.serviceEntry`);

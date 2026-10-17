@@ -711,3 +711,31 @@ backend is live and logos/products exist so the offline fallback snapshot carrie
 6. **Post-deploy sanity:** the Services section must show 14 entries in one page with no pointer
    cursor; a deep link such as `/#service-web-development` must land below the navbar; the form must
    return a reference ID. `PROJECT_NOTES.md` §45 lists the local verification numbers.
+### Task M deploy notes — hero delivery choreography, Showcase Tiles, VIP preview card
+
+1. **No backend field changed.** Task M is frontend-only: the 14 service scenes are a frontend
+   presentation registry keyed by the service `slug` (no `sceneKey` was added), and the product card
+   redesign reuses `Product.logoId` / the public `logo` object as they are. So the frontend may ship on
+   its own; the backend only needs a redeploy if it was already behind for another reason.
+2. **Do not skip `npm run seed:prod`.** The owner-facing hero lines like "Fast", "Strategy",
+   "Pipelines" and "Hardening" were the *fallback* copy, produced when `shortDescription` is missing.
+   The improved fallback no longer emits a single dangling word, but the designed copy only appears
+   after the idempotent production seed runs. This is a data step, not a schema change.
+3. **Deploy the frontend with the build cache cleared.** Task M adds 15 new lazy chunks (the scene
+   registry + one chunk per scene) and rewrites the hero, the product card and the services index
+   bundles; a stale cache can serve a build whose hero still reports the retired states.
+4. **Refresh the content snapshot** (`npm run snapshot:content`, also wired into `prebuild`) after the
+   backend has the final content, so the offline fallback matches the API.
+5. **Confirm the live build in DevTools** on a hard reload: the hero must report
+   `data-hero="svg-v2"`, `data-fragments="10"`, `data-tooltips="10"` and walk
+   `data-hero-state` through `assembled → splitting → flying → docked` on hover (then
+   `returning → merging → assembled` on leave). Hovering a discipline in **Services** must open the VIP
+   preview card (`#service-preview-card`) with its animated scene; the **Products** tiles must show the
+   Showcase Tile (opaque surface, `.tile__ring`, no grid showing through).
+   If `data-fragments` is missing, an older build is being served.
+6. **Remove the test content** ("Showcase Fixture A/B" products and any fixture logos) from the admin
+   before the public launch — the tile design puts those names in a much more prominent position than
+   the old plate did.
+7. **Owner-visible caveat to expect:** the hero's ten tooltips are now permanently visible as dimmed
+   ghost slots at rest (by design — the layout never jumps). They are not "hidden until hover" any more,
+   and the silhouette verification (CHECK L71/L72) waits for that ghost state.

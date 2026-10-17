@@ -1,0 +1,431 @@
+/* ============================================================
+   7e-ter. SERVICE SCENES (Task M)
+   One shared animation vocabulary for the 14 VIP preview scenes.
+   ------------------------------------------------------------
+   RULES ENFORCED HERE, NOT BY CONVENTION:
+     · only `transform`, `opacity` and `stroke-dashoffset` animate;
+     · `stroke-dasharray: 1` is set ONCE (paired with `pathLength="1"` on the
+       path, so no measurement is ever needed);
+     · every keyframe set ENDS on the element's natural state and holds it, so
+       the scene reads start → build → payoff → settle → loop;
+     · `data-static="true"` (reduced motion) switches animation off entirely and
+       the finished illustration is what stays on screen;
+     · `.is-playing` is the ONLY switch the shell flips — when the card is closed,
+       off-screen or in a hidden tab, every scene is paused.
+   ============================================================ */
+
+.scene {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.scene * {
+  animation-duration: var(--dur, 5.4s);
+  animation-delay: var(--delay, 0s);
+  animation-iteration-count: infinite;
+  animation-timing-function: var(--ease-out);
+  animation-fill-mode: both;
+  animation-play-state: paused;
+}
+
+.scene.is-playing * {
+  animation-play-state: running;
+}
+
+/* The VIP preview shell flips ONE class on the scene stage (`.is-playing`) and
+   ONE attribute for reduced motion (`data-static`), so the shell never has to
+   know anything about a scene's internals. */
+.vip__scene.is-playing .scene * {
+  animation-play-state: running;
+}
+
+.vip__scene[data-static="true"] .scene * {
+  animation: none !important;
+}
+
+.scene[data-static="true"] * {
+  animation: none !important;
+}
+
+/* ---------- The vocabulary --------------------------------------------- */
+
+/* Rise + fade: the workhorse entrance. */
+.s-up {
+  animation-name: s-up;
+}
+@keyframes s-up {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  14% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A plain fade, for layers that are already in place. */
+.s-in {
+  animation-name: s-in;
+}
+@keyframes s-in {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* Scale in with a small overshoot. */
+.s-pop {
+  animation-name: s-pop;
+}
+@keyframes s-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  16% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+  22% {
+    transform: scale(1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* A line that draws itself (pathLength=1 + dasharray 1). */
+.s-draw {
+  stroke-dasharray: 1;
+  animation-name: s-draw;
+}
+@keyframes s-draw {
+  0% {
+    stroke-dashoffset: 1;
+  }
+  22% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* A bar that grows from its origin (set transform-origin per element). */
+.s-grow {
+  transform-origin: bottom center;
+  animation-name: s-grow;
+}
+@keyframes s-grow {
+  0% {
+    transform: scaleY(0.06);
+  }
+  18% {
+    transform: scaleY(1.03);
+  }
+  24% {
+    transform: scaleY(1);
+  }
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+.s-grow-x {
+  transform-origin: left center;
+  animation-name: s-grow-x;
+}
+@keyframes s-grow-x {
+  0% {
+    transform: scaleX(0.02);
+  }
+  20% {
+    transform: scaleX(1);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+/* A steady rotation (gears, rings, scanners). */
+.s-spin {
+  animation-name: s-spin;
+  animation-timing-function: linear;
+}
+@keyframes s-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.s-spin-back {
+  animation-name: s-spin-back;
+  animation-timing-function: linear;
+}
+@keyframes s-spin-back {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+/* A slow pulse — status dots, cores, calls to action. */
+.s-pulse {
+  animation-name: s-pulse;
+}
+@keyframes s-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Something travelling across the scene (a token, a packet, a sheen). */
+.s-sweep {
+  animation-name: s-sweep;
+}
+@keyframes s-sweep {
+  0% {
+    opacity: 0;
+    transform: translateX(-26px);
+  }
+  10% {
+    opacity: 1;
+  }
+  34% {
+    opacity: 1;
+    transform: translateX(200px);
+  }
+  40%,
+  100% {
+    opacity: 0;
+    transform: translateX(200px);
+  }
+}
+
+/* A short horizontal shuttle (a swipe, a resize, a scan). */
+.s-slide {
+  animation-name: s-slide;
+}
+@keyframes s-slide {
+  0% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-30px);
+  }
+  40%,
+  70% {
+    transform: translateX(30px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+/* A one-pixel nudge that reads as "and then it settled". */
+.s-tick {
+  animation-name: s-tick;
+}
+@keyframes s-tick {
+  0%,
+  45% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+  62%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* A drift for depth planes. */
+.s-drift {
+  animation-name: s-drift;
+}
+@keyframes s-drift {
+  0% {
+    transform: translate3d(-4px, 2px, 0);
+  }
+  100% {
+    transform: translate3d(4px, -2px, 0);
+  }
+}
+
+/* A travelling highlight along a wire. */
+.s-flow {
+  stroke-dasharray: 0.16 1;
+  animation-name: s-flow;
+}
+@keyframes s-flow {
+  0% {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+    stroke-dashoffset: -0.1;
+  }
+  100% {
+    opacity: 0;
+    stroke-dashoffset: -0.1;
+  }
+}
+
+/* Typing text: a clipped line revealing left → right. */
+.s-type {
+  transform-origin: left center;
+  animation-name: s-type;
+}
+@keyframes s-type {
+  0% {
+    transform: scaleX(0);
+  }
+  26% {
+    transform: scaleX(1);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+/* A node that lights up and stays lit for the rest of the cycle. */
+.s-light {
+  animation-name: s-light;
+}
+@keyframes s-light {
+  0%,
+  12% {
+    opacity: 0.22;
+  }
+  30%,
+  100% {
+    opacity: 1;
+  }
+}
+
+/* A vertical counter that rolls one digit into place. */
+.s-roll {
+  animation-name: s-roll;
+}
+@keyframes s-roll {
+  0% {
+    transform: translateY(14px);
+    opacity: 0;
+  }
+  18% {
+    transform: none;
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* The "done" stamp. */
+.s-stamp {
+  animation-name: s-stamp;
+}
+@keyframes s-stamp {
+  0%,
+  58% {
+    opacity: 0;
+    transform: scale(1.5) rotate(-8deg);
+  }
+  66% {
+    opacity: 1;
+    transform: scale(0.96) rotate(-3deg);
+  }
+  72%,
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(-3deg);
+  }
+}
+
+/* A conveyor: a piece entering and leaving. */
+.s-carry {
+  animation-name: s-carry;
+}
+@keyframes s-carry {
+  0% {
+    opacity: 0;
+    transform: translateX(-30px);
+  }
+  12% {
+    opacity: 1;
+  }
+  60% {
+    opacity: 1;
+    transform: translateX(90px);
+  }
+  72%,
+  100% {
+    opacity: 0;
+    transform: translateX(120px);
+  }
+}
+
+/* An arc trip (a card into a cart, a packet across a network). */
+.s-arc {
+  animation-name: s-arc;
+}
+@keyframes s-arc {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0);
+  }
+  10% {
+    opacity: 1;
+  }
+  40% {
+    transform: translate(58px, -46px);
+  }
+  70% {
+    opacity: 1;
+    transform: translate(118px, 6px);
+  }
+  78%,
+  100% {
+    opacity: 0;
+    transform: translate(118px, 6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scene * {
+    animation: none !important;
+  }
+}

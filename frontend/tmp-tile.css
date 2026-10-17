@@ -1,0 +1,466 @@
+/* ============================================================
+   7d. SHOWCASE TILE — product cards (Task M)
+   A product presented on ONE opaque tile: a soft spotlight stage with the logo
+   centred on it and a ground-line reflection, a quiet plate id, one Growth-Green
+   LIVE node, an inline highlight line and a Visit row. The old "Specimen Plate"
+   (gridded window, corner ticks, dashed rules, spectrum trace) was replaced at
+   the owner's request — it showed the page's blueprint grid through the card and
+   was visually busy. Nothing is translucent here: the tile surface is opaque, so
+   the page grid can never read through it.
+   ============================================================ */
+
+.tile {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  height: 100%;
+  padding: 1px; /* the 1px ring the gradient sweep travels along */
+  border-radius: var(--radius-xl);
+  background: var(--tile-border);
+  box-shadow: var(--tile-shadow);
+  transition:
+    transform var(--dur-normal) var(--ease-spring-soft),
+    box-shadow var(--dur-normal) var(--ease-out);
+}
+
+.tile:hover,
+.tile:focus-within {
+  transform: translateY(-6px);
+  box-shadow: var(--tile-shadow-hover);
+}
+
+/* The border sweep: an oversized conic gradient rotating inside the 1px ring.
+   `transform: rotate()` on a pseudo-element — never `@property`, never
+   box-shadow, never a layout property. */
+.tile__ring {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 240ms var(--ease-out);
+}
+
+.tile__ring::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 240%;
+  aspect-ratio: 1;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg 120deg,
+    var(--accent) 190deg,
+    var(--spectrum-3) 232deg,
+    transparent 300deg 360deg
+  );
+}
+
+.tile:hover .tile__ring,
+.tile:focus-within .tile__ring {
+  opacity: 1;
+}
+
+.tile:hover .tile__ring::before,
+.tile:focus-within .tile__ring::before {
+  animation: jt-tile-sweep 1150ms var(--ease-out) 1;
+}
+
+@keyframes jt-tile-sweep {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+.tile__inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  padding: var(--space-card);
+  border-radius: calc(var(--radius-xl) - 1px);
+  background: var(--tile-surface);
+}
+
+/* One sheen that crosses the surface per hover. */
+.tile__sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    104deg,
+    transparent 38%,
+    color-mix(in srgb, var(--background) 26%, transparent) 50%,
+    transparent 62%
+  );
+}
+
+.tile:hover .tile__sheen,
+.tile:focus-within .tile__sheen {
+  opacity: 1;
+  animation: jt-tile-sheen 900ms var(--ease-out) 1;
+}
+
+@keyframes jt-tile-sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* ---------- Header row: plate id + the one live node ------------------- */
+.tile__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.tile__id {
+  font-family: var(--font-code);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--muted-soft);
+}
+
+.tile__node {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tile__node::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background-color: var(--growth);
+  animation: jt-tile-breathe 4.6s var(--ease-in-out) infinite alternate;
+}
+
+@keyframes jt-tile-breathe {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ---------- Stage: the logo on a soft spotlight ------------------------ */
+.tile__stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 9;
+  margin-top: 1rem;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background-color: var(--surface);
+}
+
+.tile__spotlight {
+  position: absolute;
+  inset: -6%;
+  background: var(--tile-spotlight);
+  opacity: 0.75;
+  transform: translate3d(0, 0, 0);
+  animation: jt-tile-drift 16s var(--ease-in-out) infinite alternate;
+  transition: opacity var(--dur-normal) var(--ease-out);
+}
+
+@keyframes jt-tile-drift {
+  from {
+    transform: translate3d(-5px, -3px, 0);
+  }
+  to {
+    transform: translate3d(5px, 4px, 0);
+  }
+}
+
+.tile:hover .tile__spotlight,
+.tile:focus-within .tile__spotlight {
+  opacity: 1;
+}
+
+/* Tone-aware contrast aid: a dark logo sits on a light stage, a light logo on a
+   dark stage. A colourless/unknown logo gets no stage tint at all — never a
+   coloured pill. */
+.tile__stage[data-tone="dark"] {
+  background-color: var(--tile-stage-light);
+}
+.tile__stage[data-tone="light"] {
+  background-color: var(--tile-stage-dark);
+}
+
+.tile__logo {
+  position: relative;
+  z-index: 1;
+  max-width: 58%;
+  max-height: 68%;
+  object-fit: contain;
+  transition: transform var(--dur-normal) var(--ease-spring-soft);
+}
+
+.tile:hover .tile__logo,
+.tile:focus-within .tile__logo {
+  /* The tilt follows the pointer through two custom properties set by ONE
+     rAF-throttled handler — fine pointers only, never under reduced motion. */
+  transform: scale(1.06) rotate(var(--tile-tilt, 0deg))
+    translate3d(var(--tile-shift-x, 0px), var(--tile-shift-y, 0px), 0);
+}
+
+.tile__monogram {
+  position: relative;
+  z-index: 1;
+  font-size: 1.9rem;
+  font-weight: 600;
+}
+
+/* Ground-line reflection: a hairline plus its soft bloom. */
+.tile__ground {
+  position: absolute;
+  left: 50%;
+  bottom: 12%;
+  width: 54%;
+  height: 1px;
+  transform: translateX(-50%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 46%, transparent),
+    transparent
+  );
+}
+
+.tile__ground::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 78%;
+  height: 14px;
+  transform: translate(-50%, 0);
+  background: radial-gradient(
+    50% 100% at 50% 0%,
+    color-mix(in srgb, var(--accent) 16%, transparent),
+    transparent 70%
+  );
+}
+
+/* ---------- Meta ------------------------------------------------------- */
+.tile__title {
+  margin-top: 1.15rem;
+  font-size: 1.12rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+.tile__category {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  font-family: var(--font-code);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tile__category::before {
+  content: "";
+  width: 11px;
+  height: 1px;
+  background-color: var(--muted-soft);
+}
+
+.tile__highlights {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.85rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.tile__highlight {
+  opacity: 0.72;
+  transform: translateY(3px);
+  transition:
+    opacity var(--dur-normal) var(--ease-out),
+    transform var(--dur-normal) var(--ease-out);
+  transition-delay: calc(var(--highlight-index, 0) * 50ms);
+}
+
+.tile:hover .tile__highlight,
+.tile:focus-within .tile__highlight {
+  opacity: 1;
+  transform: none;
+}
+
+.tile__dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background-color: var(--border-strong);
+}
+
+/* ---------- Action row ------------------------------------------------- */
+.tile__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: auto;
+  padding-top: 1.4rem;
+}
+
+.tile__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.tile__action-arrow {
+  transition: transform var(--dur-normal) var(--ease-out);
+}
+
+.tile:hover .tile__action-arrow,
+.tile:focus-within .tile__action-arrow {
+  transform: translateX(4px);
+}
+
+/* The underline draws in from the left on hover. */
+.tile__action-rule {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--dur-normal) var(--ease-out);
+}
+
+.tile:hover .tile__action-rule,
+.tile:focus-within .tile__action-rule {
+  transform: scaleX(1);
+}
+
+.tile__action-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.tile__muted-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+/* ---------- Featured tile: logo left, meta right at >= 1024px ---------- */
+@media (min-width: 1024px) {
+  .tile--featured .tile__inner {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "head head"
+      "stage meta"
+      "stage foot";
+    align-items: start;
+    column-gap: 1.75rem;
+  }
+
+  .tile--featured .tile__head {
+    grid-area: head;
+  }
+
+  .tile--featured .tile__stage {
+    grid-area: stage;
+    align-self: center;
+    aspect-ratio: 4 / 3;
+    margin-top: 1.25rem;
+  }
+
+  .tile--featured .tile__meta {
+    grid-area: meta;
+    margin-top: 1.25rem;
+  }
+
+  .tile--featured .tile__title {
+    margin-top: 0;
+  }
+
+  .tile--featured .tile__foot {
+    grid-area: foot;
+    align-self: end;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile {
+    transition: none;
+  }
+  .tile:hover,
+  .tile:focus-within {
+    transform: none;
+  }
+  .tile__spotlight,
+  .tile__node::before {
+    animation: none;
+  }
+  .tile:hover .tile__ring,
+  .tile:focus-within .tile__ring,
+  .tile__sheen,
+  .tile:hover .tile__sheen,
+  .tile:focus-within .tile__sheen {
+    display: none;
+  }
+  .tile__logo,
+  .tile__highlight,
+  .tile__action-arrow,
+  .tile__action-rule {
+    transition: none;
+  }
+  .tile:hover .tile__logo,
+  .tile:focus-within .tile__logo,
+  .tile:hover .tile__highlight,
+  .tile:focus-within .tile__highlight,
+  .tile:hover .tile__action-arrow,
+  .tile:focus-within .tile__action-arrow,
+  .tile:hover .tile__action-rule,
+  .tile:focus-within .tile__action-rule {
+    transform: none;
+  }
+}
+

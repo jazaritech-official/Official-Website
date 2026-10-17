@@ -259,6 +259,26 @@ for (const [theme, tokens] of Object.entries(THEMES)) {
   }
 
   /*
+   * Task M — VIP preview card (services).
+   * The card is a fixed dark-navy surface in BOTH themes, so its own text
+   * tokens are constant (declared once in `:root`, deliberately not
+   * re-declared in `.dark`) and are measured in both theme passes: the card
+   * floats over whatever is behind it, so a light theme cannot change its
+   * contrast. The 1 px rotating gradient border, the blueprint grid and the
+   * 14 scene illustrations are decorative and therefore exempt.
+   */
+  const vipSurface = LIGHT["vip-surface-solid"];
+  if (vipSurface) {
+    for (const fgToken of ["vip-text", "vip-muted", "vip-soft"]) {
+      const fg = LIGHT[fgToken];
+      if (fg) push(theme, fgToken, "vip-surface-solid", fg, vipSurface, AA_NORMAL);
+    }
+    /* The scene stage is the same navy, and the chips sit on it too. */
+    const vipMuted = LIGHT["vip-muted"];
+    if (vipMuted) push(theme, "vip-muted (chip)", "vip-surface-solid", vipMuted, vipSurface, AA_NORMAL);
+  }
+
+  /*
    * Services-card water-fill: white copy sits on the brand gradient. The
    * LIGHTEST stop (`--service-fill-c`, a color-mix in globals.css) is the
    * worst case, so it is measured here with the same blend the stylesheet uses.

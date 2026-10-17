@@ -2941,3 +2941,292 @@ with the navy "Send request" button; the success modal is a centred card over a 
 "Back to home" and "Send another". **Caveat:** `hero-exploded-light/dark.png` were taken ~10 s into the
 suite, so the public push opt-in prompt (by design) is over the page in those two files — the ASCII/luma
 inspection shows the same dimmed-page-plus-centred-card signature as `notification-prompt.png`.
+---
+
+## 46. Task M — Hero: the "pieces travel to the tooltips" choreography (2026-10-16)
+
+**The design did not change; the motion did.** The hero still renders the real
+traced logo as five pieces (`top | right | bottom | fold | leaf`) with ten neon
+tooltips (5 left / 5 right) on orthogonal leader wires, `data-hero="svg-v2"`,
+backend copy from `GET /api/services` through `publicContent.ts`, no canvas, no
+WebGL, no rAF loop.
+
+### 46.1 The states
+
+```
+assembled → splitting → flying → docked      (open)
+docked → returning → merging → assembled     (close)
+```
+
+`data-hero-state` carries the current state. Timings: `splitting` 0–220 ms
+(reused Hub outward vectors, travel ≤ 8 %), fragment cut at 120 ms, `flying`
+220–760 ms (540 ms, 100 ms stagger), `docked` at ~860 ms; the reverse leg is
+600 ms + a 200 ms merge, at `playbackRate 1.12` (slightly faster, as specified).
+
+### 46.2 The ten REAL fragments (`heroFragments.ts`)
+
+`components/sections/heroFragments.ts` builds — once, at module load — two
+fragments per piece as **real slices of the real artwork**: the piece's own
+`pathData`, its own generated gradient (`hero-frag-jazari-logo-grad-*`) and a
+`clipPath` whose polygon is a deterministic straight cut through the fragment
+centroid (`CUT_ANGLE` per piece). Never a square, a dot or a confetti chip; the
+harness asserts each fragment is a `<path>` filled with its own gradient inside
+its own clipPath (CHECK L60b).
+
+Each fragment's flight is **precomputed in design space** (`HERO_DESIGN`
+1000×700): 14–20 sampled keyframes along that tooltip's real leader wire, with
+the translate and the scale solved together so the slice's centre stays exactly
+on the wire while it shrinks to ~30 %. It docks on `badgeCentre(index)` — the
+centre of the badge socket in the tooltip's own DOM (`heroLayout.ts`), which is
+why a docked slice lands inside its socket (CHECK L60e).
+
+### 46.3 How it is animated (no rAF, no `offset-distance`)
+
+Two nested `<g>` per fragment (`hero-frag__move` + `hero-frag__spin`) get one
+WAAPI track each, created **once** and reused forever:
+
+```ts
+move.animate(translateFrames, { duration: 540, delay: 100, fill: "both" })
+spin.animate(rotateScaleFrames, { duration: 540, delay: 100, fill: "both" })
+```
+
+Opening calls `play()`; closing calls `reverse()`, so an interrupt mid-flight
+continues from the **current progress** instead of restarting (CHECK L60f) and
+the ten nodes are never re-created (`ensureAnims()` caches them — CHECK L60g).
+Only `transform`, `opacity` and `stroke-dashoffset` animate; `will-change:
+transform` is applied to the fragment layer **only** while the mark is in a
+flying state (`is-flying`).
+
+### 46.4 Trigger, ghost slots, and the two-way highlight
+
+* trigger: hover on the mark or the visual column, focus on the trigger button,
+  tap on touch, and a **one-shot** idle auto-open after 3 s in view (≥ 10 s
+  cooldown, cancelled by any real input, never a loop).
+* at rest the ten tooltips are visible **ghost slots** (~0.42 opacity, text
+  present, low emphasis) so the layout never jumps; at `docked` the text comes up
+  to full emphasis.
+* hovering a tooltip lights its wire **and** its docked fragment; hovering a
+  piece lights the pieces' own group.
+* hover-out is debounced 120 ms; a spurious boundary event while the pointer is
+  still over the mark cannot stall the delivery (`:hover` re-check).
+* leave, Escape, blur, scroll > 40 px and a second tap all reassemble.
+
+### 46.5 Copy quality (the fallback fix)
+
+`restingLine()` (`lib/serviceCopy.ts`) is the ONE helper used by the hero, the
+Services index and the Hub. It prefers the backend's `shortDescription`; when
+that is missing in production it strips the `description` at a **sentence or
+clause boundary beyond 40 chars**, else at a whole-word boundary, and it can
+never return a single dangling word — that is what produced the owner-facing
+"Fast" / "Strategy" / "Pipelines" / "Hardening" lines. The harness asserts the
+helper on five sample descriptions (`verify-three.mjs`, hero copy checks).
+**Owner action:** a production `npm run seed:prod` is what actually puts the
+designed `shortDescription`/`highlights` in the database; the frontend never
+invents that copy.
+
+### 46.6 Rough edges fixed in this pass
+
+The vertical "bus bar" between the mark and the tooltips is now a deliberate
+engineered busbar: a consistent 1.2 px hairline, evenly spaced junction dots and
+no doubled stroke where a wire meets a card socket; tooltip heights are uniform;
+the caption under the mark reads **"Hover the mark — watch it deliver our
+services"** (touch: "Tap the mark to see every discipline"), is centred and fades
+out once docked.
+
+---
+
+## 47. Task M — Product cards: the "Showcase Tile" (2026-10-16)
+
+`components/products/ProductCards.tsx` + the `--tile-*` tokens.
+
+**Why the Specimen Plate was replaced.** The owner's screenshot showed the page's
+blueprint grid **through** the card (translucent surface) and a busy look —
+corner ticks, dashed rules, a white boxed logo window. The new tile is:
+
+* one **opaque** surface (`--tile-surface`, computed alpha 1 — asserted), one
+  1 px hairline, generous padding, a soft layered shadow, **no** inner grid
+  lines, corner ticks or dashed rules;
+* **stage**: the logo on a soft radial spotlight (a static layer whose opacity
+  only is animated) with a ground-line reflection; the spot drifts a few px on a
+  ≥ 10 s transform loop;
+* **meta**: name, a small quiet category label with a leading dash, up to three
+  highlights as compact inline text separated by thin dots, and one "Visit" row;
+* **hover/focus-within**: a 6 px lift with a spring ease, a **conic border sweep**
+  (rotated gradient pseudo-element masked to the ring — not `@property`, not
+  box-shadow), a sheen crossing the surface, the logo scaling 1.06 and tilting
+  ≤ 3° toward the pointer (two CSS custom properties written by ONE
+  rAF-throttled handler, fine pointers only), highlight chips in a 50 ms
+  stagger, and the Visit arrow sliding 4 px with an underline drawn via
+  `scaleX`;
+* one **Growth-Green** LIVE node breathing on opacity, an entrance stagger on
+  scroll (12 px + fade, 60 ms), and a first-tile-wider featured layout at ≥ 3
+  products (logo left / meta right at ≥ 1024 px).
+
+Everything reverses on leave, mirrors on `:focus-within`, and is off under
+`prefers-reduced-motion`. The data contract is untouched: `Product.logoId`, the
+public `logo` object, the monogram fallback, tone-aware staging (`data-tone`) and
+the `target="_blank" rel="noopener noreferrer"` Visit link.
+
+---
+
+## 48. Task M — Services: the "hover me" invitation and the VIP preview card (2026-10-16)
+
+### 48.1 This reverses Task L, on purpose
+
+§39 recorded "no hover, no pointer" as a Task L rule. The owner has since asked
+for the opposite: the schedule stays exactly as it is (3 columns, grouped by the
+backend `category`, every discipline on one page, `#service-{slug}` deep links
+with the calm `:target` flash), but each row now **invites** a look and opens a
+**preview**. Services still have no pages, so the preview is a floating card —
+**never a navigation**. `cursor: default` is kept (CHECK S8c) and no link or
+button lives inside a row; the only real link inside the card is the existing
+`#start` CTA.
+
+### 48.2 The invitation cues
+
+* a small pulsing **"▶ Preview"** micro-label that fades in on row hover/focus;
+* a **one-time sequential shimmer** across the rows when the schedule scrolls
+  into view (60 ms stagger), then an idle **nudge** that rotates through ONE row
+  at a time every ~4 s (a thin accent underline and a "Hover to preview" tag,
+  then both withdraw) — only while the section is in view, the tab is visible,
+  nothing is open and motion is allowed;
+* the section subtitle "Hover any discipline to see how we build it." with a
+  small animated pointer glyph (paused off-screen via `[data-inview]`);
+* on hover: a left accent bar growing (`scaleY`) and the row's icon micro-motion.
+
+### 48.3 The card (`ServicePreviewCard.tsx`, `globals.css` §6c-ter)
+
+ONE floating instance for all 14 services — never 14 mounted cards. A dark navy
+surface in **both** themes (`--vip-*` tokens are declared once and not
+re-declared in `.dark`, because the card floats over content and cannot inherit
+the page's contrast), 1 px rotating brand-gradient border (independent `rotate`
+property + a slow opacity "ignition"), a static blueprint grid inside, mono
+`Discipline NN / 14` top bar with one Growth-Green live dot, a 440×190 scene
+stage, the backend title, `shortDescription` through `restingLine()`, up to three
+`highlights` chips and the `#start` CTA.
+
+* **Position**: `position: fixed`, computed from the row's rect ONCE per open
+  (one layout read; none during animation) with flip right→left, flip up/down and
+  clamping between the navbar and the viewport floor (CHECK S8g).
+* **Open/close**: hover-intent 90 ms in, 160 ms out, with a bridge so the pointer
+  can travel row → card without closing (CHECK S8i). Card 0.96 → 1 + fade in
+  ≤ 220 ms, scene starts 60 ms later.
+* **Morph**: switching rows reuses the same DOM node, swaps the scene with a
+  180 ms fade + 8 px translate (CHECK S8h).
+* **Mobile/coarse pointer**: the same card becomes a bottom sheet (full width,
+  ≤ 70 vh, drag handle, scrim, Escape / tap-outside / handle to close) with focus
+  moved in on open and restored to the row on close.
+* **Reduced motion**: opens instantly with the scene's FINAL state and zero
+  animations (CHECK S8q); no nudge, no shimmer, no hand loop.
+* **No-JS**: the whole catalogue stays server-rendered text; the preview is a
+  progressive enhancement.
+
+### 48.4 Keyboard and semantics (and the one deliberate deviation)
+
+Rows are focusable (`tabindex="0"`) plain list items: focus opens the preview
+immediately, Escape closes it and returns focus to the row, and arrow keys move
+between rows geometrically (one layout read per keypress). While open, the row
+carries `aria-controls` + `aria-describedby="service-preview-card"`, so focusing a
+row announces that service's own copy; the card is a labelled non-modal
+`role="dialog"` (`aria-modal="false"`) and the CTA is reachable by Tab without
+trapping focus.
+
+**Deviation, stated openly:** `aria-expanded` is NOT used on the row. `listitem`
+does not support it (ESLint `jsx-a11y/role-supports-aria-props` flags it) and the
+brief explicitly ruled out `role="button"`. The expanded state is therefore
+communicated by `aria-describedby`/`aria-controls` and by the dialog's own
+announcement. If the owner would rather have `aria-expanded`, the fix is one
+attribute change plus adopting `role="button"` — recorded here so the trade-off
+is visible rather than silent.
+
+---
+
+## 49. Task M — The scene engine, the fourteen scenes, and how to add one
+
+### 49.1 Layout
+
+```
+components/services/
+  sceneRegistry.ts          slug → () => import("./scenes/XScene")   (lazy, one chunk each)
+  scenes/
+    SceneFrame.tsx          the shared harness: viewBox 0 0 440 190, aria-hidden, focusable=false
+    scenes.css              the ONE animation vocabulary (.s-up, .s-draw, .s-pop, …)
+    SoftwareScene.tsx  GrowthScene.tsx  DesignScene.tsx  MarketingScene.tsx
+    AiScene.tsx  CommerceScene.tsx  MobileScene.tsx  WebScene.tsx
+    UiUxScene.tsx  CloudScene.tsx  SecurityScene.tsx  DataScene.tsx
+    ConsultingScene.tsx  AutomationScene.tsx  GenericScene.tsx
+```
+
+`sceneKey` was **not** added to the backend: the registry is keyed by the
+service `slug` (verified against `Backend/scripts/seed-core.js`), and an unknown
+slug falls back to `GenericScene`, so adding a service in the admin can never
+break the preview. Scenes are PRESENTATION, not content — the backend stays the
+single source of truth for every word.
+
+### 49.2 The contract every scene obeys
+
+* `viewBox 0 0 440 190`, pure SVG + CSS keyframes from `scenes.css`, ≤ ~6 KB;
+* decorative: `aria-hidden="true"`, `focusable="false"`, no text content;
+* only `transform`, `opacity` and `stroke-dashoffset` animate (`stroke-dasharray:
+  1` is set ONCE and paired with `pathLength="1"`, so nothing is ever measured);
+* every keyframe set ENDS on the element's natural state and holds it, so a loop
+  reads start → build → payoff → settle → loop;
+* colour comes from the illustration tokens `--scene-1 … --scene-8` only
+  (electric blue, cyan, violet, magenta-pink, amber, coral, emerald, indigo —
+  desaturated on purpose, never neon);
+* `.is-playing` is the ONLY switch the shell flips: the scene stage carries it
+  while the card is on screen and the tab is visible, and
+  `animation-play-state: paused` everywhere else. `data-static="true"` (reduced
+  motion) removes animation entirely and leaves the FINAL illustration on screen;
+* layered depth (2–3 parallax planes), staggered reveals, consistent 1.5–2 px
+  strokes and radii, ≤ 3 sparkles, no clutter.
+
+### 49.3 How to add a new scene
+
+1. Check the real slug: `grep -n "slug" Backend/scripts/seed-core.js`.
+2. Create `components/services/scenes/<Name>Scene.tsx` exporting a default
+   component that returns `<SceneFrame>…</SceneFrame>`; draw with the vocabulary
+   classes and `at(delay, duration)` timing; pick 2–3 `--scene-*` hues.
+3. Register it in `sceneRegistry.ts`: `"<slug>": () => import("./scenes/<Name>Scene")`.
+4. Nothing else: the first three scenes are idle-prefetched, the hovered row's
+   scene is prefetched on `pointerenter`/focus, and an unknown slug still renders
+   `GenericScene`. Add a screenshot to the harness if the scene is a new story.
+
+### 49.4 The fourteen storyboards (as implemented)
+
+software-solutions = code editor → build bar → components snap into a layout →
+branch graph → "Deployed ✓"; business-growth = bars rise → trend line → KPI
+badge counts "+128%" → drifting coins; graphic-designing = pen-tool bezier →
+gradient fill → swatch fan → mark morph → bounding box + ruler; marketing =
+megaphone waves → funnel (many dots in, few bright out) → CTR tile → reach ring;
+ai-solutions = layered network lights up → output fires → typing chat bubble →
+spark chip; e-commerce = cards slide in → arc into the cart → badge increments →
+checkout fill → happy payment flip → parcel on a conveyor; mobile-app-development
+= phone screens slide → tap ripples → notification drop → swipe cursor → icon
+grid; web-development = wireframe → styled blocks → desktop/tablet/mobile
+crossfade → score ring to 98; ui-ux-design = wireframe → polished UI → snapping
+drag with guides → flow arrows → heatmap → rating pop; cloud-and-devops = Commit
+→ Build → Test → Deploy token → green ticks → stacking containers → instance
+duplication; cybersecurity = shield scan beam → glyphs deflected → padlock closes
+→ log column clears from amber to green; data-and-analytics = dots into the
+warehouse → donut sweeps → bars + sparkline → filter chip re-animates; it-consulting
+= roadmap pins drop → checklist ticks → compass settles → two speech bubbles →
+"Strategy → Delivery"; automation = gears rotate → task cards ride the conveyor
+through workflow nodes → clock sweeps → "0 manual steps" badge pulses.
+
+---
+
+## 50. Retired-check ledger (Task M)
+
+Nothing was weakened; every check whose SUBJECT the owner changed was retired or
+replaced, and each replacement is named.
+
+| Retired / changed | Was | Why | Replacement |
+|---|---|---|---|
+| `CHECK L60` | "hover explodes the mark (state=exploded)" | the state name and the motion were replaced by the delivery choreography | **L60a** stage order, **L60b** ten real fragments, **L60c** riding the wire, **L60d** closing on the socket, **L60e** docked in 10/10 sockets |
+| `CHECK L69` (updated, not retired) | "keyboard focus explodes the mark" | same subject, new end-state name | **L69** "keyboard focus delivers the mark (state=docked)" |
+| `CHECK L68` / `CHECK L70` (re-measured) | sampled 900 ms after the event | the reverse leg is 600 ms + 200 ms now | same assertions, but they `waitFor` the settled `assembled` state |
+| `CHECK L71`/`L72` setup | waited for the tooltips to be **hidden** | Task M made the tooltips permanent ghost slots (they are never hidden — this wait is what aborted the first Task M run) | waits for ghost emphasis (`opacity < 0.5`) instead |
+| `CHECK S8` | "hovering an entry changes no computed style (no affordance)" | Task L instruction, deliberately reversed: rows must now invite interaction | **S8a** one card opens, **S8b** backend title, **S8c** still `cursor: default` with no link/button in a row, **S8d** cue visible, **S8e** labelled non-modal dialog, **S8f** scene mounted and animating, **S8g** inside the viewport, **S8h** same node morphs, **S8i** pointer bridge, **S8j** unmount, **S8k** focus/aria, **S8l** Escape, **S8m** arrows, **S8n** all 14 scenes, **S8o** lazy chunks, **S8p** 14 switches / bounded heap, **S8q** reduced motion static |
+| `hero-exploding-light.png`, `hero-exploded-light/dark.png` | screenshot names from the explode motion | the poses changed | `hero-splitting-light/dark`, `hero-flying-light/dark`, `hero-docked-light/dark`, `hero-returning-light/dark` |
+| Specimen-plate selectors | `.plate*` classes, `CHECK 76e/76f` structure | the card was redesigned as the Showcase Tile | the `T*` tile checks (`.tile*` selectors, opaque surface, tone staging, one LIVE node, hover lift/sweep, reduced motion, 0/1/2/3/6 layouts) |
