@@ -10,9 +10,12 @@ import { Spinner } from "@/components/ui/Spinner";
 import {
   AnalyticsIcon,
   BellIcon,
+  CartIcon,
+  ChartIcon,
   CloseIcon,
   CopyIcon,
   GearIcon,
+  HandshakeIcon,
   InboxIcon,
   LayersIcon,
   LogoutIcon,
@@ -64,6 +67,16 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    id: "business",
+    label: "Business",
+    items: [
+      { href: "/admin/orders", label: "Orders", icon: CartIcon },
+      { href: "/admin/clients", label: "Clients", icon: UsersIcon },
+      { href: "/admin/workers", label: "Workers & Referrers", icon: HandshakeIcon, superOnly: true },
+      { href: "/admin/treasury", label: "Treasury", icon: ChartIcon, superOnly: true },
+    ],
+  },
+  {
     id: "engagement",
     label: "Engagement",
     items: [{ href: "/admin/notifications", label: "Notifications", icon: BellIcon }],
@@ -85,6 +98,10 @@ const TITLES: Record<string, string> = {
   "/admin/product-presets": "Product Presets",
   "/admin/submissions": "Project Requests",
   "/admin/visitors": "Visitors",
+  "/admin/orders": "Orders",
+  "/admin/clients": "Clients",
+  "/admin/workers": "Workers & Referrers",
+  "/admin/treasury": "Treasury",
   "/admin/notifications": "Notifications",
   "/admin/team": "Admins & Access",
   "/admin/account": "My Account",
@@ -238,11 +255,13 @@ export function AdminShell({ children }: { children: ReactNode }) {
     };
   }, [router]);
 
-  // Frontend route guard (UX only): a normal admin must not reach /admin/team.
-  // The backend `requireRole("super_admin")` remains the real security boundary.
+  // Frontend route guard (UX only): a normal admin must not reach the
+  // super-admin pages. The backend `requireRole("super_admin")` remains the real
+  // security boundary.
   useEffect(() => {
     if (!ready) return;
-    if (pathname === "/admin/team" && admin?.role !== "super_admin") {
+    const superOnlyRoutes = ["/admin/team", "/admin/workers", "/admin/treasury"];
+    if (superOnlyRoutes.includes(pathname) && admin?.role !== "super_admin") {
       router.replace("/admin/dashboard");
     }
   }, [ready, pathname, admin, router]);

@@ -13,7 +13,9 @@
     "snapshot:content": "node scripts/snapshot-content.mjs",
     "build:icons": "node scripts/build-logo-assets.mjs",
     "check:secrets": "node scripts/check-no-secrets.mjs",
-    "verify:bff": "node scripts/verify-bff.mjs"
+    "verify:bff": "node scripts/verify-bff.mjs",
+    "verify:bill": "node --experimental-strip-types scripts/verify-bill.mjs",
+    "verify:orders": "node scripts/verify-orders.mjs"
   },
   "dependencies": {
     "next": "16.3.8",

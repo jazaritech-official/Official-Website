@@ -253,7 +253,7 @@ export function SubmissionsManager() {
           }
         />
       ) : (
-        <div className="card overflow-x-auto">
+        <div className="card relative overflow-x-auto">
           <table className="w-full min-w-[940px] text-left text-sm">
             <caption className="sr-only">Project submissions</caption>
             <thead>

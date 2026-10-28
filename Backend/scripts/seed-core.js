@@ -15,6 +15,7 @@ import Admin from "../models/Admin.js";
 import ProductTypeTemplate from "../models/ProductTypeTemplate.js";
 import Product from "../models/Product.js";
 import Service from "../models/Service.js";
+import { ensureFinanceDefaults } from "../services/financeDefaults.js";
 
 export const TEMPLATES = [
   {
@@ -434,6 +435,17 @@ export async function seedDatabase({
     servicesUpserted += 1;
   }
   log(`[seed] services upserted: ${servicesUpserted}`);
+
+  // --- Finance defaults (Task N) ------------------------------------------
+  // Unconditional and idempotent: the FinanceSettings singleton and the default
+  // catalogue items are upserted with $setOnInsert, so prices an admin has
+  // already typed are never overwritten. NO sample clients or orders are ever
+  // created here — production seeding must not invent money documents.
+  const finance = await ensureFinanceDefaults();
+  log(
+    `[seed] finance defaults ready (new catalogue items: ${finance.catalogUpserted}, ` +
+      `referrer ${finance.settings.referrerBp}bp / worker ${finance.settings.workerBp}bp)`,
+  );
 
   // --- Sample products (only when explicitly allowed AND collection empty) -
   if (sampleContent) {

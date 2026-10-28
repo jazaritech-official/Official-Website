@@ -45,6 +45,8 @@ import {
   sendNotification,
   deleteNotification,
 } from "../controllers/notificationController.js";
+import financeRouter from "./finance.routes.js";
+import { financeSuperRouter, payoutRouter } from "./financeSuper.routes.js";
 
 const adminRouter = Router();
 
@@ -233,5 +235,16 @@ adminRouter.post(
   sendNotification,
 );
 adminRouter.delete("/notifications/:id", idRules, deleteNotification);
+
+// --- Business: clients, payees, orders, settlement, treasury ---------------
+// New routes only — every existing route above keeps its exact guard.
+// `requireAuth` has already run for the whole router.
+adminRouter.use(financeRouter);
+
+// Super-admin-only, gated exactly like `/team`: the mount itself enforces the
+// role (PUT settings, GET treasury, PATCH payout). Mounted AFTER financeRouter
+// so the plain-admin GET /finance/settings is answered first.
+adminRouter.use("/finance", requireRole("super_admin"), financeSuperRouter);
+adminRouter.use("/orders", requireRole("super_admin"), payoutRouter);
 
 export default adminRouter;

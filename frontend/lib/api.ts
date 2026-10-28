@@ -41,6 +41,19 @@ import type {
   AdminNotification,
   NotificationInput,
   NotificationStats,
+  FinanceClient,
+  FinanceClientDetail,
+  FinanceSettings,
+  CatalogItem,
+  OrderInput,
+  OrderStatus,
+  OrdersSummary,
+  Payee,
+  PayeeRole,
+  PaymentResult,
+  PayoutResult,
+  TreasuryReport,
+  Order,
 } from "@/types/api";
 import { loadPublicContent } from "@/lib/publicContent";
 
@@ -420,6 +433,68 @@ export const api = {
         }),
       remove: (id: string) =>
         request<{ id: string; deleted: boolean }>(`/admin/team/${id}`, { method: "DELETE" }),
+    },
+
+    /* --- Business: clients, payees, catalogue, orders, treasury (Task N) -- */
+    finance: {
+      clients: {
+        list: (query: Query = {}, signal?: AbortSignal) =>
+          requestWithMeta<FinanceClient[]>("/admin/clients", { query, signal }),
+        get: (id: string) => request<FinanceClientDetail>(`/admin/clients/${id}`),
+        create: (input: Partial<FinanceClient>) =>
+          request<FinanceClient>("/admin/clients", { method: "POST", body: input }),
+        update: (id: string, input: Partial<FinanceClient>) =>
+          request<FinanceClient>(`/admin/clients/${id}`, { method: "PUT", body: input }),
+        remove: (id: string) => request<{ id: string; deleted: boolean }>(`/admin/clients/${id}`, { method: "DELETE" }),
+      },
+
+      payees: {
+        list: (query: Query = {}, signal?: AbortSignal) => requestWithMeta<Payee[]>("/admin/payees", { query, signal }),
+        create: (input: { name: string; role: PayeeRole; phone?: string; notes?: string }) =>
+          request<Payee>("/admin/payees", { method: "POST", body: input }),
+        update: (id: string, input: Partial<{ name: string; role: PayeeRole; phone: string; notes: string; isActive: boolean }>) =>
+          request<Payee>(`/admin/payees/${id}`, { method: "PUT", body: input }),
+      },
+
+      catalog: {
+        list: (signal?: AbortSignal) => request<CatalogItem[]>("/admin/order-catalog", { signal }),
+        create: (input: { name: string; unitLabel: string; defaultUnitPriceMinor?: number; sortOrder?: number }) =>
+          request<CatalogItem>("/admin/order-catalog", { method: "POST", body: input }),
+        update: (id: string, input: Partial<Pick<CatalogItem, "name" | "unitLabel" | "defaultUnitPriceMinor" | "isActive" | "sortOrder">>) =>
+          request<CatalogItem>(`/admin/order-catalog/${id}`, { method: "PUT", body: input }),
+      },
+
+      orders: {
+        list: (query: Query = {}, signal?: AbortSignal) => requestWithMeta<Order[]>("/admin/orders", { query, signal }),
+        summary: (signal?: AbortSignal) => request<OrdersSummary>("/admin/orders/summary", { signal }),
+        get: (id: string) => request<Order>(`/admin/orders/${id}`),
+        create: (input: OrderInput) => request<Order>("/admin/orders", { method: "POST", body: input }),
+        update: (id: string, input: Partial<OrderInput>) =>
+          request<Order>(`/admin/orders/${id}`, { method: "PUT", body: input }),
+        setStatus: (id: string, status: OrderStatus, options?: { allowUnpaidComplete?: boolean; note?: string }) =>
+          request<Order & { refundDueMinor?: number }>(`/admin/orders/${id}/status`, {
+            method: "PATCH",
+            body: { status, ...options },
+          }),
+        addPayment: (id: string, input: { amountMinor: number; method: string; receivedAt?: string; reference?: string; note?: string }) =>
+          request<PaymentResult>(`/admin/orders/${id}/payments`, { method: "POST", body: input }),
+        removePayment: (id: string, paymentId: string) =>
+          request<{ id: string; deleted: boolean; order: PaymentResult["order"] }>(`/admin/orders/${id}/payments/${paymentId}`, {
+            method: "DELETE",
+          }),
+        setPayout: (id: string, input: { party: "referrer" | "worker"; payeeId: string; paid: boolean }) =>
+          request<PayoutResult>(`/admin/orders/${id}/payout`, { method: "PATCH", body: input }),
+      },
+
+      settings: {
+        get: (signal?: AbortSignal) => request<FinanceSettings>("/admin/finance/settings", { signal }),
+        update: (input: Partial<Omit<FinanceSettings, "currency">> & { currency?: string }) =>
+          request<FinanceSettings>("/admin/finance/settings", { method: "PUT", body: input }),
+      },
+
+      treasury: {
+        get: (signal?: AbortSignal) => request<TreasuryReport>("/admin/finance/treasury", { signal }),
+      },
     },
   },
 };

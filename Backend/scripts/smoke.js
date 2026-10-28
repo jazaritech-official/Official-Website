@@ -16,6 +16,8 @@ import mongoose from "mongoose";
 import env from "../config/env.js";
 import Service from "../models/Service.js";
 import Admin from "../models/Admin.js";
+import Order from "../models/Order.js";
+import { computeSplit, computeTotals, derivePaymentStatus } from "../utils/orderMath.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = process.env.SMOKE_PORT || "5199";
@@ -1292,6 +1294,665 @@ console.log("[smoke] 10b. push notifications");
   check("delete notification → 200", removed.status === 200 && removed.body?.data?.deleted === true);
   const missing = await json(`/admin/notifications/${draftId}`, { method: "DELETE", cookie });
   check("deleting twice → 404", missing.status === 404);
+}
+
+console.log("[smoke] 10c. orders, clients, settlement, treasury + the bill contract (Task N)");
+{
+  /*
+   * The API runs as a CHILD process; the smoke process itself never connects.
+   * A few assertions below read documents directly (to prove the server-side
+   * rules that HTTP cannot show, e.g. "a plain admin's split fields are
+   * ignored"), so this suite opens its own short-lived connection.
+   */
+  await mongoose.connect(uri);
+
+  /* ====================================================================== *
+   * PURE MONEY MATHS (no HTTP) — the invariants the whole feature rests on.
+   * ====================================================================== */
+
+  // 1) The owner's default split: 10% referrer, 3 × 20% workers, 30% company.
+  const defaults = { referrerBp: 1000, workerBp: 2000 };
+  const referrer = { payeeId: null, name: "R1" };
+  const threeWorkers = [
+    { payeeId: null, name: "W1" },
+    { payeeId: null, name: "W2" },
+    { payeeId: null, name: "W3" },
+  ];
+  const golden = computeSplit(10_000_000, defaults, referrer, threeWorkers);
+  check(
+    "split 10/20/20/20 on 10,000,000 → 1,000,000 / 2,000,000 ×3 / company 3,000,000",
+    golden.referrer.amountMinor === 1_000_000 &&
+      golden.workers.every((w) => w.amountMinor === 2_000_000) &&
+      golden.companyMinor === 3_000_000,
+    JSON.stringify({ r: golden.referrer.amountMinor, w: golden.workers.map((w) => w.amountMinor), c: golden.companyMinor }),
+  );
+
+  // 2) Exactness: parts always add back to the total, for odd paisa, 0..6
+  //    workers, with and without a referrer — never a lost or extra paisa.
+  const totals = [0, 1, 7, 99_999, 1_234_567, 10_000_000, 12_345_678, 5, 33_333, 999_999];
+  let exact = true;
+  let companyNeverNegative = true;
+  let cases = 0;
+  for (let seed = 0; seed < 25; seed += 1) {
+    const total = (totals[seed % totals.length] + seed * 7919) % 25_000_000;
+    for (let w = 0; w <= 6; w += 1) {
+      for (const withRef of [true, false]) {
+        const workers = threeWorkers.slice(0, w);
+        const split = computeSplit(total, defaults, withRef ? referrer : null, workers);
+        const sum =
+          (split.referrer?.amountMinor ?? 0) + split.workers.reduce((s, x) => s + x.amountMinor, 0) + split.companyMinor;
+        if (sum !== total) exact = false;
+        if (split.companyMinor < 0) companyNeverNegative = false;
+        cases += 1;
+      }
+    }
+  }
+  check("split parts sum EXACTLY to the total (25 seeded totals × 0..6 workers × ±referrer)", exact, `${cases} cases`);
+  check("company share is never negative", companyNeverNegative, `${cases} cases`);
+
+  // 3) Shares above 100% are rejected (the API turns this into 400 below).
+  let overShare = null;
+  try {
+    computeSplit(1_000_000, defaults, { name: "R", bp: 5000 }, [
+      { name: "W1", bp: 3000 },
+      { name: "W2", bp: 3000 },
+    ]);
+  } catch (error) {
+    overShare = error;
+  }
+  check("people bp > 10000 → 400 error", overShare?.status === 400, String(overShare?.status));
+
+  // 4) Totals are recomputed; the discount is capped; forged line totals die here.
+  const totalsCase = computeTotals(
+    [
+      { quantity: 2, unitPriceMinor: 100_000, lineTotalMinor: 1 },
+      { quantity: 3, unitPriceMinor: 50_000 },
+    ],
+    25_000,
+  );
+  check(
+    "computeTotals ignores client line totals (2×100,000 + 3×50,000 − 25,000)",
+    totalsCase.subtotalMinor === 350_000 && totalsCase.totalMinor === 325_000 && totalsCase.lineTotals[0] === 200_000,
+    JSON.stringify(totalsCase),
+  );
+  let discountError = null;
+  try {
+    computeTotals([{ quantity: 1, unitPriceMinor: 100 }], 101);
+  } catch (error) {
+    discountError = error;
+  }
+  check("discount > subtotal → 400", discountError?.status === 400, String(discountError?.status));
+
+  check(
+    "derivePaymentStatus: 0/0→paid, 0/100→unpaid, 50/100→partial, 100/100→paid",
+    derivePaymentStatus(0, 0) === "paid" &&
+      derivePaymentStatus(0, 100) === "unpaid" &&
+      derivePaymentStatus(50, 100) === "partial" &&
+      derivePaymentStatus(100, 100) === "paid",
+  );
+
+  /* ====================================================================== *
+   * UNAUTHENTICATED ACCESS TO EVERY NEW ROUTE
+   * ====================================================================== */
+  const newRoutes = [
+    ["GET", "/admin/clients"],
+    ["POST", "/admin/clients"],
+    ["GET", "/admin/payees"],
+    ["POST", "/admin/payees"],
+    ["GET", "/admin/order-catalog"],
+    ["GET", "/admin/orders"],
+    ["POST", "/admin/orders"],
+    ["GET", "/admin/orders/summary"],
+    ["GET", "/admin/finance/settings"],
+    ["GET", "/admin/finance/treasury"],
+  ];
+  const openRoutes = [];
+  for (const [method, pathname] of newRoutes) {
+    const response = await json(pathname, { method, body: method === "GET" ? undefined : {} });
+    if (response.status !== 401) openRoutes.push(`${method} ${pathname} → ${response.status}`);
+  }
+  check("every new finance route answers 401 without a session", openRoutes.length === 0, JSON.stringify(openRoutes));
+
+  /* ====================================================================== *
+   * SETUP — a client, four people, one catalogue item (real HTTP)
+   * ====================================================================== */
+  const settings0 = await json("/admin/finance/settings", { cookie });
+  check("GET /admin/finance/settings → 200 with defaults", settings0.status === 200 && settings0.body?.data?.referrerBp === 1000 && settings0.body?.data?.workerBp === 2000, JSON.stringify(settings0.body?.data?.referrerBp));
+  check("settings expose the business block for the bill", typeof settings0.body?.data?.business?.businessName === "string");
+
+  const catalog = await json("/admin/order-catalog", { cookie });
+  check("catalogue bootstraps 9 default items", catalog.status === 200 && catalog.body?.data?.length === 9, `n=${catalog.body?.data?.length}`);
+  const videoItem = (catalog.body?.data ?? []).find((item) => item.name === "Video Ad Making");
+  check("default catalogue has Video Ad Making (price 0, admin must type it)", Boolean(videoItem) && videoItem.defaultUnitPriceMinor === 0);
+  const catalogAgain = await json("/admin/order-catalog", { cookie });
+  check("catalogue bootstrap is idempotent (still 9 items)", catalogAgain.body?.data?.length === 9, `n=${catalogAgain.body?.data?.length}`);
+
+  const dupCatalog = await json("/admin/order-catalog", {
+    method: "POST",
+    cookie,
+    body: { name: "video ad making", unitLabel: "video" },
+  });
+  check("duplicate catalogue name (different case) → 409", dupCatalog.status === 409, String(dupCatalog.status));
+
+  const clientRes = await json("/admin/clients", {
+    method: "POST",
+    cookie,
+    body: { name: "Smoke Client", phone: "+92 300 0000000", email: "client@example.com", company: "Smoke Co" },
+  });
+  check("create client → 201", clientRes.status === 201 && Boolean(clientRes.body?.data?._id), JSON.stringify(clientRes.body));
+  const clientId = clientRes.body?.data?._id;
+
+  const badClient = await json("/admin/clients", { method: "POST", cookie, body: { name: "x" } });
+  check("client name shorter than 2 chars → 400 with field detail", badClient.status === 400 && Boolean(badClient.body?.error?.details?.name), JSON.stringify(badClient.body?.error));
+
+  const payeeIds = [];
+  for (const [name, role] of [
+    ["Smoke Referrer", "referrer"],
+    ["Smoke Worker 1", "worker"],
+    ["Smoke Worker 2", "worker"],
+    ["Smoke Worker 3", "worker"],
+  ]) {
+    const created = await json("/admin/payees", { method: "POST", cookie, body: { name, role } });
+    if (created.status === 201) payeeIds.push(created.body.data._id);
+  }
+  check("created 4 payees (1 referrer + 3 workers)", payeeIds.length === 4, `n=${payeeIds.length}`);
+
+  const baseOrder = {
+    clientId,
+    title: "Settlement fixture",
+    items: [{ name: "Video Ad Making", unitLabel: "video", quantity: 2, unitPriceMinor: 100_000 }],
+  };
+
+  /* ====================================================================== *
+   * FORGED TOTALS ARE IGNORED (server-side arithmetic only)
+   * ====================================================================== */
+  const forged = await json("/admin/orders", {
+    method: "POST",
+    cookie,
+    body: {
+      ...baseOrder,
+      items: [{ name: "Video Ad Making", unitLabel: "video", quantity: 2, unitPriceMinor: 100_000, lineTotalMinor: 1 }],
+      discountMinor: 0,
+      totalMinor: 7,
+      subtotalMinor: 7,
+    },
+  });
+  check(
+    "forged lineTotalMinor/totalMinor in the body are ignored",
+    forged.status === 201 && forged.body?.data?.totalMinor === 200_000 && forged.body?.data?.items?.[0]?.lineTotalMinor === 200_000,
+    JSON.stringify({ status: forged.status, total: forged.body?.data?.totalMinor }),
+  );
+  const forgedId = forged.body?.data?._id;
+
+  const overDiscount = await json("/admin/orders", {
+    method: "POST",
+    cookie,
+    body: { ...baseOrder, discountMinor: 200_001 },
+  });
+  check("discount larger than subtotal → 400", overDiscount.status === 400, String(overDiscount.status));
+
+  const tooManyItems = await json("/admin/orders", {
+    method: "POST",
+    cookie,
+    body: {
+      clientId,
+      items: Array.from({ length: 15 }, (_, index) => ({ name: `Item ${index}`, quantity: 1, unitPriceMinor: 1 })),
+    },
+  });
+  check("15 line items → 400 (cap is 14)", tooManyItems.status === 400, String(tooManyItems.status));
+
+  /* ====================================================================== *
+   * INVOICE NUMBERS — 20 created in parallel, all unique and sequential
+   * ====================================================================== */
+  const parallel = await Promise.all(
+    Array.from({ length: 20 }, (_, index) =>
+      json("/admin/orders", {
+        method: "POST",
+        cookie,
+        body: {
+          ...baseOrder,
+          title: `Parallel ${index}`,
+          items: [{ name: "Custom Work", unitLabel: "item", quantity: 1, unitPriceMinor: 100_000 + index }],
+        },
+      }),
+    ),
+  );
+  const invoices = parallel.map((response) => response.body?.data?.invoiceNumber).filter(Boolean);
+  const unique = new Set(invoices);
+  const year = new Date(Date.now() + 6 * 60 * 60 * 1000).getUTCFullYear();
+  const formatOk = invoices.every((value) => new RegExp(`^JZ-${year}-\\d{4}$`).test(value));
+  const sequence = invoices.map((value) => Number(value.slice(-4))).sort((a, b) => a - b);
+  const consecutive = sequence.every((value, index) => index === 0 || value === sequence[index - 1] + 1);
+  check("20 parallel orders → 20 UNIQUE invoice numbers", unique.size === 20, `unique=${unique.size}`);
+  check("invoice format is JZ-YYYY-NNNN (Asia/Karachi year)", formatOk, JSON.stringify(invoices.slice(0, 3)));
+  check("invoice numbers are sequential under concurrency", consecutive, JSON.stringify(sequence));
+
+  /* ====================================================================== *
+   * PAYMENTS — atomic, guarded, race-safe
+   * ====================================================================== */
+  const payTarget = parallel[0].body?.data;
+  const payBody = (amountMinor, method) =>
+    json(`/admin/orders/${payTarget._id}/payments`, { method: "POST", cookie, body: { amountMinor, method } });
+
+  const badMethod = await payBody(40_000, "Bitcoin");
+  check("payment method not in settings → 400", badMethod.status === 400, String(badMethod.status));
+
+  const partial = await payBody(40_000, "Cash");
+  check(
+    "partial payment → paymentStatus 'partial'",
+    partial.status === 201 && partial.body?.data?.order?.paymentStatus === "partial",
+    JSON.stringify(partial.body?.data?.order),
+  );
+
+  const settle = await payBody(payTarget.totalMinor - 40_000, "Bank Transfer");
+  check(
+    "paying the exact remainder → 'paid' with balance 0",
+    settle.status === 201 && settle.body?.data?.order?.paymentStatus === "paid" && settle.body?.data?.order?.balanceMinor === 0,
+    JSON.stringify(settle.body?.data?.order),
+  );
+
+  const overpay = await payBody(1, "Cash");
+  check("overpaying → 409 with the balance", overpay.status === 409 && overpay.body?.error?.details?.balanceMinor === "0", JSON.stringify(overpay.body?.error));
+
+  // Remove the balance payment — totals and status recompute atomically.
+  const settlePaymentId = settle.body?.data?.payment?._id;
+  const removed = await json(`/admin/orders/${payTarget._id}/payments/${settlePaymentId}`, { method: "DELETE", cookie });
+  check(
+    "deleting a payment recomputes paid + status",
+    removed.status === 200 && removed.body?.data?.order?.paidMinor === 40_000 && removed.body?.data?.order?.paymentStatus === "partial",
+    JSON.stringify(removed.body?.data?.order),
+  );
+
+  // 10 concurrent payments for the whole balance → exactly ONE lands.
+  const raceOrder = parallel[1].body?.data;
+  const race = await Promise.all(
+    Array.from({ length: 10 }, () =>
+      json(`/admin/orders/${raceOrder._id}/payments`, {
+        method: "POST",
+        cookie,
+        body: { amountMinor: raceOrder.totalMinor, method: "Cash" },
+      }),
+    ),
+  );
+  const raceWins = race.filter((response) => response.status === 201).length;
+  const raceOrderAfter = await json(`/admin/orders/${raceOrder._id}`, { cookie });
+  check("10 parallel full-balance payments → exactly one succeeds", raceWins === 1, `wins=${raceWins}`);
+  check(
+    "paidMinor never exceeds the total after the race",
+    raceOrderAfter.body?.data?.paidMinor === raceOrder.totalMinor && raceOrderAfter.body?.data?.paymentStatus === "paid",
+    JSON.stringify({ paid: raceOrderAfter.body?.data?.paidMinor, total: raceOrder.totalMinor }),
+  );
+  const raceOverpay = race.filter((response) => response.status === 409).length;
+  check("the nine losers are 409 CONFLICT", raceOverpay === 9, `conflicts=${raceOverpay}`);
+
+  /* ====================================================================== *
+   * STATUS RULES
+   * ====================================================================== */
+  const unpaidStatus = await json(`/admin/orders/${forgedId}/status`, {
+    method: "PATCH",
+    cookie,
+    body: { status: "completed" },
+  });
+  check("completed while unpaid → 409", unpaidStatus.status === 409, String(unpaidStatus.status));
+
+  const forcedStatus = await json(`/admin/orders/${forgedId}/status`, {
+    method: "PATCH",
+    cookie,
+    body: { status: "completed", allowUnpaidComplete: true },
+  });
+  check("completed while unpaid with allowUnpaidComplete → 200", forcedStatus.status === 200, String(forcedStatus.status));
+  check("status history recorded", (forcedStatus.body?.data?.statusHistory ?? []).some((entry) => entry.status === "completed"));
+
+  // Give it money so the refund flag has something to report.
+  const paidBeforeCancel = await json(`/admin/orders/${forgedId}/payments`, {
+    method: "POST",
+    cookie,
+    body: { amountMinor: 1000, method: "Cash" },
+  });
+  check("recorded 1,000 paisa before cancelling", paidBeforeCancel.status === 201, String(paidBeforeCancel.status));
+
+  const cancelRes = await json(`/admin/orders/${forgedId}/status`, {
+    method: "PATCH",
+    cookie,
+    body: { status: "cancelled" },
+  });
+  check(
+    "cancelling a paid order flags the refund due",
+    cancelRes.status === 200 && cancelRes.body?.data?.refundDueMinor === 1000,
+    JSON.stringify({ refund: cancelRes.body?.data?.refundDueMinor }),
+  );
+  check("a cancelled order keeps its paymentStatus but is flagged", cancelRes.body?.data?.paymentStatus === "partial", String(cancelRes.body?.data?.paymentStatus));
+  const payOnCancelled = await json(`/admin/orders/${forgedId}/payments`, {
+    method: "POST",
+    cookie,
+    body: { amountMinor: 1, method: "Cash" },
+  });
+  check("a cancelled order cannot receive payments → 409", payOnCancelled.status === 409, String(payOnCancelled.status));
+
+  /* ====================================================================== *
+   * PERMISSIONS — plain admin vs super admin
+   * ====================================================================== */
+  const SUPER_PASSWORD = "SmokeFinance!2026";
+  const plain = await json("/admin/team", {
+    method: "POST",
+    cookie,
+    body: { email: "smoke.finance@example.com", name: "Smoke Finance Admin", role: "admin", password: SUPER_PASSWORD },
+  });
+  check("created a plain (non-super) admin", plain.status === 201, JSON.stringify(plain.body));
+  const plainId = plain.body?.data?.admin?.id;
+  const plainLogin = await json("/auth/login", {
+    method: "POST",
+    body: { email: "smoke.finance@example.com", password: SUPER_PASSWORD },
+  });
+  const plainCookie = cookieFrom(plainLogin.response);
+  check("plain admin can sign in", plainLogin.status === 200 && plainCookie.startsWith("jazari_admin="));
+
+  const settingsPut = await json("/admin/finance/settings", {
+    method: "PUT",
+    cookie: plainCookie,
+    body: { referrerBp: 9999 },
+  });
+  check("plain admin PUT /finance/settings → 403", settingsPut.status === 403, String(settingsPut.status));
+  const treasury = await json("/admin/finance/treasury", { cookie: plainCookie });
+  check("plain admin GET /finance/treasury → 403", treasury.status === 403, String(treasury.status));
+  const payoutByPlain = await json(`/admin/orders/${forgedId}/payout`, {
+    method: "PATCH",
+    cookie: plainCookie,
+    body: { party: "worker", payeeId: payeeIds[1], paid: true },
+  });
+  check("plain admin PATCH /orders/:id/payout → 403", payoutByPlain.status === 403, String(payoutByPlain.status));
+
+  // The plain admin's own order request CARRIES split data that must be ignored.
+  const ignoredSplit = await json("/admin/orders", {
+    method: "POST",
+    cookie: plainCookie,
+    body: {
+      ...baseOrder,
+      title: "Plain admin order",
+      split: {
+        referrer: { payeeId: payeeIds[0], bp: 1000 },
+        workers: [
+          { payeeId: payeeIds[1], bp: 2000 },
+          { payeeId: payeeIds[2], bp: 2000 },
+          { payeeId: payeeIds[3], bp: 2000 },
+        ],
+      },
+    },
+  });
+  check("plain admin can create an order", ignoredSplit.status === 201, JSON.stringify(ignoredSplit.body?.error));
+  const ignoredId = ignoredSplit.body?.data?._id;
+  const ignoredDoc = await Order.findById(ignoredId).lean();
+  check(
+    "a plain admin's split fields are IGNORED server-side (company keeps 100%)",
+    ignoredDoc?.split?.referrer === null && ignoredDoc?.split?.workers?.length === 0 && ignoredDoc?.split?.companyMinor === ignoredDoc?.totalMinor,
+    JSON.stringify({ referrer: ignoredDoc?.split?.referrer, workers: ignoredDoc?.split?.workers?.length, company: ignoredDoc?.split?.companyMinor, total: ignoredDoc?.totalMinor }),
+  );
+
+  const plainOrderView = await json(`/admin/orders/${ignoredId}`, { cookie: plainCookie });
+  check(
+    "a plain admin's GET order has NO split key",
+    plainOrderView.status === 200 && !("split" in (plainOrderView.body?.data ?? {})),
+    JSON.stringify(Object.keys(plainOrderView.body?.data ?? {})),
+  );
+  const plainOrderList = await json(`/admin/orders?limit=5`, { cookie: plainCookie });
+  check(
+    "a plain admin's order LIST has no split key",
+    (plainOrderList.body?.data ?? []).every((row) => !("split" in row)),
+  );
+  const superOrderView = await json(`/admin/orders/${ignoredId}`, { cookie });
+  check(
+    "a super admin's GET order includes the split",
+    superOrderView.status === 200 && Boolean(superOrderView.body?.data?.split),
+  );
+
+  /* ====================================================================== *
+   * SPLIT ASSIGNMENT + PAYOUT LOCK
+   * ====================================================================== */
+  const splitOrder = await json("/admin/orders", {
+    method: "POST",
+    cookie,
+    body: {
+      ...baseOrder,
+      title: "Split fixture",
+      items: [{ name: "Graphic Designing", unitLabel: "design", quantity: 1, unitPriceMinor: 500_000 }],
+      split: {
+        referrer: { payeeId: payeeIds[0], bp: 1000 },
+        workers: [
+          { payeeId: payeeIds[1], bp: 2000 },
+          { payeeId: payeeIds[2], bp: 2000 },
+          { payeeId: payeeIds[3], bp: 2000 },
+        ],
+      },
+    },
+  });
+  const splitId = splitOrder.body?.data?._id;
+  const splitData = splitOrder.body?.data?.split;
+  check(
+    "super admin's split is computed 10/20/20/20 with company 30%",
+    splitOrder.status === 201 &&
+      splitData?.referrer?.amountMinor === 50_000 &&
+      splitData?.workers?.every((worker) => worker.amountMinor === 100_000) &&
+      splitData?.companyMinor === 150_000,
+    JSON.stringify(splitData),
+  );
+  check("split stores the payee's server-side name, not the client's", splitData?.referrer?.name === "Smoke Referrer", String(splitData?.referrer?.name));
+
+  const overShareRequest = await json("/admin/orders", {
+    method: "POST",
+    cookie,
+    body: {
+      ...baseOrder,
+      split: {
+        referrer: { payeeId: payeeIds[0], bp: 6000 },
+        workers: [{ payeeId: payeeIds[1], bp: 6000 }],
+      },
+    },
+  });
+  check("split summing over 100% → 400", overShareRequest.status === 400, String(overShareRequest.status));
+
+  // Mark one worker's share as paid out — the money is now locked.
+  const payout = await json(`/admin/orders/${splitId}/payout`, {
+    method: "PATCH",
+    cookie,
+    body: { party: "worker", payeeId: payeeIds[1], paid: true },
+  });
+  check(
+    "super admin can mark a share paid out",
+    payout.status === 200 && Boolean(payout.body?.data?.split?.workers?.find((w) => w.payeeId === payeeIds[1])?.paidOutAt),
+    JSON.stringify(payout.body?.error),
+  );
+
+  const lockedTotal = await json(`/admin/orders/${splitId}`, {
+    method: "PUT",
+    cookie,
+    body: { discountMinor: 100 },
+  });
+  check("editing the total after a payout → 409", lockedTotal.status === 409, String(lockedTotal.status));
+
+  const lockedItems = await json(`/admin/orders/${splitId}`, {
+    method: "PUT",
+    cookie,
+    body: { items: [{ name: "Custom Work", unitLabel: "item", quantity: 1, unitPriceMinor: 1 }], discountMinor: 0 },
+  });
+  check("editing the items after a payout → 409", lockedItems.status === 409, String(lockedItems.status));
+
+  const lockedSplit = await json(`/admin/orders/${splitId}`, {
+    method: "PUT",
+    cookie,
+    body: { split: { referrer: { payeeId: payeeIds[0], bp: 500 } } },
+  });
+  check("reassigning the split after a payout → 409", lockedSplit.status === 409, String(lockedSplit.status));
+
+  const undoPayout = await json(`/admin/orders/${splitId}/payout`, {
+    method: "PATCH",
+    cookie,
+    body: { party: "worker", payeeId: payeeIds[1], paid: false },
+  });
+  check("a payout can be undone", undoPayout.status === 200 && undoPayout.body?.data?.split?.workers?.[0]?.paidOutAt === null, JSON.stringify(undoPayout.body?.error));
+
+  const cancelOnPayout = await json(`/admin/orders/${splitId}/payout`, {
+    method: "PATCH",
+    cookie,
+    body: { party: "worker", payeeId: "64b000000000000000000000", paid: true },
+  });
+  check("payout for an unknown person → 404", cancelOnPayout.status === 404, String(cancelOnPayout.status));
+
+  /* ====================================================================== *
+   * CLIENTS — no hard delete while orders reference them
+   * ====================================================================== */
+  const clientWithOrders = await json(`/admin/clients/${clientId}`, { method: "DELETE", cookie });
+  check("deleting a client that has orders → 409", clientWithOrders.status === 409, String(clientWithOrders.status));
+
+  const orphanClient = await json("/admin/clients", { method: "POST", cookie, body: { name: "Orphan Client" } });
+  const orphanId = orphanClient.body?.data?._id;
+  const orphanDelete = await json(`/admin/clients/${orphanId}`, { method: "DELETE", cookie });
+  check("deleting a client without orders → 200", orphanDelete.status === 200 && orphanDelete.body?.data?.deleted === true, String(orphanDelete.status));
+
+  const clientList = await json(`/admin/clients?q=Smoke`, { cookie });
+  check(
+    "client search returns the fixture with its order count and totals",
+    clientList.status === 200 &&
+      (clientList.body?.data ?? []).some((row) => row.name === "Smoke Client" && row.orderCount > 0 && Number.isInteger(row.billedMinor)),
+    JSON.stringify(clientList.body?.data?.[0]),
+  );
+
+  const clientDetail = await json(`/admin/clients/${clientId}`, { cookie });
+  check("client detail lists their orders", clientDetail.status === 200 && (clientDetail.body?.data?.orders ?? []).length > 0, `n=${clientDetail.body?.data?.orders?.length}`);
+
+  const payeeList = await json(`/admin/payees?q=Smoke`, { cookie });
+  check(
+    "payee list carries owed / paid-out totals",
+    payeeList.status === 200 && (payeeList.body?.data ?? []).some((row) => Number.isInteger(row.owedMinor) && Number.isInteger(row.paidOutMinor)),
+    JSON.stringify(payeeList.body?.data?.[0]),
+  );
+
+  /* ====================================================================== *
+   * TREASURY — exact integers against a hand-computed fixture
+   * ====================================================================== */
+  // Everything created above is cleared so the assertion below is EXACT and
+  // hand-checkable (the test database is isolated to this process).
+  await Order.deleteMany({});
+
+  const fixtureTotals = [1_000_000, 333_333, 500_000];
+  const fixturePaid = [1_000_000, 100_000, 0];
+  // Hand computation (no people → 100% company; with 10/20/20/20 → 30%):
+  //   order 1: company 300,000, collected 300,000
+  //   order 2: company 100,002, collected floor(100002×100000/333333) = 30,000
+  //   order 3: company 150,000, collected 0
+  const fixtureIds = [];
+  for (let index = 0; index < fixtureTotals.length; index += 1) {
+    const created = await json("/admin/orders", {
+      method: "POST",
+      cookie,
+      body: {
+        clientId,
+        title: `Treasury fixture ${index + 1}`,
+        items: [
+          { name: "Video Ad Making", unitLabel: "video", quantity: 1, unitPriceMinor: fixtureTotals[index] },
+        ],
+        split: {
+          referrer: { payeeId: payeeIds[0], bp: 1000 },
+          workers: [
+            { payeeId: payeeIds[1], bp: 2000 },
+            { payeeId: payeeIds[2], bp: 2000 },
+            { payeeId: payeeIds[3], bp: 2000 },
+          ],
+        },
+      },
+    });
+    if (created.status !== 201) continue;
+    fixtureIds.push(created.body.data._id);
+    if (fixturePaid[index] > 0) {
+      await json(`/admin/orders/${created.body.data._id}/payments`, {
+        method: "POST",
+        cookie,
+        body: { amountMinor: fixturePaid[index], method: "Cash" },
+      });
+    }
+  }
+  check("created the 3 treasury fixture orders", fixtureIds.length === 3, `n=${fixtureIds.length}`);
+
+  const treasuryRes = await json("/admin/finance/treasury", { cookie });
+  const treasuryData = treasuryRes.body?.data ?? {};
+  check("super admin GET /finance/treasury → 200", treasuryRes.status === 200, String(treasuryRes.status));
+  check(
+    "treasury expected company box = 550,002 (hand-computed)",
+    treasuryData.expectedCompanyMinor === 550_002,
+    `got ${treasuryData.expectedCompanyMinor}`,
+  );
+  check(
+    "treasury collected company box = 330,000 (hand-computed)",
+    treasuryData.collectedCompanyMinor === 330_000,
+    `got ${treasuryData.collectedCompanyMinor}`,
+  );
+  check(
+    "treasury still-to-collect = 220,002 (hand-computed)",
+    treasuryData.stillToCollectMinor === 220_002,
+    `got ${treasuryData.stillToCollectMinor}`,
+  );
+  check(
+    "treasury people owed = 1,283,331 (hand-computed: referrer 183,333 + 3 workers × 366,666)",
+    treasuryData.peopleOwedMinor === 1_283_331,
+    `got ${treasuryData.peopleOwedMinor}`,
+  );
+  check(
+    "treasury billed = 1,833,333 and paid = 1,100,000",
+    treasuryData.orders?.billedMinor === 1_833_333 && treasuryData.orders?.paidMinor === 1_100_000,
+    JSON.stringify(treasuryData.orders),
+  );
+  check(
+    "treasury people table has 4 rows, all pending",
+    Array.isArray(treasuryData.people) && treasuryData.people.length === 4 && treasuryData.people.every((row) => row.paidOutMinor === 0 && row.pendingMinor === row.owedMinor),
+    JSON.stringify(treasuryData.people?.map((row) => ({ name: row.name, owed: row.owedMinor }))),
+  );
+  check(
+    "treasury returns a monthly series of integers",
+    Array.isArray(treasuryData.months) && treasuryData.months.every((row) => typeof row.month === "string" && Number.isInteger(row.collectedMinor)),
+    JSON.stringify(treasuryData.months),
+  );
+  const thisMonth = treasuryData.months?.find((row) => row.month === new Date().toISOString().slice(0, 7))?.collectedMinor ?? treasuryData.months?.at(-1)?.collectedMinor;
+  check("the current month carries the 330,000 collected", Number.isInteger(thisMonth) && thisMonth === 330_000, `got ${thisMonth}`);
+
+  const summary = await json("/admin/orders/summary", { cookie });
+  check(
+    "orders summary reports open orders, unpaid balance, collected and delivered",
+    summary.status === 200 &&
+      summary.body?.data?.unpaidBalanceMinor === 733_333 &&
+      Number.isInteger(summary.body?.data?.collectedThisMonthMinor) &&
+      summary.body?.data?.collectedThisMonthMinor === 1_100_000,
+    JSON.stringify(summary.body?.data),
+  );
+
+  /* ====================================================================== *
+   * FILTERS, PAGINATION, SEARCH + CLEANUP OF THE TEMPORARY ADMIN
+   * ====================================================================== */
+  const filtered = await json(`/admin/orders?status=new&limit=5`, { cookie });
+  check("status filter is honoured", filtered.status === 200 && (filtered.body?.data ?? []).length === 3 && (filtered.body?.data ?? []).every((row) => row.status === "new"), `n=${filtered.body?.data?.length}`);
+  const paidFilter = await json(`/admin/orders?paymentStatus=paid&limit=5`, { cookie });
+  check("paymentStatus filter is honoured", paidFilter.status === 200 && (paidFilter.body?.data ?? []).every((row) => row.paymentStatus === "paid"));
+  const searched = await json(`/admin/orders?q=${encodeURIComponent("JZ-" + year)}&limit=5`, { cookie });
+  check("invoice-number search works", searched.status === 200 && (searched.body?.data ?? []).length > 0, `n=${searched.body?.data?.length}`);
+  const meta = searched.body?.meta;
+  check("orders use the standard pagination meta shape", Boolean(meta) && typeof meta.page === "number" && typeof meta.totalPages === "number", JSON.stringify(meta));
+  const badSearch = await json(`/admin/orders?q=${encodeURIComponent("((((")}`, { cookie });
+  check("a regex metacharacter search does not crash the API", badSearch.status === 200, String(badSearch.status));
+
+  const unknownOrder = await json(`/admin/orders/64b000000000000000000000`, { cookie });
+  check("unknown order id → 404", unknownOrder.status === 404, String(unknownOrder.status));
+  const badPaymentMethod = await json(`/admin/orders/${fixtureIds[0]}/payments`, {
+    method: "POST",
+    cookie,
+    body: { amountMinor: 1, method: "" },
+  });
+  check("payment without a method → 400", badPaymentMethod.status === 400, String(badPaymentMethod.status));
+
+  // Remove the temporary plain admin again — no stray accounts left behind.
+  if (plainId) {
+    const removedAdmin = await json(`/admin/team/${plainId}`, { method: "DELETE", cookie });
+    check("temporary plain admin removed", removedAdmin.status === 200, String(removedAdmin.status));
+  }
+
+  await mongoose.disconnect();
 }
 
 console.log("[smoke] 11. logout");

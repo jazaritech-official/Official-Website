@@ -5044,3 +5044,41 @@ html:not(.dark) .logo-item[data-tone="light"] .logo-item__img {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
+
+/* ============================================================
+   ORDERS / BUSINESS (Task N)
+   ============================================================
+   Additive block: nothing above is restyled, and every colour comes from the
+   existing tokens, so both themes and the contrast audit keep passing.
+   ============================================================ */
+@layer components {
+  /* Stat tiles on the Orders page — one Growth Green node as a micro-accent. */
+  .order-stat {
+    position: relative;
+  }
+
+  .order-stat::after {
+    content: "";
+    position: absolute;
+    right: 0.9rem;
+    top: 0.9rem;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background-color: var(--growth);
+    opacity: 0.9;
+  }
+
+  /* The on-screen invoice IS the exported SVG, so it simply scales to its
+     container and stays vector-sharp at any size (including retina). */
+  .bill-preview {
+    width: 100%;
+    background-color: #ffffff;
+  }
+
+  .bill-preview svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+}

@@ -413,3 +413,236 @@ export interface HealthData {
   database: string;
   timestamp: string;
 }
+
+/* --- Business: orders, clients, payees, settlement, treasury (Task N) ---- */
+
+export type OrderStatus = "new" | "in_progress" | "review" | "delivered" | "completed" | "cancelled";
+export type PaymentStatus = "unpaid" | "partial" | "paid";
+export type PayeeRole = "worker" | "referrer" | "both";
+
+/** Basis points: 10000 = 100%, 1000 = 10%, 1250 = 12.5%. Integers only. */
+export type BasisPoints = number;
+
+export interface FinanceClient {
+  _id: string;
+  name: string;
+  phone: string;
+  email: string;
+  company: string;
+  address: string;
+  notes: string;
+  isActive: boolean;
+  /** Derived by the API (one aggregation over the listed ids). */
+  orderCount?: number;
+  billedMinor?: number;
+  paidMinor?: number;
+  lastOrderAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ClientOrderSummary {
+  _id: string;
+  invoiceNumber: string;
+  title: string;
+  status: OrderStatus;
+  paymentStatus: PaymentStatus;
+  totalMinor: number;
+  paidMinor: number;
+  createdAt: string;
+}
+
+export interface FinanceClientDetail extends FinanceClient {
+  orders?: ClientOrderSummary[];
+}
+
+export interface Payee {
+  _id: string;
+  name: string;
+  role: PayeeRole;
+  phone: string;
+  notes: string;
+  isActive: boolean;
+  /** Derived by the API from the split snapshots on non-cancelled orders. */
+  owedMinor?: number;
+  paidOutMinor?: number;
+  orderCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CatalogItem {
+  _id: string;
+  name: string;
+  unitLabel: string;
+  defaultUnitPriceMinor: number;
+  isActive: boolean;
+  sortOrder: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface OrderItem {
+  catalogItemId?: string | null;
+  name: string;
+  unitLabel: string;
+  quantity: number;
+  unitPriceMinor: number;
+  /** Recomputed server-side; a value sent by the client is ignored. */
+  lineTotalMinor: number;
+}
+
+export interface OrderPayment {
+  _id: string;
+  amountMinor: number;
+  method: string;
+  receivedAt: string;
+  reference: string;
+  note: string;
+  recordedBy?: string | null;
+}
+
+export interface OrderShare {
+  payeeId: string | null;
+  name: string;
+  bp: BasisPoints;
+  amountMinor: number;
+  paidOutAt: string | null;
+}
+
+export interface OrderSplit {
+  referrerBp: BasisPoints;
+  workerBp: BasisPoints;
+  referrer: OrderShare | null;
+  workers: OrderShare[];
+  companyMinor: number;
+  computedAt: string;
+}
+
+export interface OrderStatusHistoryEntry {
+  status: OrderStatus;
+  at: string;
+  byAdminId?: string | null;
+  note?: string;
+}
+
+export interface Order {
+  _id: string;
+  invoiceNumber: string;
+  clientId: string;
+  clientSnapshot: { name: string; phone: string; email: string; company: string };
+  title: string;
+  notes: string;
+  items: OrderItem[];
+  subtotalMinor: number;
+  discountMinor: number;
+  totalMinor: number;
+  status: OrderStatus;
+  statusHistory: OrderStatusHistoryEntry[];
+  paymentStatus: PaymentStatus;
+  paidMinor: number;
+  payments: OrderPayment[];
+  deliveryDate: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Derived by the API for the list UI. */
+  balanceMinor?: number;
+  refundDueMinor?: number;
+  /**
+   * Present only for callers allowed to see it (super_admin when
+   * FINANCE_SPLIT_SUPER_ONLY is on). Omitted server-side, never hidden in the UI.
+   */
+  split?: OrderSplit;
+  /** Only returned by GET /admin/orders/:id. */
+  paymentMethods?: string[];
+}
+
+/** What the editor sends (money is always integer minor units). */
+export interface OrderInput {
+  clientId: string;
+  title?: string;
+  notes?: string;
+  deliveryDate?: string | null;
+  discountMinor?: number;
+  status?: OrderStatus;
+  items: Array<{
+    catalogItemId?: string | null;
+    name: string;
+    unitLabel: string;
+    quantity: number;
+    unitPriceMinor: number;
+  }>;
+  initialPayment?: { amountMinor: number; method: string; receivedAt?: string; reference?: string; note?: string };
+  split?: {
+    referrer?: { payeeId?: string | null; bp?: BasisPoints } | null;
+    workers?: Array<{ payeeId?: string | null; bp?: BasisPoints }>;
+  };
+}
+
+export interface OrdersSummary {
+  openOrders: number;
+  unpaidBalanceMinor: number;
+  collectedThisMonthMinor: number;
+  paymentsThisMonth: number;
+  deliveredThisMonth: number;
+  monthStart: string;
+}
+
+export interface FinanceBusiness {
+  businessName: string;
+  address: string;
+  phone: string;
+  email: string;
+  website: string;
+  paymentInstructions: string;
+  billFooterNote: string;
+}
+
+export interface FinanceSettings {
+  referrerBp: BasisPoints;
+  workerBp: BasisPoints;
+  currency: string;
+  paymentMethods: string[];
+  business: FinanceBusiness;
+}
+
+export interface TreasuryPerson {
+  payeeId: string | null;
+  name: string;
+  owedMinor: number;
+  paidOutMinor: number;
+  pendingMinor: number;
+  orderCount: number;
+}
+
+export interface TreasuryMonth {
+  /** "YYYY-MM" in Asia/Karachi. */
+  month: string;
+  collectedMinor: number;
+  payments: number;
+}
+
+export interface TreasuryReport {
+  expectedCompanyMinor: number;
+  collectedCompanyMinor: number;
+  stillToCollectMinor: number;
+  peopleOwedMinor: number;
+  peoplePaidOutMinor: number;
+  orders: { count: number; billedMinor: number; paidMinor: number; outstandingMinor: number };
+  people: TreasuryPerson[];
+  months: TreasuryMonth[];
+  generatedAt: string;
+}
+
+/** The payload of a payout toggle; `party` echoes what was changed. */
+export interface PayoutResult {
+  split: OrderSplit;
+  party: "referrer" | "worker";
+  payeeId: string;
+  paid: boolean;
+}
+
+export interface PaymentResult {
+  payment: OrderPayment | null;
+  order: { _id: string; invoiceNumber: string; paidMinor: number; totalMinor: number; paymentStatus: PaymentStatus; balanceMinor: number };
+}

@@ -171,7 +171,7 @@ export function VisitorsManager() {
           icon={<UsersIcon size={22} />}
         />
       ) : (
-        <div className="card overflow-x-auto">
+        <div className="card relative overflow-x-auto">
           <table className="w-full min-w-[880px] text-left text-sm">
             <caption className="sr-only">Visitor records</caption>
             <thead>
