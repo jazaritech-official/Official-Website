@@ -25,8 +25,10 @@ export const DEFAULT_TIER: QualityTier = "8k";
 
 export interface ExportResult {
   blob: Blob;
-  /** The size actually produced (may be smaller than asked for). */
+  /** The width actually produced (may be smaller than asked for). */
   size: number;
+  /** The height — equal to `size` for a one-page bill, taller when paginated. */
+  height: number;
   tier: QualityTier;
   /** Set when the requested tier could not be produced. */
   fallbackReason?: string;
@@ -49,25 +51,32 @@ function yieldToBrowser(): Promise<void> {
   });
 }
 
-/** Render the SVG string at `size`×`size`. Throws when the device cannot. */
-async function renderPng(svg: string, size: number): Promise<Blob> {
+/**
+ * Render the SVG string at `size` px wide — and as tall as its aspect ratio
+ * says (a one-page bill is square; a paginated bill is taller). Throws when
+ * the device cannot allocate the canvas.
+ */
+async function renderPng(svg: string, size: number): Promise<{ blob: Blob; width: number; height: number }> {
   const svgBlob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(svgBlob);
   let canvas: HTMLCanvasElement | null = null;
   try {
     const image = await loadImage(url);
+    const aspect = image.naturalWidth > 0 ? image.naturalHeight / image.naturalWidth : 1;
+    const width = size;
+    const height = Math.max(1, Math.round(size * aspect));
     canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
+    canvas.width = width;
+    canvas.height = height;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Canvas 2D is unavailable on this device.");
     // Never transmit transparent pixels: the bill is printed on white.
     context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, size, size);
-    context.drawImage(image, 0, 0, size, size);
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
     const blob = await new Promise<Blob | null>((resolve) => canvas?.toBlob(resolve, "image/png"));
     if (!blob) throw new Error("The browser could not encode the PNG.");
-    return blob;
+    return { blob, width, height };
   } finally {
     URL.revokeObjectURL(url);
     if (canvas) {
@@ -94,12 +103,12 @@ export async function exportBillPng(
   for (let index = startIndex; index < start.length; index += 1) {
     const candidate = start[index];
     const size = TIER_SIZES[candidate];
-    onProgress?.(`Rendering ${size} × ${size}…`);
+    onProgress?.(`Rendering ${size} px wide…`);
     await yieldToBrowser();
     try {
-      const blob = await renderPng(svg, size);
+      const rendered = await renderPng(svg, size);
       onProgress?.("");
-      return { blob, size, tier: candidate, fallbackReason };
+      return { blob: rendered.blob, size: rendered.width, height: rendered.height, tier: candidate, fallbackReason };
     } catch (error) {
       lastError = error;
       const lower = start[index + 1];

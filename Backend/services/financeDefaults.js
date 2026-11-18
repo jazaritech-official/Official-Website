@@ -34,7 +34,7 @@ let inflight = null;
 export async function ensureFinanceDefaults() {
   if (inflight) return inflight;
 
-  inflight = (async () => {
+  const pending = (async () => {
     const settings = await FinanceSettings.findOneAndUpdate(
       { key: FINANCE_DEFAULTS_KEY },
       {
@@ -79,13 +79,19 @@ export async function ensureFinanceDefaults() {
     }
 
     return { settings, catalogUpserted };
-  })().catch((error) => {
-    // A transient failure must not be cached — the next request retries.
-    inflight = null;
-    throw error;
-  });
+  })();
 
-  return inflight;
+  // Deduplicate CONCURRENT calls only: `inflight` is cleared as soon as the
+  // bootstrap settles, so the next read re-fetches the document. Without this
+  // the promise stayed resolved forever and every later caller (the settings
+  // page, the split template, the order form) saw the FIRST snapshot — a
+  // saved edit never reached anyone until a server restart.
+  inflight = pending;
+  try {
+    return await pending;
+  } finally {
+    if (inflight === pending) inflight = null;
+  }
 }
 
 export default ensureFinanceDefaults;

@@ -3,7 +3,7 @@ import Order from "../models/Order.js";
 import { sendData } from "../utils/apiResponse.js";
 import { ApiError } from "../utils/errors.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { balanceMinor, financeSettings, hasPaidOut } from "../services/orderService.js";
+import { balanceMinor, financeSettings, orderLocked } from "../services/orderService.js";
 
 /**
  * PAYMENTS AND PAYOUTS
@@ -148,14 +148,14 @@ export const recordPayment = asyncHandler(async (req, res) => {
 /** DELETE /api/admin/orders/:id/payments/:paymentId — recomputes atomically. */
 export const deletePayment = asyncHandler(async (req, res) => {
   const order = await Order.findById(req.params.id)
-    .select("paidMinor totalMinor status paymentStatus payments split invoiceNumber")
+    .select("paidMinor totalMinor status paymentStatus payments split splitSnapshot invoiceNumber")
     .lean();
   if (!order) throw ApiError.notFound("Order not found.");
 
   const payment = (order.payments || []).find((entry) => String(entry._id) === String(req.params.paymentId));
   if (!payment) throw ApiError.notFound("Payment not found.");
 
-  if (hasPaidOut(order.split)) {
+  if (orderLocked(order)) {
     throw ApiError.conflict(
       "A share has already been paid out, so payments can no longer be removed from this order.",
       { split: "Undo the paid-out share first." },
@@ -222,15 +222,18 @@ export const deletePayment = asyncHandler(async (req, res) => {
 
 /**
  * PATCH /api/admin/orders/:id/payout — super_admin only (enforced at the mount).
- * body: { party: "referrer" | "worker", payeeId, paid: boolean }
+ * body: { party: "referrer" | "worker" | "owner", payeeId, paid: boolean }
+ *
+ * `owner` toggles the paid-out flag of an OWNER line inside splitSnapshot
+ * (the three-owner model); referrer/worker keep working for legacy orders.
  */
 export const setPayout = asyncHandler(async (req, res) => {
   const order = await Order.findById(req.params.id);
   if (!order) throw ApiError.notFound("Order not found.");
 
   const party = String(req.body?.party ?? "");
-  if (party !== "referrer" && party !== "worker") {
-    throw ApiError.badRequest("Choose who was paid.", { party: "Choose referrer or worker." });
+  if (party !== "referrer" && party !== "worker" && party !== "owner") {
+    throw ApiError.badRequest("Choose who was paid.", { party: "Choose referrer, worker or owner." });
   }
   const payeeId = String(req.body?.payeeId ?? "");
   if (!mongoose.isValidObjectId(payeeId)) {
@@ -242,7 +245,13 @@ export const setPayout = asyncHandler(async (req, res) => {
     throw ApiError.conflict("A cancelled order has no payouts.", { status: "Order is cancelled." });
   }
 
-  if (party === "referrer") {
+  if (party === "owner") {
+    const entry = (order.splitSnapshot?.entries ?? []).find(
+      (candidate) => !candidate.isReserve && String(candidate.ownerId ?? "") === payeeId,
+    );
+    if (!entry) throw ApiError.notFound("This order has no owner share for that person.");
+    entry.paidOutAt = paid ? new Date() : null;
+  } else if (party === "referrer") {
     const share = order.split?.referrer;
     if (!share || String(share.payeeId ?? "") !== payeeId) {
       throw ApiError.notFound("This order has no referrer share for that person.");
@@ -258,5 +267,11 @@ export const setPayout = asyncHandler(async (req, res) => {
   // never clobbered — one document, one atomic update.
   await order.save();
 
-  return sendData(res, { split: order.split, party, payeeId, paid });
+  return sendData(res, {
+    split: order.split,
+    splitSnapshot: order.splitSnapshot?.entries?.length ? order.splitSnapshot : undefined,
+    party,
+    payeeId,
+    paid,
+  });
 });
