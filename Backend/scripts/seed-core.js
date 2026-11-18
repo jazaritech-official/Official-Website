@@ -15,7 +15,18 @@ import Admin from "../models/Admin.js";
 import ProductTypeTemplate from "../models/ProductTypeTemplate.js";
 import Product from "../models/Product.js";
 import Service from "../models/Service.js";
+import WorkType from "../models/WorkType.js";
 import { ensureFinanceDefaults } from "../services/financeDefaults.js";
+
+/**
+ * Example WORK TYPES — dev/test seed ONLY (sampleContent: true), never the
+ * production seed: the owner adds their real types and prices themselves at
+ * /admin/work-types. Prices are INTEGER paisa (500 Rs = 50000).
+ */
+export const SAMPLE_WORK_TYPES = [
+  { name: "30 Seconds Video", unitPrice: 50_000, description: "One 30-second video", sortOrder: 10 },
+  { name: "1 Minute Video", unitPrice: 100_000, description: "One 1-minute video", sortOrder: 20 },
+];
 
 export const TEMPLATES = [
   {
@@ -456,6 +467,28 @@ export async function seedDatabase({
     } else {
       log(`[seed] products already present (${productCount}) — sample products skipped`);
     }
+
+    // Example work types (dev/test only, $setOnInsert so a price the owner
+    // has already typed in is never overwritten). NEVER runs in seed:prod.
+    for (const workType of SAMPLE_WORK_TYPES) {
+      const nameKey = workType.name.trim().toLowerCase();
+      await WorkType.updateOne(
+        { nameKey },
+        {
+          $setOnInsert: {
+            name: workType.name,
+            nameKey,
+            unitPrice: workType.unitPrice,
+            currency: "PKR",
+            description: workType.description,
+            isActive: true,
+            sortOrder: workType.sortOrder,
+          },
+        },
+        { upsert: true },
+      );
+    }
+    log(`[seed] example work types ready: ${SAMPLE_WORK_TYPES.map((entry) => entry.name).join(", ")} (dev/test only)`);
   } else {
     log("[seed] sample products disabled (SEED_SAMPLE_CONTENT is not true)");
   }

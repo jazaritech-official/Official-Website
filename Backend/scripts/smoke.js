@@ -17,7 +17,10 @@ import env from "../config/env.js";
 import Service from "../models/Service.js";
 import Admin from "../models/Admin.js";
 import Order from "../models/Order.js";
+import Payee from "../models/Payee.js";
+import AuditLog from "../models/AuditLog.js";
 import { computeSplit, computeTotals, derivePaymentStatus } from "../utils/orderMath.js";
+import { computeOwnerSplit } from "../utils/splitTemplate.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = process.env.SMOKE_PORT || "5199";
@@ -1400,6 +1403,9 @@ console.log("[smoke] 10c. orders, clients, settlement, treasury + the bill contr
     ["GET", "/admin/payees"],
     ["POST", "/admin/payees"],
     ["GET", "/admin/order-catalog"],
+    ["GET", "/admin/work-types"],
+    ["POST", "/admin/work-types"],
+    ["PUT", "/admin/work-types/64b000000000000000000000"],
     ["GET", "/admin/orders"],
     ["POST", "/admin/orders"],
     ["GET", "/admin/orders/summary"],
@@ -1496,10 +1502,28 @@ console.log("[smoke] 10c. orders, clients, settlement, treasury + the bill contr
     cookie,
     body: {
       clientId,
-      items: Array.from({ length: 15 }, (_, index) => ({ name: `Item ${index}`, quantity: 1, unitPriceMinor: 1 })),
+      items: Array.from({ length: 41 }, (_, index) => ({ name: `Item ${index}`, quantity: 1, unitPriceMinor: 1 })),
     },
   });
-  check("15 line items → 400 (cap is 14)", tooManyItems.status === 400, String(tooManyItems.status));
+  // RETIRED (Task N): "15 line items → 400 (cap is 14)" — the cap rose to 40
+  // so a long work list fits one order and the bill can paginate past 12
+  // lines. REPLACED by the two checks below.
+  check("41 line items → 400 (cap is 40)", tooManyItems.status === 400, String(tooManyItems.status));
+
+  const twentyLines = await json("/admin/orders", {
+    method: "POST",
+    cookie,
+    body: {
+      clientId,
+      title: "Twenty lines",
+      items: Array.from({ length: 20 }, (_, index) => ({ name: `Line ${index + 1}`, quantity: 1, unitPriceMinor: 1000 })),
+    },
+  });
+  check(
+    "20 line items are accepted (the bill paginates past 12 lines)",
+    twentyLines.status === 201 && (twentyLines.body?.data?.items ?? []).length === 20 && twentyLines.body?.data?.totalMinor === 20_000,
+    JSON.stringify({ status: twentyLines.status, lines: twentyLines.body?.data?.items?.length, total: twentyLines.body?.data?.totalMinor }),
+  );
 
   /* ====================================================================== *
    * INVOICE NUMBERS — 20 created in parallel, all unique and sequential
@@ -1945,6 +1969,445 @@ console.log("[smoke] 10c. orders, clients, settlement, treasury + the bill contr
     body: { amountMinor: 1, method: "" },
   });
   check("payment without a method → 400", badPaymentMethod.status === 400, String(badPaymentMethod.status));
+
+  /* ====================================================================== *
+   * TASK N — WORK TYPES, THE THREE-OWNER SPLIT, RECALCULATION, MIGRATION
+   * ====================================================================== */
+
+  /* ------------------------------------------------- A. work type CRUD --- */
+  const workTypes = await json("/admin/work-types", { cookie });
+  check(
+    "dev/test seed planted the two example work types (500 / 1000 Rs)",
+    workTypes.status === 200 &&
+      (workTypes.body?.data ?? []).some((row) => row.name === "30 Seconds Video" && row.unitPrice === 50_000) &&
+      (workTypes.body?.data ?? []).some((row) => row.name === "1 Minute Video" && row.unitPrice === 100_000),
+    JSON.stringify((workTypes.body?.data ?? []).map((row) => `${row.name}=${row.unitPrice}`)),
+  );
+  check(
+    "work types carry an orderCount for the delete/deactivate decision",
+    (workTypes.body?.data ?? []).every((row) => Number.isInteger(row.orderCount)),
+    JSON.stringify((workTypes.body?.data ?? []).slice(0, 2).map((row) => row.orderCount)),
+  );
+
+  const wtCreate = await json("/admin/work-types", {
+    method: "POST",
+    cookie,
+    body: { name: "Smoke Work Type", unitPrice: 123_456, description: "Created by the smoke suite" },
+  });
+  check("create work type → 201 with the integer price", wtCreate.status === 201 && wtCreate.body?.data?.unitPrice === 123_456, JSON.stringify(wtCreate.body?.data ?? wtCreate.body?.error));
+  const wtId = wtCreate.body?.data?._id;
+
+  const wtDup = await json("/admin/work-types", { method: "POST", cookie, body: { name: "smoke work type", unitPrice: 1 } });
+  check("duplicate name (different case) → 409", wtDup.status === 409, String(wtDup.status));
+
+  const wtLong = await json("/admin/work-types", { method: "POST", cookie, body: { name: "x".repeat(61), unitPrice: 1 } });
+  check("name longer than 60 characters → 400", wtLong.status === 400, String(wtLong.status));
+
+  const wtNegative = await json("/admin/work-types", { method: "POST", cookie, body: { name: "Negative Price", unitPrice: -1 } });
+  check("negative price → 400 (money is never negative)", wtNegative.status === 400, String(wtNegative.status));
+
+  const wtUpdate = await json(`/admin/work-types/${wtId}`, { method: "PUT", cookie, body: { unitPrice: 65_000, description: "Repriced" } });
+  check("update price → 200 and stored", wtUpdate.status === 200 && wtUpdate.body?.data?.unitPrice === 65_000, JSON.stringify(wtUpdate.body?.error));
+
+  // A brand-new type is unused → hard delete.
+  const wtDeleteUnused = await json(`/admin/work-types/${wtId}`, { method: "DELETE", cookie });
+  check("delete an UNUSED work type → hard delete", wtDeleteUnused.status === 200 && wtDeleteUnused.body?.data?.deleted === true && wtDeleteUnused.body?.data?.deactivated === false, JSON.stringify(wtDeleteUnused.body?.data));
+
+  /* ------------------------- B. snapshot immutability (price changes) ---- */
+  const seededType = (workTypes.body?.data ?? []).find((row) => row.name === "30 Seconds Video");
+  const snapOrder = await json("/admin/orders", {
+    method: "POST",
+    cookie,
+    body: {
+      clientId,
+      title: "Work type snapshot",
+      items: [
+        { workTypeId: seededType._id, name: seededType.name, unitLabel: "video", quantity: 2, unitPriceMinor: seededType.unitPrice },
+      ],
+    },
+  });
+  check(
+    "an order line built from a work type snapshots name + price",
+    snapOrder.status === 201 &&
+      snapOrder.body?.data?.items?.[0]?.workTypeId === seededType._id &&
+      snapOrder.body?.data?.items?.[0]?.unitPriceMinor === 50_000 &&
+      snapOrder.body?.data?.items?.[0]?.customPrice === false &&
+      snapOrder.body?.data?.items?.[0]?.name === "30 Seconds Video",
+    JSON.stringify(snapOrder.body?.data?.items?.[0] ?? snapOrder.body?.error),
+  );
+  const snapOrderId = snapOrder.body?.data?._id;
+  const snapTotal = snapOrder.body?.data?.totalMinor;
+
+  await json(`/admin/work-types/${seededType._id}`, { method: "PUT", cookie, body: { unitPrice: 99_999 } });
+  const snapAfterPriceChange = await json(`/admin/orders/${snapOrderId}`, { cookie });
+  check(
+    "a later work-type price change does NOT touch the existing order",
+    snapAfterPriceChange.body?.data?.items?.[0]?.unitPriceMinor === 50_000 &&
+      snapAfterPriceChange.body?.data?.totalMinor === snapTotal,
+    JSON.stringify({ price: snapAfterPriceChange.body?.data?.items?.[0]?.unitPriceMinor, total: snapAfterPriceChange.body?.data?.totalMinor }),
+  );
+  await json(`/admin/work-types/${seededType._id}`, { method: "PUT", cookie, body: { unitPrice: 50_000 } });
+
+  // A custom (overridden) price is flagged — the "custom price" badge.
+  const customOrder = await json("/admin/orders", {
+    method: "POST",
+    cookie,
+    body: {
+      clientId,
+      title: "Custom price line",
+      items: [
+        { workTypeId: seededType._id, name: seededType.name, unitLabel: "video", quantity: 1, unitPriceMinor: 77_777 },
+      ],
+    },
+  });
+  check(
+    "an overridden line price is flagged customPrice: true",
+    customOrder.status === 201 && customOrder.body?.data?.items?.[0]?.customPrice === true && customOrder.body?.data?.totalMinor === 77_777,
+    JSON.stringify(customOrder.body?.data?.items?.[0] ?? customOrder.body?.error),
+  );
+
+  // Deactivate vs delete: referenced → soft-deactivate, never destroyed.
+  const inUseType = await json("/admin/work-types", { method: "POST", cookie, body: { name: "Smoke In Use", unitPrice: 5_000 } });
+  const inUseId = inUseType.body?.data?._id;
+  await json("/admin/orders", {
+    method: "POST",
+    cookie,
+    body: {
+      clientId,
+      title: "References Smoke In Use",
+      items: [{ workTypeId: inUseId, name: "Smoke In Use", unitLabel: "item", quantity: 1, unitPriceMinor: 5_000 }],
+    },
+  });
+  const deleteReferenced = await json(`/admin/work-types/${inUseId}`, { method: "DELETE", cookie });
+  check(
+    "deleting a REFERENCED work type soft-deactivates instead",
+    deleteReferenced.status === 200 && deleteReferenced.body?.data?.deactivated === true && deleteReferenced.body?.data?.deleted === false && deleteReferenced.body?.data?.orderCount === 1,
+    JSON.stringify(deleteReferenced.body?.data ?? deleteReferenced.body?.error),
+  );
+  const dupInactive = await json("/admin/work-types", { method: "POST", cookie, body: { name: "smoke in use", unitPrice: 1 } });
+  check("a new ACTIVE twin of a deactivated name → 409", dupInactive.status === 409, String(dupInactive.status));
+  const reactivate = await json(`/admin/work-types/${inUseId}/deactivate`, { method: "PATCH", cookie, body: { isActive: true } });
+  check("reactivate → 200 and active again", reactivate.status === 200 && reactivate.body?.data?.isActive === true, String(reactivate.status));
+
+  const wtUnauth = await fetch(`${BASE}/admin/work-types`);
+  check("work types are JWT-only (no public API)", wtUnauth.status === 401, String(wtUnauth.status));
+
+  /* -------------------------------- C. the split template (super only) --- */
+  const ownerNames = ["Smoke Owner A", "Smoke Owner B", "Smoke Owner C"];
+  const ownerIds = [];
+  for (const name of ownerNames) {
+    const existing = (await json(`/admin/payees?q=${encodeURIComponent(name)}`, { cookie })).body?.data ?? [];
+    const found = existing.find((row) => row.name === name);
+    if (found) {
+      ownerIds.push(found._id);
+      continue;
+    }
+    const created = await json("/admin/payees", { method: "POST", cookie, body: { name, role: "both" } });
+    ownerIds.push(created.body?.data?._id);
+  }
+  check("three owner people exist", ownerIds.every(Boolean), JSON.stringify(ownerIds.map(Boolean)));
+
+  const badTemplate = await json("/admin/finance/settings", {
+    method: "PUT",
+    cookie,
+    body: {
+      splitTemplate: {
+        entries: [
+          { ownerId: ownerIds[0], role: "client & work owner", bp: 3000 },
+          { ownerId: ownerIds[1], role: "work owner", bp: 3000 },
+          { ownerId: ownerIds[2], role: "work owner", bp: 3600 },
+        ],
+        companyReserveBp: 0,
+      },
+    },
+  });
+  check(
+    "template shares totalling 96% → 400 with a FIELD error",
+    badTemplate.status === 400 && Boolean(badTemplate.body?.error?.details?.splitTemplate),
+    JSON.stringify(badTemplate.body?.error ?? {}),
+  );
+
+  const goodTemplate = await json("/admin/finance/settings", {
+    method: "PUT",
+    cookie,
+    body: {
+      splitTemplate: {
+        entries: [
+          { ownerId: ownerIds[0], role: "client & work owner", bp: 3000 },
+          { ownerId: ownerIds[1], role: "work owner", bp: 3500 },
+          { ownerId: ownerIds[2], role: "work owner", bp: 3500 },
+        ],
+        companyReserveBp: 0,
+        roundTo100: false,
+      },
+    },
+  });
+  check(
+    "template 30 / 35 / 35 (exactly 100%) → 200 with server-resolved names",
+    goodTemplate.status === 200 &&
+      goodTemplate.body?.data?.splitTemplate?.entries?.length === 3 &&
+      goodTemplate.body?.data?.splitTemplate?.entries?.every((entry) => ownerNames.includes(entry.name)) &&
+      goodTemplate.body?.data?.splitTemplate?.entries?.reduce((sum, entry) => sum + entry.bp, 0) === 10000,
+    JSON.stringify(goodTemplate.body?.data?.splitTemplate ?? goodTemplate.body?.error),
+  );
+
+  const ownersAfter = await json("/admin/payees?limit=100", { cookie });
+  const flagged = (ownersAfter.body?.data ?? []).filter((row) => row.isOwner === true).map((row) => row.name);
+  check("saving the template flags exactly those three people as owners", flagged.sort().join(",") === ownerNames.slice().sort().join(","), JSON.stringify(flagged));
+
+  /* ------------------------------- D. pure rounding-rule property test --- */
+  let propertyOk = true;
+  let propertyCases = 0;
+  let nonNegative = true;
+  let state = 42;
+  const rand = () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+  for (let round = 0; round < 200; round += 1) {
+    // Random shares that ALWAYS total 10000 bp (cut-point method).
+    const count = 1 + Math.floor(rand() * 6);
+    const cuts = [0, 10000];
+    for (let index = 1; index < count; index += 1) cuts.push(Math.floor(rand() * 10001));
+    cuts.sort((a, b) => a - b);
+    const bps = [];
+    for (let index = 1; index < cuts.length; index += 1) bps.push(cuts[index] - cuts[index - 1]);
+    if (bps.length === 0 || bps.reduce((sum, bp) => sum + bp, 0) !== 10000) continue;
+    const total = Math.floor(rand() * 25_000_000);
+    const entries = bps.map((bp, index) => ({ ownerId: null, name: `O${index}`, role: "", bp, isReserve: false }));
+    for (const roundTo100 of [false, true]) {
+      const split = computeOwnerSplit(total, entries, { roundTo100 });
+      const sum = split.reduce((acc, entry) => acc + entry.amountMinor, 0);
+      if (sum !== total) propertyOk = false;
+      if (split.some((entry) => entry.amountMinor < 0)) nonNegative = false;
+      propertyCases += 1;
+    }
+  }
+  check("owner amounts sum EXACTLY to the total over 200 randomised cases × on/off", propertyOk && propertyCases === 400, `${propertyCases} cases`);
+  check("no owner amount is ever negative (round-to-100 included)", nonNegative, `${propertyCases} cases`);
+
+  // Hand-checkable remainder: 999 paisa split 3334 / 3333 / 3333 bp.
+  const remainderSplit = computeOwnerSplit(999, [
+    { ownerId: null, name: "A", bp: 3334 },
+    { ownerId: null, name: "B", bp: 3333 },
+    { ownerId: null, name: "C", bp: 3333 },
+  ]);
+  check(
+    "rounding remainder goes to the largest fractions (333 / 333 / 333)",
+    remainderSplit.every((entry) => entry.amountMinor === 333) &&
+      remainderSplit.reduce((sum, entry) => sum + entry.amountMinor, 0) === 999,
+    JSON.stringify(remainderSplit.map((entry) => entry.amountMinor)),
+  );
+
+  /* ------------------------------------- E. order gets the snapshot ------ */
+  const ownerOrder = await json("/admin/orders", {
+    method: "POST",
+    cookie,
+    body: {
+      clientId,
+      title: "Owner split fixture",
+      items: [{ workTypeId: seededType._id, name: seededType.name, unitLabel: "video", quantity: 2, unitPriceMinor: 50_000 }],
+    },
+  });
+  const ownerOrderDoc = ownerOrder.body?.data;
+  const snapEntries = ownerOrderDoc?.splitSnapshot?.entries ?? [];
+  check(
+    "the new order carries a three-owner splitSnapshot (30 / 35 / 35 of Rs 1,000)",
+    ownerOrder.status === 201 &&
+      snapEntries.length === 3 &&
+      snapEntries.map((entry) => entry.bp).join(",") === "3000,3500,3500" &&
+      snapEntries.map((entry) => entry.amountMinor).join(",") === "30000,35000,35000",
+    JSON.stringify(snapEntries),
+  );
+  check(
+    "snapshot names/roles come from the server, and Σ amounts = Σ bp = 100%",
+    snapEntries.every((entry) => ownerNames.includes(entry.name) && Boolean(entry.role)) &&
+      snapEntries.reduce((sum, entry) => sum + entry.amountMinor, 0) === ownerOrderDoc.totalMinor &&
+      snapEntries.reduce((sum, entry) => sum + entry.bp, 0) === 10000,
+    JSON.stringify(snapEntries.map((entry) => ({ name: entry.name, bp: entry.bp, amountMinor: entry.amountMinor }))),
+  );
+  const ownerOrderId = ownerOrderDoc?._id;
+
+  /* ------------------------ F. template edits never rewrite history ------- */
+  await json("/admin/finance/settings", {
+    method: "PUT",
+    cookie,
+    body: {
+      splitTemplate: {
+        entries: [
+          { ownerId: ownerIds[0], role: "client & work owner", bp: 4000 },
+          { ownerId: ownerIds[1], role: "work owner", bp: 3000 },
+          { ownerId: ownerIds[2], role: "work owner", bp: 3000 },
+        ],
+        companyReserveBp: 0,
+        roundTo100: false,
+      },
+    },
+  });
+  const afterTemplateEdit = await json(`/admin/orders/${ownerOrderId}`, { cookie });
+  check(
+    "editing the template does NOT rewrite the stored snapshot",
+    afterTemplateEdit.body?.data?.splitSnapshot?.entries?.map((entry) => entry.bp).join(",") === "3000,3500,3500",
+    JSON.stringify(afterTemplateEdit.body?.data?.splitSnapshot?.entries?.map((entry) => entry.bp)),
+  );
+
+  /* ------------------------------------- G. explicit recalcululation ----- */
+  const recalcById = await json(`/admin/orders/${ownerOrderId}/split/recalculate`, { method: "PATCH", cookie, body: {} });
+  check(
+    "super admin 'Recalculate split' re-points the order at the current template",
+    recalcById.status === 200 && recalcById.body?.data?.splitSnapshot?.entries?.map((entry) => entry.bp).join(",") === "4000,3000,3000",
+    JSON.stringify(recalcById.body?.error ?? recalcById.body?.data?.splitSnapshot?.entries?.map((entry) => entry.bp)),
+  );
+  const recalcDoc = await Order.findById(ownerOrderId).lean();
+  check(
+    "recalculation is written to the order's splitHistory",
+    (recalcDoc?.splitHistory ?? []).length === 1 && recalcDoc.splitHistory[0].note === "Split recalculated",
+    JSON.stringify(recalcDoc?.splitHistory ?? []),
+  );
+  const auditRow = await AuditLog.findOne({ action: "order.split.recalculated" }).lean().catch(() => null);
+  // recordAudit is fire-and-forget: give the audit write a moment to land.
+  let auditRowFound = Boolean(auditRow);
+  for (let attempt = 0; attempt < 6 && !auditRowFound; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    auditRowFound = Boolean(await AuditLog.findOne({ action: "order.split.recalculated" }).lean());
+  }
+  check("recalculation is logged in the audit log", auditRowFound && String(auditRow?.metadata?.orderId ?? "") === String(ownerOrderId), JSON.stringify({ found: auditRowFound, orderId: auditRow?.metadata?.orderId }));
+
+  const recalcByPlain = await json(`/admin/orders/${ownerOrderId}/split/recalculate`, { method: "PATCH", cookie: plainCookie, body: {} });
+  check("plain admin PATCH …/split/recalculate → 403", recalcByPlain.status === 403, String(recalcByPlain.status));
+
+  const recalcLegacy = await json(`/admin/orders/${fixtureIds[0]}/split/recalculate`, { method: "PATCH", cookie, body: {} });
+  check("a LEGACY order (no owner split) cannot be recalculated → 400", recalcLegacy.status === 400, String(recalcLegacy.status));
+
+  const recalcLocked = await json(`/admin/orders/${ownerOrderId}/payout`, {
+    method: "PATCH",
+    cookie,
+    body: { party: "owner", payeeId: ownerIds[0], paid: true },
+  });
+  check(
+    "an owner share can be marked paid out",
+    recalcLocked.status === 200 && Boolean(recalcLocked.body?.data?.splitSnapshot?.entries?.find((entry) => entry.ownerId === ownerIds[0])?.paidOutAt),
+    JSON.stringify(recalcLocked.body?.error ?? {}),
+  );
+  const recalcWhilePaid = await json(`/admin/orders/${ownerOrderId}/split/recalculate`, { method: "PATCH", cookie, body: {} });
+  check("recalculation is FROZEN once a share is paid out → 409", recalcWhilePaid.status === 409, String(recalcWhilePaid.status));
+  await json(`/admin/orders/${ownerOrderId}/payout`, { method: "PATCH", cookie, body: { party: "owner", payeeId: ownerIds[0], paid: false } });
+
+  /* ------------------------------------- H. round-to-nearest-100 option --- */
+  await json("/admin/finance/settings", {
+    method: "PUT",
+    cookie,
+    body: {
+      splitTemplate: {
+        entries: [
+          { ownerId: ownerIds[0], role: "client & work owner", bp: 3000 },
+          { ownerId: ownerIds[1], role: "work owner", bp: 3500 },
+          { ownerId: ownerIds[2], role: "work owner", bp: 3500 },
+        ],
+        companyReserveBp: 0,
+        roundTo100: true,
+      },
+    },
+  });
+  const roundedOrder = await json("/admin/orders", {
+    method: "POST",
+    cookie,
+    body: {
+      clientId,
+      title: "Round to 100 fixture",
+      items: [{ name: "Round me", unitLabel: "item", quantity: 1, unitPriceMinor: 390_000 }],
+    },
+  });
+  const roundedEntries = roundedOrder.body?.data?.splitSnapshot?.entries ?? [];
+  check(
+    "roundTo100: Rs 3,900 → 1,200 / 1,400 / 1,300 (leftover to the last owner, sum exact)",
+    roundedOrder.status === 201 &&
+      roundedOrder.body?.data?.splitSnapshot?.roundTo100 === true &&
+      roundedEntries.map((entry) => entry.amountMinor).join(",") === "120000,140000,130000" &&
+      roundedEntries.reduce((sum, entry) => sum + entry.amountMinor, 0) === 390_000,
+    JSON.stringify(roundedEntries.map((entry) => entry.amountMinor)),
+  );
+  // Back to the default for the remaining checks.
+  await json("/admin/finance/settings", {
+    method: "PUT",
+    cookie,
+    body: {
+      splitTemplate: {
+        entries: [
+          { ownerId: ownerIds[0], role: "client & work owner", bp: 3000 },
+          { ownerId: ownerIds[1], role: "work owner", bp: 3500 },
+          { ownerId: ownerIds[2], role: "work owner", bp: 3500 },
+        ],
+        companyReserveBp: 0,
+        roundTo100: false,
+      },
+    },
+  });
+
+  /* --------------------------------------------- I. treasury adds up ----- */
+  const treasuryFinal = (await json("/admin/finance/treasury", { cookie })).body?.data ?? {};
+  const owedSum = (treasuryFinal.people ?? []).reduce((sum, row) => sum + row.owedMinor, 0);
+  check(
+    "REPORT CHECK: Σ people owed + expected company = billed (nothing lost, nothing doubled)",
+    owedSum + treasuryFinal.expectedCompanyMinor === treasuryFinal.orders?.billedMinor,
+    JSON.stringify({ owedSum, expected: treasuryFinal.expectedCompanyMinor, billed: treasuryFinal.orders?.billedMinor }),
+  );
+
+  /* ------------------------------------------ J. migration (idempotent) --- */
+  const moneyView = (order) => ({
+    invoiceNumber: order.invoiceNumber,
+    totalMinor: order.totalMinor,
+    subtotalMinor: order.subtotalMinor,
+    discountMinor: order.discountMinor,
+    paidMinor: order.paidMinor,
+    paymentStatus: order.paymentStatus,
+    split: order.split,
+    lines: order.items.map((item) => [item.name, item.quantity, item.unitPriceMinor, item.lineTotalMinor].join("|")),
+  });
+  const trackedIds = [fixtureIds[0], ownerOrderId, snapOrderId];
+  const beforeMigration = [];
+  for (const id of trackedIds) beforeMigration.push(moneyView(await Order.findById(id).lean()));
+  const treasuryBeforeMigration = await json("/admin/finance/treasury", { cookie });
+  // Simulate a PRE-FEATURE document: the new per-line fields simply do not
+  // exist. Raw collection write, so mongoose defaults cannot fill them in.
+  await Order.collection.updateOne(
+    { _id: new mongoose.Types.ObjectId(fixtureIds[1]) },
+    { $unset: { "items.$[].workTypeId": "", "items.$[].customPrice": "" } },
+  );
+  const missingBefore = await Order.countDocuments({ items: { $elemMatch: { workTypeId: { $exists: false } } } });
+
+  const migrate1 = await runScript(["scripts/migrate-orders-v2.js"], { MONGODB_URI: uri });
+  const missingAfter1 = await Order.countDocuments({ items: { $elemMatch: { workTypeId: { $exists: false } } } });
+  const migrate2 = await runScript(["scripts/migrate-orders-v2.js"], { MONGODB_URI: uri });
+  const missingAfter2 = await Order.countDocuments({ items: { $elemMatch: { workTypeId: { $exists: false } } } });
+  check("migration script exits cleanly", migrate1 === 0 && migrate2 === 0, `exit ${migrate1}/${migrate2}`);
+  check(
+    "migration backfills missing workTypeId/customPrice fields (idempotent)",
+    missingBefore > 0 && missingAfter1 === 0 && missingAfter2 === 0,
+    JSON.stringify({ missingBefore, missingAfter1, missingAfter2 }),
+  );
+  const afterMigration = [];
+  for (const id of trackedIds) afterMigration.push(moneyView(await Order.findById(id).lean()));
+  check(
+    "MIGRATION: totals, splits and line snapshots are untouched",
+    JSON.stringify(beforeMigration) === JSON.stringify(afterMigration),
+    JSON.stringify({ before: beforeMigration[0], after: afterMigration[0] }),
+  );
+  const treasuryAfterMigration = await json("/admin/finance/treasury", { cookie });
+  check(
+    "MIGRATION: treasury figures are byte-identical before and after",
+    treasuryBeforeMigration.body?.data?.expectedCompanyMinor === treasuryAfterMigration.body?.data?.expectedCompanyMinor &&
+      treasuryBeforeMigration.body?.data?.collectedCompanyMinor === treasuryAfterMigration.body?.data?.collectedCompanyMinor &&
+      treasuryBeforeMigration.body?.data?.peopleOwedMinor === treasuryAfterMigration.body?.data?.peopleOwedMinor &&
+      JSON.stringify(treasuryBeforeMigration.body?.data?.people) === JSON.stringify(treasuryAfterMigration.body?.data?.people),
+    JSON.stringify({
+      before: {
+        expected: treasuryBeforeMigration.body?.data?.expectedCompanyMinor,
+        owed: treasuryBeforeMigration.body?.data?.peopleOwedMinor,
+      },
+      after: { expected: treasuryAfterMigration.body?.data?.expectedCompanyMinor, owed: treasuryAfterMigration.body?.data?.peopleOwedMinor },
+    }),
+  );
 
   // Remove the temporary plain admin again — no stray accounts left behind.
   if (plainId) {
