@@ -5069,8 +5069,229 @@ html:not(.dark) .logo-item[data-tone="light"] .logo-item__img {
     opacity: 0.9;
   }
 
-  /* The on-screen invoice IS the exported SVG, so it simply scales to its
-     container and stays vector-sharp at any size (including retina). */
+  /* ---- The invoice (HTML preview + A4 print) --------------------------- */
+  /* The invoice is a DOCUMENT: white paper and dark ink in both themes, so the
+     screen preview and the printed page are identical. Every pair below is in
+     the WCAG AA audit (scripts/audit-contrast.mjs):
+     #1B2140 / #212C65 ink on #FFFFFF, #55637D secondary on #FFFFFF and on
+     #F5F8FC, #3D76BB accent rule on #FFFFFF. Growth Green is a 8px dot only. */
+  .invoice-sheet {
+    display: flex;
+    flex-direction: column;
+    gap: 1.15rem;
+    width: 100%;
+    max-width: 52rem;
+    margin-inline: auto;
+    padding: 1.5rem;
+    background-color: #ffffff;
+    color: #1b2140;
+    border: 1px solid #e4e9f2;
+    border-radius: var(--radius-lg);
+    font-size: 0.9rem;
+    line-height: 1.5;
+  }
+
+  .invoice-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-bottom: 0.9rem;
+    border-bottom: 2px solid #212c65;
+  }
+
+  .invoice-brand {
+    font-size: 1.12rem;
+    font-weight: 700;
+    color: #212c65;
+  }
+
+  .invoice-title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #212c65;
+  }
+
+  .invoice-number {
+    font-family: var(--font-code);
+    font-weight: 600;
+    color: #1b2140;
+  }
+
+  .invoice-contact {
+    font-size: 0.78rem;
+    color: #55637d;
+    overflow-wrap: anywhere;
+  }
+
+  .invoice-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #55637d;
+    margin-bottom: 0.35rem;
+  }
+
+  .invoice-label--spaced {
+    margin-top: 0.9rem;
+  }
+
+  .invoice-client {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #1b2140;
+    overflow-wrap: anywhere;
+  }
+
+  .invoice-muted { color: #55637d; }
+
+  .invoice-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.4rem;
+    margin-top: 0.35rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #212c65;
+  }
+
+  .invoice-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background-color: #a7b3c8;
+  }
+
+  .invoice-dot--paid { background-color: #95c93d; }
+  .invoice-dot--partial { background-color: #3d76bb; }
+
+  .invoice-grid-2 {
+    display: grid;
+    gap: 1.1rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .invoice-payments {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.82rem;
+    color: #55637d;
+  }
+
+  .invoice-payments li {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .invoice-items,
+  .invoice-distribution {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.86rem;
+  }
+
+  .invoice-items thead th,
+  .invoice-distribution thead th {
+    padding: 0.5rem 0.4rem;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-align: left;
+    color: #55637d;
+    border-bottom: 2px solid #3d76bb;
+  }
+
+  .invoice-items tbody td,
+  .invoice-distribution tbody td,
+  .invoice-distribution tbody th {
+    padding: 0.5rem 0.4rem;
+    text-align: left;
+    border-bottom: 1px solid #e4e9f2;
+    vertical-align: top;
+  }
+
+  .invoice-items tfoot td,
+  .invoice-items tfoot th {
+    padding: 0.5rem 0.4rem;
+    text-align: left;
+  }
+
+  .invoice-distribution tbody th {
+    font-weight: 700;
+    color: #1b2140;
+  }
+
+  .invoice-total-row th,
+  .invoice-total-row td {
+    border-top: 2px solid #212c65;
+    border-bottom: none;
+    font-weight: 700;
+    color: #212c65;
+  }
+
+  .invoice-totals dl {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .invoice-totals dl > div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    font-size: 0.9rem;
+  }
+
+  .invoice-totals dt { color: #55637d; }
+  .invoice-totals dd { margin: 0; font-weight: 600; color: #1b2140; }
+
+  .invoice-total-line {
+    border-top: 2px solid #212c65;
+    padding-top: 0.45rem;
+    font-size: 1.12rem;
+    font-weight: 700;
+  }
+
+  .invoice-total-line dt,
+  .invoice-total-line dd { color: #212c65 !important; }
+
+  .invoice-totals--wide { max-width: 24rem; margin-inline-start: auto; }
+
+  .invoice-footnote {
+    margin-top: 0.45rem;
+    font-size: 0.72rem;
+    color: #55637d;
+  }
+
+  .invoice-footer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid #e4e9f2;
+    font-size: 0.78rem;
+    color: #55637d;
+  }
+
+  .invoice-thanks {
+    font-weight: 600;
+    color: #212c65;
+  }
+
+  /* The exported SVG (Download PNG / SVG) still simply scales to its box. */
   .bill-preview {
     width: 100%;
     background-color: #ffffff;
@@ -5080,5 +5301,57 @@ html:not(.dark) .logo-item[data-tone="light"] .logo-item__img {
     display: block;
     width: 100%;
     height: auto;
+  }
+}
+
+/* ============================================================
+   PRINT — "Print / Save as PDF" produces the invoice as an A4
+   portrait document: everything else on the page is hidden, the
+   sheet is laid out from the top-left at full width, and table
+   headers repeat when a long invoice flows onto page 2.
+   ============================================================ */
+@page {
+  size: A4 portrait;
+  margin: 12mm;
+}
+
+@media print {
+  html,
+  body {
+    background-color: #ffffff !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .invoice-sheet,
+  .invoice-sheet * {
+    visibility: visible !important;
+  }
+
+  .invoice-sheet {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .invoice-sheet thead {
+    display: table-header-group;
+  }
+
+  .invoice-sheet tr {
+    break-inside: avoid;
+  }
+
+  .no-print {
+    display: none !important;
   }
 }
