@@ -8,16 +8,23 @@
  *
  *   1. the SVG is well-formed XML, self-contained, and square (0 0 2000 2000)
  *   2. it contains the invoice number, the client, every line item and the
- *      correct formatted totals/balance
+ *      correct formatted totals/balance (as "Rs 1,234.56")
  *   3. it contains NONE of the internal settlement vocabulary or amounts
- *      (Company / Treasury / Khazana / referrer / worker / split amounts)
+ *      (Company / Treasury / Khazana / referrer / worker / split amounts) —
+ *      with or without the optional owners' distribution
  *   4. user text is XML-escaped
- *   5. 14 items, very long names and an Urdu client name still parse
+ *   5. 14 items, very long names and an Urdu client name still parse, and the
+ *      invoice paginates onto a second page (repeating the header) instead of
+ *      clipping
  *   6. the money formatter/parser round-trips and rejects bad input
+ *   7. the DISTRIBUTION AMONG OWNERS table (when the order has one) adds up to
+ *      exactly the invoice total, the rounding footnote is printed, and the
+ *      WhatsApp-style copy summary has the right format
  *
  * Exit code 0 = all checks passed.
  */
 import { buildBillSvg, BILL_PALETTE } from "../lib/bill/billSvg.ts";
+import { billSummaryText } from "../lib/bill/billText.ts";
 import { formatMinor, parseMinor, minorToInput } from "../lib/bill/money.ts";
 
 let passed = 0;
@@ -164,6 +171,7 @@ console.log("\n[verify:bill] 2. client-facing content");
   check("formatted subtotal 3,500.00", visible.includes("3500.00".replace("3500", "3,500")));
   check("discount line shows only when > 0", visible.includes("250.00"));
   check("TOTAL emphasised with 3,250.00", visible.includes("3,250.00"));
+  check("money is printed with the Rs label", visible.includes("Rs 3,500.00") && visible.includes("Rs 3,250.00"));
   check("PAID 1,000.00", visible.includes("1,000.00"));
   check("BALANCE DUE 2,250.00", visible.includes("2,250.00"));
   check("payments list shows the latest entries", visible.includes("TRF-9981") && visible.includes("CASH-1"));
@@ -247,7 +255,16 @@ console.log("\n[verify:bill] 5. stress: 14 items, long names, Urdu client name")
   check("the Urdu text node carries RTL direction", /direction="rtl" unicode-bidi="plaintext"[^>]*>محمد/.test(svg));
   check("all 14 rows rendered", (svg.match(/Item \d+ —/g) || []).length === 14, String((svg.match(/Item \d+ —/g) || []).length));
   check("long descriptions are truncated with an ellipsis", svg.includes("…"));
-  check("the frame is still square", /viewBox="0 0 2000 2000"/.test(svg));
+  // RETIRED (owner-approved behaviour change): "the frame is still square".
+  // More than 12 lines now PAGINATES onto a second 2000-tall page with the
+  // header repeated, instead of squeezing rows until they clip.
+  check(
+    "REPLACED 'frame is still square': 14 items paginate to a second page",
+    /viewBox="0 0 2000 4000"/.test(svg) && /width="2000" height="4000"/.test(svg),
+    /viewBox="[^"]+"/.exec(svg)?.[0] ?? "no viewBox",
+  );
+  const invoiceLabels = (svg.match(/>INVOICE</g) || []).length;
+  check("the header band is repeated on the second page", invoiceLabels === 2, String(invoiceLabels));
 }
 
 console.log("\n[verify:bill] 6. money: parse/format round-trip");
@@ -270,6 +287,102 @@ console.log("\n[verify:bill] 6. money: parse/format round-trip");
   check('parseMinor("1,234.56") === 123456', parseMinor("1,234.56") === 123456, String(parseMinor("1,234.56")));
   check('parseMinor("Rs 12.5") === 1250', parseMinor("Rs 12.5") === 1250, String(parseMinor("Rs 12.5")));
   check('minorToInput(0) === "0"', minorToInput(0) === "0");
+}
+
+console.log("\n[verify:bill] 7. distribution among owners + pagination + copy summary");
+{
+  const distribution = [
+    { name: "Ali Raza", role: "client & work owner", bp: 3000, amountMinor: 97500 },
+    { name: "Sara Khan", role: "work owner", bp: 3500, amountMinor: 113750 },
+    { name: "Bilal Ahmed", role: "work owner", bp: 3500, amountMinor: 113750 },
+  ];
+  const shared = buildBillSvg({ ...bill, distribution });
+  const visible = textOf(shared);
+
+  check("the distribution section is printed", visible.includes("DISTRIBUTION AMONG OWNERS"));
+  check(
+    "every owner name, share and amount is printed",
+    distribution.every(
+      (entry) =>
+        visible.includes(entry.name) &&
+        visible.includes(`${entry.bp / 100}%`) &&
+        visible.includes(`${(entry.amountMinor / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })}`),
+    ),
+    visible.slice(visible.indexOf("DISTRIBUTION"), 240),
+  );
+  const ownerSum = distribution.reduce((sum, entry) => sum + entry.amountMinor, 0);
+  check(
+    "the distribution total equals the invoice total",
+    ownerSum === bill.totalMinor && visible.includes("3,250.00"),
+    `${ownerSum} vs ${bill.totalMinor}`,
+  );
+  check(
+    "the rounding footnote is printed",
+    visible.includes("Rounded to whole rupees; remainder assigned by largest fraction"),
+  );
+  check("the distribution says it equals the invoice total", visible.includes("equals the invoice total"));
+
+  // Even WITH the distribution on the bill, no legacy settlement word may leak.
+  const banned = ["company", "treasury", "khazana", "referrer", "worker", "split", "payout"].filter((word) =>
+    shared.toLowerCase().includes(word),
+  );
+  check("no legacy settlement vocabulary with the distribution shown", banned.length === 0, JSON.stringify(banned));
+
+  // The optional company reserve is printed with the neutral word "Reserve".
+  const withReserve = buildBillSvg({
+    ...bill,
+    distribution: [
+      { name: "Ali Raza", bp: 3000, amountMinor: 97500 },
+      { name: "Sara Khan", bp: 3500, amountMinor: 113750 },
+      { name: "Bilal Ahmed", bp: 3000, amountMinor: 97500 },
+      { name: "Company reserve", bp: 500, amountMinor: 16250, isReserve: true },
+    ],
+  });
+  const reserveVisible = textOf(withReserve);
+  const reserveSum = 97500 + 113750 + 97500 + 16250;
+  check("the reserve line is printed as the neutral word ‘Reserve’", reserveVisible.includes("Reserve") && !reserveVisible.includes("Company reserve"));
+  check("reserve included, the parts still add to the invoice total", reserveSum === bill.totalMinor, String(reserveSum));
+
+  // 20 lines → two pages, every row rendered, totals only on the last page.
+  const twenty = Array.from({ length: 20 }, (_, index) => ({
+    name: `Line item ${index + 1}`,
+    unitLabel: "item",
+    quantity: 1,
+    unitPriceMinor: 50000,
+    lineTotalMinor: 50000,
+  }));
+  const big = buildBillSvg({
+    ...bill,
+    items: twenty,
+    subtotalMinor: 1000000,
+    discountMinor: 0,
+    totalMinor: 1000000,
+    paidMinor: 0,
+    balanceMinor: 1000000,
+    payments: [],
+    distribution,
+  });
+  check("20 lines paginate onto a second page", /viewBox="0 0 2000 4000"/.test(big));
+  check("all 20 rows are rendered across the two pages", (big.match(/Line item \d+/g) || []).length === 20, String((big.match(/Line item \d+/g) || []).length));
+  check("the totals block still appears once, on the last page", (textOf(big).match(/BALANCE DUE/g) || []).length === 1);
+  let wellFormed = null;
+  try {
+    assertWellFormedXml(big);
+  } catch (error) {
+    wellFormed = error.message;
+  }
+  check("the two-page bill is well-formed XML", wellFormed === null, String(wellFormed));
+
+  // The WhatsApp-style copy summary.
+  const summary = billSummaryText({ ...bill, distribution });
+  check("summary starts with the business and invoice number", summary.startsWith(`Jazari Tech — Invoice ${bill.invoiceNumber}`), summary.slice(0, 60));
+  check("summary lists every line item as a bullet", (summary.match(/^• /gm) || []).length === 5, String((summary.match(/^• /gm) || []).length));
+  check("summary shows the two line totals", summary.includes("• 2 × Video Ad Making — Rs 2,000") && summary.includes("• 3 × Graphic Designing — Rs 1,500"));
+  check("summary shows subtotal, discount and TOTAL", summary.includes("Subtotal: Rs 3,500") && summary.includes("Discount: − Rs 250") && summary.includes("TOTAL: Rs 3,250"));
+  check("summary shows paid and balance", summary.includes("Paid: Rs 1,000") && summary.includes("Balance due: Rs 2,250"));
+  check("summary shows the three owner amounts", summary.includes("Ali Raza (30%): Rs 975") && summary.includes("Sara Khan (35%): Rs 1,137.50"));
+  check("summary shows the distribution total and the rounding note", summary.includes("Total: Rs 3,250") && summary.includes("rounded to whole rupees"));
+  check("summary ends with the thank-you note", summary.trim().endsWith("Thank you for choosing Jazari Tech."));
 }
 
 console.log(`\n[verify:bill] ${passed} passed, ${failed} failed`);

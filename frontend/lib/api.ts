@@ -54,6 +54,7 @@ import type {
   PayoutResult,
   TreasuryReport,
   Order,
+  WorkType,
 } from "@/types/api";
 import { loadPublicContent } from "@/lib/publicContent";
 
@@ -452,7 +453,7 @@ export const api = {
         list: (query: Query = {}, signal?: AbortSignal) => requestWithMeta<Payee[]>("/admin/payees", { query, signal }),
         create: (input: { name: string; role: PayeeRole; phone?: string; notes?: string }) =>
           request<Payee>("/admin/payees", { method: "POST", body: input }),
-        update: (id: string, input: Partial<{ name: string; role: PayeeRole; phone: string; notes: string; isActive: boolean }>) =>
+        update: (id: string, input: Partial<{ name: string; role: PayeeRole; phone: string; notes: string; isActive: boolean; isOwner: boolean }>) =>
           request<Payee>(`/admin/payees/${id}`, { method: "PUT", body: input }),
       },
 
@@ -462,6 +463,25 @@ export const api = {
           request<CatalogItem>("/admin/order-catalog", { method: "POST", body: input }),
         update: (id: string, input: Partial<Pick<CatalogItem, "name" | "unitLabel" | "defaultUnitPriceMinor" | "isActive" | "sortOrder">>) =>
           request<CatalogItem>(`/admin/order-catalog/${id}`, { method: "PUT", body: input }),
+      },
+
+      /** The owner-managed WORK TYPES price list (JWT only — no public API). */
+      workTypes: {
+        list: (query: Query = {}, signal?: AbortSignal) =>
+          requestWithMeta<WorkType[]>("/admin/work-types", { query, signal }),
+        create: (input: { name: string; unitPrice: number; description?: string; sortOrder?: number }) =>
+          request<WorkType>("/admin/work-types", { method: "POST", body: input }),
+        update: (id: string, input: Partial<{ name: string; unitPrice: number; description: string; sortOrder: number }>) =>
+          request<WorkType>(`/admin/work-types/${id}`, { method: "PUT", body: input }),
+        setActive: (id: string, isActive: boolean) =>
+          request<WorkType>(`/admin/work-types/${id}/deactivate`, { method: "PATCH", body: { isActive } }),
+        remove: (id: string) =>
+          request<{ id: string; deleted: boolean; deactivated: boolean; orderCount: number; message?: string }>(
+            `/admin/work-types/${id}`,
+            { method: "DELETE" },
+          ),
+        reorder: (ids: string[]) =>
+          request<{ reordered: number; order: string[] }>("/admin/work-types/reorder", { method: "POST", body: { ids } }),
       },
 
       orders: {
@@ -482,8 +502,11 @@ export const api = {
           request<{ id: string; deleted: boolean; order: PaymentResult["order"] }>(`/admin/orders/${id}/payments/${paymentId}`, {
             method: "DELETE",
           }),
-        setPayout: (id: string, input: { party: "referrer" | "worker"; payeeId: string; paid: boolean }) =>
+        setPayout: (id: string, input: { party: "referrer" | "worker" | "owner"; payeeId: string; paid: boolean }) =>
           request<PayoutResult>(`/admin/orders/${id}/payout`, { method: "PATCH", body: input }),
+        /** Super admin only: re-point an order at the current Split Template. */
+        recalculateSplit: (id: string) =>
+          request<Order>(`/admin/orders/${id}/split/recalculate`, { method: "PATCH", body: {} }),
       },
 
       settings: {

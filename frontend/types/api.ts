@@ -463,9 +463,29 @@ export interface Payee {
   phone: string;
   notes: string;
   isActive: boolean;
+  /** Company owner: eligible for the Split Template and the owner cards. */
+  isOwner?: boolean;
   /** Derived by the API from the split snapshots on non-cancelled orders. */
   owedMinor?: number;
   paidOutMinor?: number;
+  orderCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/**
+ * WORK TYPE — the owner-managed price list ("30 Seconds Video = Rs 500").
+ * `unitPrice` is an INTEGER number of paisa (minor units), like all money.
+ */
+export interface WorkType {
+  _id: string;
+  name: string;
+  unitPrice: number;
+  currency: string;
+  description: string;
+  isActive: boolean;
+  sortOrder: number;
+  /** How many orders use this line (drives deactivate-instead-of-delete). */
   orderCount?: number;
   createdAt?: string;
   updatedAt?: string;
@@ -484,12 +504,16 @@ export interface CatalogItem {
 
 export interface OrderItem {
   catalogItemId?: string | null;
+  /** The work type this line came from (null for legacy / custom lines). */
+  workTypeId?: string | null;
   name: string;
   unitLabel: string;
   quantity: number;
   unitPriceMinor: number;
   /** Recomputed server-side; a value sent by the client is ignored. */
   lineTotalMinor: number;
+  /** Derived server-side: this line's price differs from the work type's. */
+  customPrice?: boolean;
 }
 
 export interface OrderPayment {
@@ -517,6 +541,53 @@ export interface OrderSplit {
   workers: OrderShare[];
   companyMinor: number;
   computedAt: string;
+}
+
+/** One owner's line of the THREE-OWNER split snapshot stored on the order. */
+export interface OrderSplitSnapshotEntry {
+  ownerId: string | null;
+  name: string;
+  /** Free-form role label ("client & work owner", "work owner", …). */
+  role: string;
+  bp: BasisPoints;
+  amountMinor: number;
+  /** The optional company-reserve line inside the same 100%. */
+  isReserve: boolean;
+  paidOutAt: string | null;
+}
+
+/** The split snapshot frozen onto the order — later template edits never touch it. */
+export interface OrderSplitSnapshot {
+  entries: OrderSplitSnapshotEntry[];
+  roundTo100: boolean;
+  source: "template" | "override";
+  computedAt: string;
+}
+
+export interface SplitHistoryEntry {
+  at: string;
+  byAdminId?: string | null;
+  source?: string;
+  totalMinor?: number;
+  note?: string;
+}
+
+/** The super-admin-editable Split Template (shares must total exactly 10000 bp). */
+export interface SplitTemplateEntry {
+  ownerId: string | null;
+  name: string;
+  role: string;
+  bp: BasisPoints;
+}
+
+export interface SplitTemplate {
+  entries: SplitTemplateEntry[];
+  /** Optional "Company reserve %" inside the same 100% (default 0). */
+  companyReserveBp: BasisPoints;
+  /** WhatsApp-style rounding to the nearest Rs 100 (default OFF). */
+  roundTo100: boolean;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
 }
 
 export interface OrderStatusHistoryEntry {
@@ -553,6 +624,10 @@ export interface Order {
    * FINANCE_SPLIT_SUPER_ONLY is on). Omitted server-side, never hidden in the UI.
    */
   split?: OrderSplit;
+  /** The three-owner split (present once a Split Template is configured). */
+  splitSnapshot?: OrderSplitSnapshot;
+  /** Audit trail of explicit split recalculations. */
+  splitHistory?: SplitHistoryEntry[];
   /** Only returned by GET /admin/orders/:id. */
   paymentMethods?: string[];
 }
@@ -567,16 +642,23 @@ export interface OrderInput {
   status?: OrderStatus;
   items: Array<{
     catalogItemId?: string | null;
+    workTypeId?: string | null;
     name: string;
     unitLabel: string;
     quantity: number;
     unitPriceMinor: number;
+    customPrice?: boolean;
   }>;
   initialPayment?: { amountMinor: number; method: string; receivedAt?: string; reference?: string; note?: string };
   split?: {
     referrer?: { payeeId?: string | null; bp?: BasisPoints } | null;
     workers?: Array<{ payeeId?: string | null; bp?: BasisPoints }>;
   };
+  /** Optional per-order owner-split override (super admin; must total 100%). */
+  splitOverride?: {
+    entries: Array<{ ownerId: string; bp: BasisPoints; role?: string }>;
+    companyReserveBp?: BasisPoints;
+  } | null;
 }
 
 export interface OrdersSummary {
@@ -603,6 +685,8 @@ export interface FinanceSettings {
   workerBp: BasisPoints;
   currency: string;
   paymentMethods: string[];
+  /** The three-owner Split Template (empty entries = not configured yet). */
+  splitTemplate?: SplitTemplate;
   business: FinanceBusiness;
 }
 
@@ -637,7 +721,8 @@ export interface TreasuryReport {
 /** The payload of a payout toggle; `party` echoes what was changed. */
 export interface PayoutResult {
   split: OrderSplit;
-  party: "referrer" | "worker";
+  splitSnapshot?: OrderSplitSnapshot;
+  party: "referrer" | "worker" | "owner";
   payeeId: string;
   paid: boolean;
 }

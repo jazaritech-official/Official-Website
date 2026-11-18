@@ -84,6 +84,124 @@ export function companyPercent(companyBp: number | undefined, totalBp: number): 
   return bpToPercent(Math.max(0, 10000 - totalBp));
 }
 
+/* --------------------------------------------------- the three-owner split */
+
+/** Basis points in a whole (100%) — mirrored from Backend/utils/splitTemplate.js. */
+export const BP_TOTAL = 10000;
+
+/** "Round to nearest 100" means 100 RUPEES = 100 × 100 paisa. */
+export const ROUND_TO_100_MINOR = 100 * 100;
+
+/** One line of a split: an owner share, or the optional company reserve. */
+export interface OwnerShare {
+  ownerId: string | null;
+  name: string;
+  role: string;
+  bp: number;
+  isReserve?: boolean;
+  /** Filled by `computeOwnerSplit`. */
+  amountMinor?: number;
+}
+
+/**
+ * computeOwnerSplit — the CLIENT mirror of Backend/utils/splitTemplate.js so
+ * the editor preview, the order detail and the bill show the same integers the
+ * server stores (all maths is integer; no float ever touches a rupee):
+ *
+ *   1. floor(total × bp / 10000) per share;
+ *   2. hand the remainder out one paisa at a time, largest fractional part
+ *      first, ties by template order;
+ *   3. optional roundTo100: round each share to the nearest Rs 100 and give
+ *      the leftover to the LAST owner.
+ *
+ * INVARIANT: Σ amountMinor === totalMinor.
+ */
+export function computeOwnerSplit(
+  totalMinor: number,
+  entries: OwnerShare[],
+  options: { roundTo100?: boolean } = {},
+): OwnerShare[] {
+  const total = Number.isFinite(totalMinor) ? Math.trunc(totalMinor) : 0;
+  const safeTotal = Math.max(0, total);
+  const bpList = entries.map((entry) => (Number.isFinite(entry.bp) ? Math.trunc(entry.bp) : 0));
+  const bpSum = bpList.reduce((sum, bp) => sum + bp, 0);
+  if (entries.length === 0 || bpSum !== BP_TOTAL) {
+    // The caller validates before rendering; returning zeroes keeps the UI
+    // calm instead of throwing inside a render pass.
+    return entries.map((entry) => ({ ...entry, amountMinor: 0 }));
+  }
+
+  const amounts = bpList.map((bp) => Math.floor((safeTotal * bp) / BP_TOTAL));
+  const shortfall = safeTotal - amounts.reduce((sum, value) => sum + value, 0);
+
+  const order = bpList
+    .map((bp, index) => {
+      const exact = (safeTotal * bp) / BP_TOTAL;
+      return { index, fraction: exact - Math.floor(exact) };
+    })
+    .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
+
+  if (shortfall > 0) {
+    for (let step = 0; step < shortfall && step < order.length; step += 1) {
+      amounts[order[step].index] += 1;
+    }
+  } else if (shortfall < 0) {
+    for (let step = order.length - 1, given = 0; step >= 0 && given < -shortfall; step -= 1) {
+      const { index } = order[step];
+      if (amounts[index] > 0) {
+        amounts[index] -= 1;
+        given += 1;
+      }
+    }
+  }
+
+  if (options.roundTo100 === true && safeTotal > 0) {
+    const rounded = amounts.map((value) => Math.round(value / ROUND_TO_100_MINOR) * ROUND_TO_100_MINOR);
+    const othersSum = rounded.slice(0, -1).reduce((sum, value) => sum + value, 0);
+    let last = safeTotal - othersSum;
+    if (last < 0) {
+      const lenders = rounded
+        .slice(0, -1)
+        .map((value, index) => ({ index, value }))
+        .sort((a, b) => b.value - a.value || a.index - b.index);
+      let deficit = -last;
+      for (const lender of lenders) {
+        if (deficit <= 0) break;
+        const take = Math.min(deficit, rounded[lender.index]);
+        rounded[lender.index] -= take;
+        deficit -= take;
+      }
+      last = safeTotal - rounded.slice(0, -1).reduce((sum, value) => sum + value, 0);
+    }
+    rounded[rounded.length - 1] = last;
+    for (let index = 0; index < entries.length; index += 1) amounts[index] = rounded[index];
+  }
+
+  return entries.map((entry, index) => ({ ...entry, bp: bpList[index], amountMinor: amounts[index] }));
+}
+
+/**
+ * splitShareError — the ONE client-side rule: shares (reserve included) must
+ * total EXACTLY 100%. Returns a human sentence, or null when the split is
+ * legal. Mirrors validateSplitInput() server-side.
+ */
+export function splitShareError(entries: OwnerShare[], companyReserveBp = 0): string | null {
+  if (!Array.isArray(entries) || entries.length === 0) return "Add at least one owner to the split.";
+  const reserve = Number.isFinite(companyReserveBp) ? Math.trunc(companyReserveBp) : 0;
+  if (reserve < 0 || reserve > BP_TOTAL) return "The company reserve must be between 0% and 100%.";
+  for (const entry of entries) {
+    if (!Number.isInteger(entry.bp) || entry.bp < 0 || entry.bp > BP_TOTAL) {
+      return "Each share must be between 0% and 100%.";
+    }
+    if (!entry.isReserve && !entry.ownerId) return "Every share needs an owner.";
+  }
+  const total = entries.reduce((sum, entry) => sum + entry.bp, 0) + reserve;
+  if (total !== BP_TOTAL) {
+    return `Shares must add up to exactly 100% — they currently total ${bpToPercent(total)}.`;
+  }
+  return null;
+}
+
 /* ------------------------------------------------------------------ misc */
 
 /** Human date: "12 Oct 2026" (no time) or "—" when absent. */
