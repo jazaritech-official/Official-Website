@@ -11,8 +11,8 @@ import { Pagination } from "./Pagination";
 import { OrderEditor } from "./OrderEditor";
 import { OrderDetail } from "./OrderDetail";
 import { CatalogManager } from "./CatalogManager";
-import { formatMinor } from "@/lib/bill/money";
-import { ORDER_STATUS, PAYMENT_STATUS, formatDay, orderStatusMeta, paymentStatusMeta } from "@/lib/finance";
+import { formatMinor, formatMinorCompact } from "@/lib/bill/money";
+import { ORDER_STATUS, PAYMENT_STATUS, bpToPercent, formatDay, orderStatusMeta, paymentStatusMeta } from "@/lib/finance";
 import { CartIcon, GearIcon, PlusIcon, RefreshIcon, SearchIcon } from "@/components/icons";
 import type {
   AdminSession,
@@ -23,7 +23,7 @@ import type {
   OrderInput,
   OrdersSummary,
   PaginationMeta,
-  Payee,
+  WorkType,
 } from "@/types/api";
 
 interface OrderListEnvelope {
@@ -62,6 +62,9 @@ export function OrdersManager() {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [paymentStatus, setPaymentStatus] = useState("");
+  const [workTypeId, setWorkTypeId] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   /* `?client=<id>` deep link from the Clients page — read once during the
      first render rather than inside an effect (no cascading update). */
   const [clientFilter, setClientFilter] = useState<string>(() => {
@@ -87,29 +90,41 @@ export function OrdersManager() {
   const listState = useApiData<OrderListEnvelope>(
     (signal) =>
       api.admin.finance.orders.list(
-        { q: query, status, paymentStatus, clientId: clientFilter, page, limit: PAGE_SIZE },
+        {
+          q: query,
+          status,
+          paymentStatus,
+          clientId: clientFilter,
+          workTypeId,
+          from: fromDate,
+          to: toDate,
+          page,
+          limit: PAGE_SIZE,
+        },
         signal,
       ),
-    `orders:${query}:${status}:${paymentStatus}:${clientFilter}:${page}`,
+    `orders:${query}:${status}:${paymentStatus}:${clientFilter}:${workTypeId}:${fromDate}:${toDate}:${page}`,
   );
 
   const summaryState = useApiData<OrdersSummary>((signal) => api.admin.finance.orders.summary(signal), "orders-summary");
   const sessionState = useApiData<AdminSession>(() => api.auth.me(), "orders-session");
   const settingsState = useApiData<FinanceSettings>((signal) => api.admin.finance.settings.get(signal), "orders-settings");
   const catalogState = useApiData<CatalogItem[]>((signal) => api.admin.finance.catalog.list(signal), "orders-catalog");
+  const workTypesState = useApiData<WorkType[]>(
+    (signal) =>
+      api.admin.finance.workTypes.list({ includeInactive: "true", limit: 100 }, signal).then((envelope) => envelope.data),
+    "orders-work-types",
+  );
   const clientsState = useApiData<FinanceClient[]>(
     (signal) => api.admin.finance.clients.list({ active: "true", limit: 100 }, signal).then((envelope) => envelope.data),
     "orders-clients",
-  );
-  const payeesState = useApiData<Payee[]>(
-    (signal) => api.admin.finance.payees.list({ active: "true", limit: 100 }, signal).then((envelope) => envelope.data),
-    "orders-payees",
   );
 
   const canSplit = sessionState.data?.role === "super_admin";
   const items = listState.data?.data ?? [];
   const meta = listState.data?.meta;
   const summary = summaryState.data;
+  const hasFilters = Boolean(query || status || paymentStatus || clientFilter || workTypeId || fromDate || toDate);
 
   const clientName = useMemo(() => {
     const map = new Map<string, string>();
@@ -248,6 +263,74 @@ export function OrdersManager() {
         </div>
       </div>
 
+      {/* --------------------------------------------- Extra filters row */}
+      <div className="flex flex-wrap items-end gap-3" data-testid="orders-filters">
+        <div>
+          <label htmlFor="orders-work-type" className="label">Work type</label>
+          <select
+            id="orders-work-type"
+            className="field w-auto min-w-44"
+            value={workTypeId}
+            data-testid="orders-work-type-filter"
+            onChange={(event) => {
+              setWorkTypeId(event.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="">All work types</option>
+            {(workTypesState.data ?? []).map((type) => (
+              <option key={type._id} value={type._id}>
+                {type.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="orders-from" className="label">From</label>
+          <input
+            id="orders-from"
+            type="date"
+            className="field w-auto"
+            value={fromDate}
+            data-testid="orders-from"
+            onChange={(event) => {
+              setFromDate(event.target.value);
+              setPage(1);
+            }}
+          />
+        </div>
+        <div>
+          <label htmlFor="orders-to" className="label">To</label>
+          <input
+            id="orders-to"
+            type="date"
+            className="field w-auto"
+            value={toDate}
+            data-testid="orders-to"
+            onChange={(event) => {
+              setToDate(event.target.value);
+              setPage(1);
+            }}
+          />
+        </div>
+        {(workTypeId || fromDate || toDate) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="min-h-11"
+            data-testid="orders-clear-range"
+            onClick={() => {
+              setWorkTypeId("");
+              setFromDate("");
+              setToDate("");
+              setPage(1);
+            }}
+          >
+            Clear work type & dates
+          </Button>
+        )}
+      </div>
+
       {actionError && (
         <p role="alert" className="rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm text-danger">
           {actionError}
@@ -274,15 +357,15 @@ export function OrdersManager() {
         />
       ) : items.length === 0 ? (
         <EmptyState
-          title={query || status || paymentStatus || clientFilter ? "No orders match these filters" : "No orders yet"}
+          title={hasFilters ? "No orders match these filters" : "No orders yet"}
           description={
-            query || status || paymentStatus || clientFilter
+            hasFilters
               ? "Adjust the search or clear the filters."
               : "Create the first order — the invoice number, the split and the bill are all produced for you."
           }
           icon={<CartIcon size={22} />}
           action={
-            query || status || paymentStatus || clientFilter ? (
+            hasFilters ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -291,6 +374,9 @@ export function OrdersManager() {
                   setStatus("");
                   setPaymentStatus("");
                   setClientFilter("");
+                  setWorkTypeId("");
+                  setFromDate("");
+                  setToDate("");
                   setPage(1);
                 }}
               >
@@ -305,7 +391,7 @@ export function OrdersManager() {
         />
       ) : (
         <div className="card relative overflow-x-auto">
-          <table className="w-full min-w-[1000px] text-left text-sm">
+          <table className="w-full min-w-[1180px] text-left text-sm">
             <caption className="sr-only">Orders</caption>
             <thead>
               <tr className="border-b border-line text-xs uppercase tracking-wider text-muted">
@@ -315,6 +401,7 @@ export function OrdersManager() {
                 <th scope="col" className="px-4 py-3 font-semibold">Status</th>
                 <th scope="col" className="px-4 py-3 font-semibold">Payment</th>
                 <th scope="col" className="px-4 py-3 text-right font-semibold">Total</th>
+                <th scope="col" className="px-4 py-3 font-semibold">Owners</th>
                 <th scope="col" className="px-4 py-3 text-right font-semibold">Balance</th>
                 <th scope="col" className="px-4 py-3 font-semibold">Date</th>
                 <th scope="col" className="px-4 py-3 font-semibold"><span className="sr-only">Actions</span></th>
@@ -341,6 +428,31 @@ export function OrdersManager() {
                       <Badge tone={paymentMeta.tone}>{paymentMeta.label}</Badge>
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">{formatMinor(order.totalMinor)}</td>
+                    <td className="px-4 py-3">
+                      {order.splitSnapshot?.entries?.length ? (
+                        <ul
+                          className="flex max-w-56 flex-wrap gap-1"
+                          data-testid={`order-owners-${order.invoiceNumber}`}
+                        >
+                          {order.splitSnapshot.entries.map((entry, index) => (
+                            <li
+                              key={`${entry.ownerId ?? "reserve"}-${index}`}
+                              title={`${entry.name} — ${bpToPercent(entry.bp)} of ${formatMinor(order.totalMinor)}`}
+                              className="inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2 py-0.5 text-[0.68rem] text-muted tabular-nums"
+                            >
+                              <span
+                                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                style={{ backgroundColor: ["#212c65", "#3769a9", "#5f96cf", "#3f9fb3", "#95c93d"][index % 5] }}
+                                aria-hidden="true"
+                              />
+                              {entry.name.split(" ")[0]} {formatMinorCompact(entry.amountMinor)}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <span className="text-xs text-muted">—</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-right tabular-nums">
                       {formatMinor(order.balanceMinor ?? Math.max(0, order.totalMinor - order.paidMinor))}
                     </td>
@@ -388,9 +500,8 @@ export function OrdersManager() {
           open={editorOpen}
           order={editing}
           settings={settingsState.data}
-          catalog={catalogState.data ?? []}
+          workTypes={workTypesState.data ?? []}
           clients={clientsState.data ?? []}
-          payees={payeesState.data ?? []}
           canSplit={canSplit}
           busy={busy}
           onClose={() => {

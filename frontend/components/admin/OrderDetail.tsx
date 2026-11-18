@@ -10,8 +10,10 @@ import { Spinner, Skeleton } from "@/components/ui/Spinner";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { formatMinor, minorToInput, parseMinor } from "@/lib/bill/money";
 import { buildBillSvg } from "@/lib/bill/billSvg";
+import { billSummaryText } from "@/lib/bill/billText";
+import { BillInvoice } from "./BillInvoice";
 import { DEFAULT_TIER, TIER_SIZES, downloadBillSvg, downloadBlob, exportBillPng, type QualityTier } from "@/lib/bill/billExport";
-import { formatDay, formatMoment, orderStatusMeta, paymentStatusMeta, ORDER_STATUS, ORDER_STATUS_ORDER } from "@/lib/finance";
+import { bpToPercent, formatDay, formatMoment, orderStatusMeta, paymentStatusMeta, ORDER_STATUS, ORDER_STATUS_ORDER } from "@/lib/finance";
 import { DownloadIcon, EditIcon, TrashIcon } from "@/components/icons";
 import type { FinanceSettings, Order, OrderPayment, OrderStatus } from "@/types/api";
 
@@ -143,7 +145,7 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
     }
   };
 
-  const togglePayout = async (party: "referrer" | "worker", payeeId: string, paid: boolean) => {
+  const togglePayout = async (party: "referrer" | "worker" | "owner", payeeId: string, paid: boolean) => {
     if (!order) return;
     setBusy(true);
     setError(null);
@@ -152,6 +154,23 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
       reload();
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : "Could not update that share.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Super admin only (the API answers 403 otherwise): re-point at the template. */
+  const recalculateSplit = async () => {
+    if (!order) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.admin.finance.orders.recalculateSplit(order._id);
+      setNotice("Split recalculated from the current Split Template and recorded in the audit trail.");
+      reload();
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause.message : "Could not recalculate the split.");
     } finally {
       setBusy(false);
     }
@@ -185,6 +204,18 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
         paidMinor: order.paidMinor,
         balanceMinor: Math.max(0, order.totalMinor - order.paidMinor),
         payments: order.payments,
+        // The owners' distribution — only when this order carries one, so a
+        // legacy order exports exactly as it always did.
+        distribution: order.splitSnapshot?.entries?.length
+          ? order.splitSnapshot.entries.map((entry) => ({
+              name: entry.name,
+              role: entry.role,
+              bp: entry.bp,
+              amountMinor: entry.amountMinor,
+              isReserve: entry.isReserve,
+            }))
+          : null,
+        roundTo100: order.splitSnapshot?.roundTo100 === true,
       }
     : null;
   const billSvg = billData ? buildBillSvg(billData) : "";
@@ -196,7 +227,8 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
       const result = await exportBillPng(billSvg, tier, (message) => setExportMessage(message || null));
       downloadBlob(result.blob, `${order?.invoiceNumber ?? "invoice"}.png`);
       setExportMessage(
-        result.fallbackReason ?? `Saved ${result.size} × ${result.size} PNG (${Math.round(result.blob.size / 1024).toLocaleString("en-US")} KB).`,
+        result.fallbackReason ??
+          `Saved ${result.size} × ${result.height} PNG (${Math.round(result.blob.size / 1024).toLocaleString("en-US")} KB).`,
       );
     } catch (cause) {
       setExportMessage(
@@ -204,6 +236,36 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
       );
     } finally {
       setExporting(false);
+    }
+  };
+
+  const copySummary = async () => {
+    if (!billData) return;
+    const text = billSummaryText(billData);
+    const done = "Summary copied — paste it straight into WhatsApp.";
+    const failed = "Could not copy — select the invoice text and copy it instead.";
+    try {
+      await navigator.clipboard.writeText(text);
+      setExportMessage(done);
+      return;
+    } catch {
+      // The async clipboard API is unavailable (insecure context, permission
+      // denied, older browser) — fall back to the classic copy path so the
+      // owner can still paste the hisaab into WhatsApp.
+    }
+    try {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.top = "-9999px";
+      document.body.appendChild(area);
+      area.select();
+      const copied = document.execCommand("copy");
+      area.remove();
+      setExportMessage(copied ? done : failed);
+    } catch {
+      setExportMessage(failed);
     }
   };
 
@@ -307,7 +369,14 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
                 <tbody>
                   {order.items.map((item, index) => (
                     <tr key={`${item.name}-${index}`} className="table-row">
-                      <td className="py-2">{item.name}</td>
+                      <td className="py-2">
+                      {item.name}
+                      {item.customPrice && (
+                        <span className="ml-2 inline-flex items-center rounded-full border border-warning/40 px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-warning">
+                          Custom price
+                        </span>
+                      )}
+                    </td>
                       <td className="py-2 text-right tabular-nums">{item.quantity}</td>
                       <td className="py-2 text-right tabular-nums">{formatMinor(item.unitPriceMinor)}</td>
                       <td className="py-2 text-right tabular-nums">{formatMinor(item.lineTotalMinor)}</td>
@@ -329,6 +398,55 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
                   </tr>
                 </tbody>
               </table>
+
+              {/* The three owners: cards + a stacked bar of who gets what. */}
+              {order.splitSnapshot && order.splitSnapshot.entries.length > 0 && (
+                <div className="space-y-3" data-testid="owner-split-cards">
+                  <div
+                    className="flex h-3 w-full overflow-hidden rounded-full border border-line"
+                    role="img"
+                    aria-label="Share of the total among the owners"
+                    data-testid="owner-split-bar"
+                  >
+                    {order.splitSnapshot.entries.map((entry, index) => (
+                      <span
+                        key={`${entry.ownerId ?? "reserve"}-${index}`}
+                        title={`${entry.name} — ${bpToPercent(entry.bp)}`}
+                        style={{
+                          width: `${(entry.amountMinor / Math.max(1, order.totalMinor)) * 100}%`,
+                          backgroundColor: ["#212c65", "#3769a9", "#5f96cf", "#3f9fb3", "#95c93d"][index % 5],
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {order.splitSnapshot.entries.map((entry, index) => (
+                      <div
+                        key={`${entry.ownerId ?? "reserve"}-${index}`}
+                        className="rounded-xl border border-line p-3 text-sm"
+                        data-testid={`owner-card-${index}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-full"
+                            style={{ backgroundColor: ["#212c65", "#3769a9", "#5f96cf", "#3f9fb3", "#95c93d"][index % 5] }}
+                            aria-hidden="true"
+                          />
+                          <span className="min-w-0 truncate font-medium text-foreground">{entry.name}</span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted">
+                          {entry.role || (entry.isReserve ? "Company reserve" : "Owner")} · {bpToPercent(entry.bp)}
+                        </p>
+                        <p className="mt-1 text-lg font-semibold tabular-nums text-foreground">{formatMinor(entry.amountMinor)}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted" data-testid="owner-split-note">
+                    Rounded to whole rupees; remainder assigned by largest fraction
+                    {order.splitSnapshot.roundTo100 ? " · shares rounded to the nearest Rs 100" : ""}.
+                  </p>
+                </div>
+              )}
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-xl border border-line p-3 text-sm">
@@ -355,14 +473,23 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
                 </div>
               </div>
 
-              {order.statusHistory.length > 0 && (
-                <ol className="space-y-1 text-xs text-muted">
-                  {order.statusHistory.map((entry, index) => (
-                    <li key={`${entry.status}-${index}`}>
-                      {ORDER_STATUS[entry.status]?.label ?? entry.status} · {formatMoment(entry.at)}
-                    </li>
-                  ))}
-                </ol>
+              {(order.statusHistory.length > 0 || (order.splitHistory?.length ?? 0) > 0) && (
+                <div className="space-y-1">
+                  <p className="label mb-1">Audit trail</p>
+                  <ol className="space-y-1 text-xs text-muted" data-testid="audit-trail">
+                    {order.statusHistory.map((entry, index) => (
+                      <li key={`${entry.status}-${index}`}>
+                        {ORDER_STATUS[entry.status]?.label ?? entry.status} · {formatMoment(entry.at)}
+                      </li>
+                    ))}
+                    {(order.splitHistory ?? []).map((entry, index) => (
+                      <li key={`split-${entry.at}-${index}`}>
+                        Split recalculated
+                        {entry.totalMinor ? ` · total ${formatMinor(entry.totalMinor)}` : ""} · {formatMoment(entry.at)}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
               )}
             </section>
           )}
@@ -456,7 +583,89 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
           {/* ---------------------------------------------------- shares */}
           {tab === "shares" && (
             <section className="space-y-3" data-tab-panel="shares">
-              {!order.split ? (
+              {order.splitSnapshot ? (
+                <>
+                  <table className="w-full text-left text-sm">
+                    <caption className="sr-only">The owners&apos; shares of this order</caption>
+                    <thead>
+                      <tr className="border-b border-line text-xs uppercase tracking-wider text-muted">
+                        <th scope="col" className="py-2 font-semibold">Owner</th>
+                        <th scope="col" className="py-2 text-right font-semibold">Share</th>
+                        <th scope="col" className="py-2 text-right font-semibold">Amount</th>
+                        <th scope="col" className="py-2 text-right font-semibold">Paid out</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {order.splitSnapshot.entries.map((entry, index) => (
+                        <tr key={`${entry.ownerId ?? "reserve"}-${index}`} className="table-row">
+                          <td className="py-2">
+                            {entry.name}
+                            <span className="block text-xs text-muted">
+                              {entry.isReserve ? "Company reserve" : entry.role || "Owner"}
+                            </span>
+                          </td>
+                          <td className="py-2 text-right tabular-nums">{bpToPercent(entry.bp)}</td>
+                          <td className="py-2 text-right tabular-nums" data-testid={`owner-amount-${index}`}>
+                            {formatMinor(entry.amountMinor)}
+                          </td>
+                          <td className="py-2 text-right">
+                            {entry.isReserve || !entry.ownerId ? (
+                              <span className="text-xs text-muted">—</span>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={busy || order.status === "cancelled"}
+                                onClick={() => void togglePayout("owner", entry.ownerId!, !entry.paidOutAt)}
+                                data-testid={`payout-owner-${index}`}
+                              >
+                                {entry.paidOutAt ? "Paid ✓" : "Mark paid out"}
+                              </Button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="table-row bg-surface">
+                        <td className="py-2 font-medium" colSpan={2}>Total distributed</td>
+                        <td className="py-2 text-right font-semibold tabular-nums" data-testid="owner-split-total">
+                          {formatMinor(order.splitSnapshot.entries.reduce((sum, entry) => sum + entry.amountMinor, 0))}
+                        </td>
+                        <td className="py-2 text-right text-xs text-muted">
+                          = {formatMinor(order.totalMinor)}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p className="text-xs text-muted" data-testid="owner-split-footnote">
+                    Rounded to whole rupees; remainder assigned by largest fraction
+                    {order.splitSnapshot.roundTo100 ? " · shares rounded to the nearest Rs 100" : ""}. Computed{" "}
+                    {formatMoment(order.splitSnapshot.computedAt)} ·
+                    {order.splitSnapshot.source === "override"
+                      ? " this order uses its own split."
+                      : " frozen from the Split Template."}
+                  </p>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void recalculateSplit()}
+                      loading={busy}
+                      data-testid="recalc-split"
+                    >
+                      Recalculate split
+                    </Button>
+                  </div>
+                  {(order.splitHistory?.length ?? 0) > 0 && (
+                    <ol className="space-y-1 text-xs text-muted" data-testid="split-audit-trail">
+                      {order.splitHistory?.map((entry, index) => (
+                        <li key={`${entry.at}-${index}`}>
+                          Split recalculated · {formatMoment(entry.at)}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </>
+              ) : !order.split ? (
                 <p className="text-sm text-muted">This order has no split saved.</p>
               ) : (
                 <>
@@ -547,17 +756,28 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
           {/* ------------------------------------------------------ bill */}
           {tab === "bill" && (
             <section className="space-y-3" data-tab-panel="bill">
-              <div className="overflow-hidden rounded-xl border border-line bg-white">
-                {/* The SAME SVG that is exported, scaled to fit. */}
-                <div
-                  className="bill-preview"
-                  data-testid="bill-preview"
-                  dangerouslySetInnerHTML={{ __html: billSvg }}
-                />
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
+              {/* The real invoice: semantic HTML, A4 print stylesheet, and the
+                  SAME data the exported SVG is built from. */}
+              {billData && <BillInvoice data={billData} />}
+              <div className="flex flex-wrap items-center gap-2 no-print">
                 <Button onClick={() => void downloadPng()} loading={exporting} iconLeft={<DownloadIcon size={14} />} data-testid="download-png">
                   Download PNG (8K)
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => window.print()}
+                  iconLeft={<DownloadIcon size={14} />}
+                  data-testid="print-invoice"
+                >
+                  Print / Save as PDF
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => void copySummary()}
+                  iconLeft={<DownloadIcon size={14} />}
+                  data-testid="copy-summary"
+                >
+                  Copy summary as text
                 </Button>
                 <label className="sr-only" htmlFor="bill-quality">PNG quality</label>
                 <select
@@ -572,7 +792,7 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
                   <option value="2k">2K · {TIER_SIZES["2k"]} px</option>
                 </select>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   onClick={() => downloadBillSvg(billSvg, order.invoiceNumber)}
                   iconLeft={<DownloadIcon size={14} />}
                   data-testid="download-svg"
@@ -582,13 +802,14 @@ export function OrderDetail({ orderId, canSplit, paymentMethods, onClose, onEdit
                 {exporting && <Spinner label="Rendering the bill" />}
               </div>
               {exportMessage && (
-                <p role="status" className="rounded-xl border border-line bg-surface px-4 py-3 text-sm text-muted" data-testid="export-message">
+                <p role="status" className="no-print rounded-xl border border-line bg-surface px-4 py-3 text-sm text-muted" data-testid="export-message">
                   {exportMessage}
                 </p>
               )}
-              <p className="text-xs text-muted">
-                The bill is client-facing: it never shows the internal split. A refresh of the API is not needed — the
-                preview is rendered from the order you are looking at.
+              <p className="no-print text-xs text-muted">
+                The bill shows your client-facing invoice and — when the order has one — the owners&apos;
+                distribution with its rounding note. Internal details (treasury, payouts) never appear. Everything is
+                rendered from the order you are looking at; no refresh is needed.
               </p>
             </section>
           )}

@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { formatMinor } from "@/lib/bill/money";
 import { bpToInput, percentToBp } from "@/lib/finance";
 import { ChartIcon, RefreshIcon } from "@/components/icons";
+import { SplitTemplatePanel } from "./SplitTemplatePanel";
 import type { FinanceSettings, TreasuryMonth, TreasuryReport } from "@/types/api";
 
 /** The last 12 Karachi months, newest last — gaps included so the chart is honest. */
@@ -438,6 +439,9 @@ export function TreasuryManager() {
           </section>
         </>
       ) : null}
+
+      {/* ----------------------------------------------- split template */}
+      <SplitTemplatePanel settings={settings} onSaved={() => settingsState.reload()} />
 
       {/* ------------------------------------------------------- settings */}
       <section className="card p-5" data-testid="treasury-settings">

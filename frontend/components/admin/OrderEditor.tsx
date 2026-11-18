@@ -6,43 +6,51 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { Badge } from "@/components/ui/Badge";
 import { formatMinor, minorToInput, parseMinor } from "@/lib/bill/money";
-import { bpToInput, bpToPercent, ORDER_STATUS, ORDER_STATUS_ORDER, percentToBp } from "@/lib/finance";
+import {
+  bpToInput,
+  bpToPercent,
+  computeOwnerSplit,
+  ORDER_STATUS,
+  ORDER_STATUS_ORDER,
+  percentToBp,
+  splitShareError,
+  type OwnerShare,
+} from "@/lib/finance";
 import { PlusIcon, TrashIcon } from "@/components/icons";
 import type {
-  CatalogItem,
   FinanceClient,
   FinanceSettings,
   Order,
   OrderInput,
   OrderStatus,
   OrderStatusHistoryEntry,
-  Payee,
+  WorkType,
 } from "@/types/api";
 
 /**
- * ORDER EDITOR — one screen that builds an order from the catalogue, keeps the
- * money in integer paisa, and shows the settlement split live while you type.
+ * ORDER EDITOR — one screen that builds an order from the WORK TYPES price
+ * list, keeps the money in integer paisa, and shows the three-owner split live
+ * while you type.
  *
- * Money rules mirrored here from the backend (Backend/utils/orderMath.js):
- *   person   = floor(total × bp / 10000)
- *   company  = total − Σ people      (a remainder, so the parts always add up)
- * Nobody is silently redistributed: if a share is empty its percentage stays
- * with the company and the preview says so in words.
+ * Money rules mirrored here from the backend:
+ *   line   = quantity × unit price (snapshot taken from the work type)
+ *   total  = Σ lines − discount
+ *   owner  = floor(total × bp / 10000), remainder by largest fraction
+ *            (Backend/utils/splitTemplate.js — identical maths, see
+ *            computeOwnerSplit in @/lib/finance)
+ * The split is configured once in the Split Template; a super admin may give
+ * THIS order a different split, but it must still total exactly 100%.
  */
 
 interface EditorItem {
   key: string;
   catalogItemId: string | null;
+  /** The work type this line was picked from (null → a custom line). */
+  workTypeId: string | null;
   name: string;
   unitLabel: string;
   quantity: number;
   unitPriceMinor: number;
-}
-
-interface EditorWorker {
-  key: string;
-  payeeId: string;
-  bp: number;
 }
 
 export interface OrderEditorProps {
@@ -50,10 +58,10 @@ export interface OrderEditorProps {
   /** `null` creates a new order. */
   order: Order | null;
   settings: FinanceSettings | null;
-  catalog: CatalogItem[];
+  /** The owner-managed price list — every line picks from it. */
+  workTypes: WorkType[];
   clients: FinanceClient[];
-  payees: Payee[];
-  /** False for a plain admin: the Shares section is replaced by an explanation. */
+  /** False for a plain admin: the per-order override controls are hidden. */
   canSplit: boolean;
   busy?: boolean;
   onClose: () => void;
@@ -69,28 +77,34 @@ export interface OrderEditorProps {
 let keySeed = 0;
 const nextKey = () => `row-${(keySeed += 1)}`;
 
-const bpSum = (bps: number[]) => bps.reduce((sum, bp) => sum + bp, 0);
-
-/** floor(total × bp / 10000) — identical to the server's computation. */
-function shareOf(totalMinor: number, bp: number): number {
-  return Math.floor((totalMinor * bp) / 10000);
-}
-
-function defaultWorkerBp(settings: FinanceSettings | null): number {
-  return settings?.workerBp ?? 2000;
-}
-
-function defaultReferrerBp(settings: FinanceSettings | null): number {
-  return settings?.referrerBp ?? 1000;
+/**
+ * The Split Template as a runnable entry list — the optional "Company reserve"
+ * is appended as a pseudo-entry so the SAME maths covers it. Returns [] when
+ * the owner has not configured a template yet.
+ */
+function templateEntries(settings: FinanceSettings | null): OwnerShare[] {
+  const template = settings?.splitTemplate;
+  const raw = Array.isArray(template?.entries) ? template.entries : [];
+  const entries: OwnerShare[] = raw.map((entry) => ({
+    ownerId: entry.ownerId ?? null,
+    name: entry.name,
+    role: entry.role ?? "",
+    bp: entry.bp,
+    isReserve: false,
+  }));
+  const reserve = template?.companyReserveBp ?? 0;
+  if (reserve > 0) {
+    entries.push({ ownerId: null, name: "Company reserve", role: "", bp: reserve, isReserve: true });
+  }
+  return entries;
 }
 
 export function OrderEditor({
   open,
   order,
   settings,
-  catalog,
+  workTypes,
   clients,
-  payees,
   canSplit,
   busy = false,
   onClose,
@@ -98,6 +112,7 @@ export function OrderEditor({
   onClientCreated,
 }: OrderEditorProps) {
   const editing = Boolean(order);
+  const activeWorkTypes = useMemo(() => workTypes.filter((type) => type.isActive !== false), [workTypes]);
 
   const [clientId, setClientId] = useState<string>(() => order?.clientId ?? "");
   const [clientSearch, setClientSearch] = useState("");
@@ -107,6 +122,7 @@ export function OrderEditor({
       ? order.items.map((item) => ({
           key: nextKey(),
           catalogItemId: item.catalogItemId ?? null,
+          workTypeId: item.workTypeId ?? null,
           name: item.name,
           unitLabel: item.unitLabel,
           quantity: item.quantity,
@@ -115,11 +131,12 @@ export function OrderEditor({
       : [
           {
             key: nextKey(),
-            catalogItemId: catalog[0]?._id ?? null,
-            name: catalog[0]?.name ?? "",
-            unitLabel: catalog[0]?.unitLabel ?? "item",
+            catalogItemId: null,
+            workTypeId: activeWorkTypes[0]?._id ?? null,
+            name: activeWorkTypes[0]?.name ?? "",
+            unitLabel: "item",
             quantity: 1,
-            unitPriceMinor: catalog[0]?.defaultUnitPriceMinor ?? 0,
+            unitPriceMinor: activeWorkTypes[0]?.unitPrice ?? 0,
           },
         ],
   );
@@ -131,15 +148,12 @@ export function OrderEditor({
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState(() => settings?.paymentMethods?.[0] ?? "Cash");
   const [payNow, setPayNow] = useState(false);
-  const [referrerId, setReferrerId] = useState<string>(() => order?.split?.referrer?.payeeId ?? "");
-  const [referrerBp, setReferrerBp] = useState<number>(() => order?.split?.referrer?.bp ?? defaultReferrerBp(settings));
-  const [workers, setWorkers] = useState<EditorWorker[]>(() =>
-    order?.split?.workers?.length
-      ? order.split.workers.map((worker) => ({ key: nextKey(), payeeId: worker.payeeId ?? "", bp: worker.bp }))
-      : [0, 1, 2].map(() => ({ key: nextKey(), payeeId: "", bp: defaultWorkerBp(settings) })),
-  );
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  /* Optional PER-ORDER override of the Split Template (super admin only).
+     Shares are edited as basis points and must total exactly 10000 (100%). */
+  const [overrideOn, setOverrideOn] = useState(false);
+  const [overrideEntries, setOverrideEntries] = useState<OwnerShare[]>([]);
 
   /* ------------------------------------------------------------- derived */
 
@@ -148,29 +162,18 @@ export function OrderEditor({
   const discountMinor = Math.min(Math.max(parseMinor(discountInput) ?? 0, 0), subtotalMinor);
   const totalMinor = subtotalMinor - discountMinor;
 
-  const people = [
-    ...(referrerId ? [{ key: "referrer", name: payees.find((p) => p._id === referrerId)?.name ?? "Referrer", bp: referrerBp }] : []),
-    ...workers
-      .filter((worker) => worker.payeeId)
-      .map((worker) => ({
-        key: worker.key,
-        name: payees.find((p) => p._id === worker.payeeId)?.name ?? "Worker",
-        bp: worker.bp,
-      })),
-  ];
-  const peopleBp = bpSum(people.map((person) => person.bp));
-  const peopleMinor = people.reduce((sum, person) => sum + shareOf(totalMinor, person.bp), 0);
-  const companyMinor = totalMinor - peopleMinor;
-  const overBudget = peopleBp > 10000;
-  const activeWorkers = workers.filter((worker) => worker.payeeId);
-
-  const payeeOptions = useMemo(() => {
-    const active = payees.filter((payee) => payee.isActive !== false);
-    return {
-      referrers: active.filter((payee) => payee.role === "referrer" || payee.role === "both"),
-      workers: active.filter((payee) => payee.role === "worker" || payee.role === "both"),
-    };
-  }, [payees]);
+  const templateEntryList = templateEntries(settings);
+  const previewEntries = overrideOn ? overrideEntries : templateEntryList;
+  const splitMessage = previewEntries.length > 0 ? splitShareError(previewEntries, 0) : null;
+  const splitInvalid = previewEntries.length > 0 && splitMessage !== null;
+  const roundTo100 = settings?.splitTemplate?.roundTo100 === true;
+  const splitShares =
+    previewEntries.length > 0 && !splitInvalid
+      ? computeOwnerSplit(totalMinor, previewEntries, { roundTo100 })
+      : [];
+  const splitBpTotal = previewEntries.reduce((sum, entry) => sum + entry.bp, 0);
+  const hasTemplate = templateEntryList.length > 0;
+  const overBudget = splitInvalid;
 
   const filteredClients = useMemo(() => {
     const needle = clientSearch.trim().toLowerCase();
@@ -197,16 +200,17 @@ export function OrderEditor({
 
   const addItem = () => {
     if (items.length >= 14) return;
-    const first = catalog[0];
+    const first = activeWorkTypes[0];
     setItems((current) => [
       ...current,
       {
         key: nextKey(),
-        catalogItemId: first?._id ?? null,
-        name: first?.name ?? "Custom Work",
-        unitLabel: first?.unitLabel ?? "item",
+        catalogItemId: null,
+        workTypeId: first?._id ?? null,
+        name: first?.name ?? "",
+        unitLabel: "item",
         quantity: 1,
-        unitPriceMinor: first?.defaultUnitPriceMinor ?? 0,
+        unitPriceMinor: first?.unitPrice ?? 0,
       },
     ]);
   };
@@ -250,6 +254,7 @@ export function OrderEditor({
       status,
       items: items.map((item) => ({
         catalogItemId: item.catalogItemId,
+        workTypeId: item.workTypeId,
         name: item.name.trim(),
         unitLabel: item.unitLabel.trim() || "item",
         quantity: item.quantity,
@@ -261,10 +266,17 @@ export function OrderEditor({
       payload.initialPayment = { amountMinor: parseMinor(payAmount) ?? 0, method: payMethod };
     }
 
-    if (canSplit) {
-      payload.split = {
-        referrer: referrerId ? { payeeId: referrerId, bp: referrerBp } : null,
-        workers: activeWorkers.map((worker) => ({ payeeId: worker.payeeId, bp: worker.bp })),
+    if (canSplit && overrideOn) {
+      if (splitMessage) {
+        setError(splitMessage);
+        setFieldErrors({ splitOverride: splitMessage });
+        return;
+      }
+      const owners = previewEntries.filter((entry) => !entry.isReserve);
+      const reserve = previewEntries.find((entry) => entry.isReserve);
+      payload.splitOverride = {
+        entries: owners.map((entry) => ({ ownerId: entry.ownerId ?? "", bp: entry.bp, role: entry.role })),
+        companyReserveBp: reserve?.bp ?? 0,
       };
     }
 
@@ -300,7 +312,7 @@ export function OrderEditor({
           </h2>
           <p className="mt-1 text-sm text-muted">
             {editing
-              ? "Change the work, the money or the people — the split recomputes as you type."
+              ? "Change the work, the money or the owners' split — everything recomputes as you type."
               : "Pick the client, add the work, and see exactly how the money will be shared."}
           </p>
         </div>
@@ -415,48 +427,77 @@ export function OrderEditor({
                 <div className="flex flex-wrap items-end gap-2">
                   <div className="min-w-0 flex-1 basis-48">
                     <label className="label" htmlFor={`item-name-${index}`}>
-                      Item
+                      Work type
                     </label>
-                    <select
+                    <input
                       id={`item-name-${index}`}
                       data-testid={`item-select-${index}`}
                       className="field"
-                      value={item.catalogItemId ?? ""}
+                      list={`work-type-options-${index}`}
+                      autoComplete="off"
+                      placeholder="Search work types…"
+                      value={item.name}
                       onChange={(event) => {
-                        const chosen = catalog.find((entry) => entry._id === event.target.value);
-                        updateItem(item.key, {
-                          catalogItemId: chosen?._id ?? null,
-                          name: chosen?.name ?? "Custom Work",
-                          unitLabel: chosen?.unitLabel ?? "item",
-                          unitPriceMinor: chosen?.defaultUnitPriceMinor ?? 0,
-                        });
+                        const typed = event.target.value;
+                        const chosen = activeWorkTypes.find(
+                          (entry) => entry.name.toLowerCase() === typed.trim().toLowerCase(),
+                        );
+                        if (chosen) {
+                          updateItem(item.key, {
+                            workTypeId: chosen._id,
+                            catalogItemId: null,
+                            name: chosen.name,
+                            unitLabel: "item",
+                            unitPriceMinor: chosen.unitPrice,
+                          });
+                        } else {
+                          // Free text → a custom line with no work type behind it.
+                          updateItem(item.key, { workTypeId: null, name: typed });
+                        }
                       }}
-                    >
-                      {catalog.map((entry) => (
-                        <option key={entry._id} value={entry._id}>
-                          {entry.name}
+                    />
+                    <datalist id={`work-type-options-${index}`}>
+                      {activeWorkTypes.map((entry) => (
+                        <option key={entry._id} value={entry.name}>
+                          {formatMinor(entry.unitPrice)}
                         </option>
                       ))}
-                      {!catalog.some((entry) => entry._id === item.catalogItemId) && item.name && (
-                        <option value="">{item.name}</option>
-                      )}
-                    </select>
+                    </datalist>
                   </div>
-                  <div className="w-24">
+                  <div className="w-36">
                     <label className="label" htmlFor={`item-qty-${index}`}>
                       Qty
                     </label>
-                    <input
-                      id={`item-qty-${index}`}
-                      data-testid={`item-qty-${index}`}
-                      className="field text-center"
-                      inputMode="numeric"
-                      min={1}
-                      value={item.quantity}
-                      onChange={(event) =>
-                        updateItem(item.key, { quantity: Math.max(1, Number.parseInt(event.target.value, 10) || 1) })
-                      }
-                    />
+                    <div className="flex items-stretch gap-1">
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-icon !min-h-11 !min-w-11 shrink-0"
+                        aria-label={`One fewer of line ${index + 1}`}
+                        onClick={() => updateItem(item.key, { quantity: Math.max(1, item.quantity - 1) })}
+                      >
+                        <span aria-hidden="true">−</span>
+                      </button>
+                      <input
+                        id={`item-qty-${index}`}
+                        data-testid={`item-qty-${index}`}
+                        className="field w-14 text-center"
+                        inputMode="numeric"
+                        min={1}
+                        value={item.quantity}
+                        aria-label={`Quantity for line ${index + 1}`}
+                        onChange={(event) =>
+                          updateItem(item.key, { quantity: Math.min(100000, Math.max(1, Number.parseInt(event.target.value, 10) || 1)) })
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-icon !min-h-11 !min-w-11 shrink-0"
+                        aria-label={`One more of line ${index + 1}`}
+                        onClick={() => updateItem(item.key, { quantity: Math.min(100000, item.quantity + 1) })}
+                      >
+                        <span aria-hidden="true">+</span>
+                      </button>
+                    </div>
                   </div>
                   <div className="w-36">
                     <label className="label" htmlFor={`item-price-${index}`}>
@@ -478,25 +519,29 @@ export function OrderEditor({
                     <span className="block py-2 text-sm font-semibold tabular-nums text-foreground" data-testid={`item-total-${index}`}>
                       {formatMinor(item.quantity * item.unitPriceMinor)}
                     </span>
+                    {workTypes.find((entry) => entry._id === item.workTypeId) &&
+                      item.unitPriceMinor !== workTypes.find((entry) => entry._id === item.workTypeId)?.unitPrice && (
+                        <Badge tone="warning">Custom price</Badge>
+                      )}
                   </div>
                   <Button
                     variant="ghost"
                     size="sm"
                     type="button"
-                    aria-label={`Remove item ${index + 1}`}
+                    className="!min-h-11"
+                    aria-label={`Remove line ${index + 1}`}
                     onClick={() => removeItem(item.key)}
                     disabled={items.length <= 1}
                     iconLeft={<TrashIcon size={14} />}
                   />
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted">
-                  <span>Unit: {item.unitLabel}</span>
                   <input
                     className="field w-auto flex-1 basis-64 py-1.5 text-xs"
-                    placeholder="Note for this line (optional)"
+                    placeholder="Description for this line (optional)"
                     value={item.name}
+                    aria-label={`Description for line ${index + 1}`}
                     onChange={(event) => updateItem(item.key, { name: event.target.value })}
-                    aria-label={`Description for item ${index + 1}`}
                   />
                 </div>
               </li>
@@ -512,7 +557,7 @@ export function OrderEditor({
               iconLeft={<PlusIcon size={14} />}
               data-testid="add-item"
             >
-              Add item
+              Add work
             </Button>
             <div className="w-40">
               <label className="label" htmlFor="order-discount">
@@ -643,184 +688,136 @@ export function OrderEditor({
           )}
         </section>
 
-        {/* -------------------------------------------------- 5. Shares */}
-        <section className="space-y-3" data-testid="shares-section">
-          <h3 className="text-sm font-semibold text-foreground">4 · Shares</h3>
-          {!canSplit ? (
-            <p className="rounded-xl border border-line bg-surface px-4 py-3 text-sm text-muted">
-              Only a super admin can assign shares. This order is saved with the default percentages and nobody
-              assigned, so the company box keeps the share until a super admin names the people.
+        {/* ------------------------------------------- 5. Owners' split */}
+        <section className="space-y-3" data-testid="owner-split-section">
+          <h3 className="text-sm font-semibold text-foreground">4 · Owners&apos; split</h3>
+          {!hasTemplate ? (
+            <p className="rounded-xl border border-line bg-surface px-4 py-3 text-sm text-muted" data-testid="owner-split-empty">
+              No Split Template yet — this order keeps the current settlement. A super admin can divide the whole
+              amount between the owners in <span className="font-medium text-foreground">Treasury → Split
+              Template</span>; the shares must total exactly 100%.
             </p>
           ) : (
             <>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <label className="label" htmlFor="share-referrer">Referrer (optional)</label>
-                  <select
-                    id="share-referrer"
-                    data-testid="share-referrer"
-                    className="field"
-                    value={referrerId}
-                    onChange={(event) => setReferrerId(event.target.value)}
-                  >
-                    <option value="">No referrer</option>
-                    {payeeOptions.referrers.map((payee) => (
-                      <option key={payee._id} value={payee._id}>
-                        {payee.name}
-                      </option>
-                    ))}
-                  </select>
-                  {referrerId && (
-                    <div className="mt-2 flex items-center gap-2">
-                      <label className="text-xs text-muted" htmlFor="referrer-percent">Share</label>
-                      <input
-                        id="referrer-percent"
-                        data-testid="referrer-percent"
-                        className="field w-20 text-right tabular-nums"
-                        inputMode="decimal"
-                        value={bpToInput(referrerBp)}
-                        onChange={(event) => setReferrerBp(percentToBp(event.target.value) ?? 0)}
-                      />
-                      <span className="text-xs text-muted">% of the total</span>
-                    </div>
-                  )}
-                  {!referrerId && (
-                    <p className="mt-2 text-xs text-muted">
-                      No referrer — {bpToPercent(defaultReferrerBp(settings))} stays with the company.
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="label mb-0">Workers ({activeWorkers.length} of 6)</span>
+              {overrideOn && canSplit && (
+                <div className="space-y-2 rounded-xl border border-line bg-surface p-3" data-testid="split-override">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold text-foreground">This order only</span>
                     <Button
                       variant="ghost"
                       size="sm"
                       type="button"
-                      onClick={() =>
-                        setWorkers((current) =>
-                          current.length >= 6
-                            ? current
-                            : [...current, { key: nextKey(), payeeId: "", bp: defaultWorkerBp(settings) }],
-                        )
-                      }
-                      disabled={workers.length >= 6}
-                      iconLeft={<PlusIcon size={14} />}
-                      data-testid="add-worker"
+                      onClick={() => setOverrideOn(false)}
                     >
-                      Add worker
+                      Use the template instead
                     </Button>
                   </div>
-                  {workers.map((worker, index) => (
-                    <div key={worker.key} className="flex items-center gap-2">
-                      <select
-                        aria-label={`Worker ${index + 1}`}
-                        data-testid={`share-worker-${index}`}
-                        className="field min-w-0 flex-1"
-                        value={worker.payeeId}
-                        onChange={(event) =>
-                          setWorkers((current) =>
-                            current.map((entry) =>
-                              entry.key === worker.key ? { ...entry, payeeId: event.target.value } : entry,
-                            ),
-                          )
-                        }
-                      >
-                        <option value="">Choose a worker…</option>
-                        {payeeOptions.workers.map((payee) => (
-                          <option key={payee._id} value={payee._id}>
-                            {payee.name}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        aria-label={`Worker ${index + 1} share percentage`}
-                        data-testid={`worker-percent-${index}`}
-                        className="field w-20 text-right tabular-nums"
-                        inputMode="decimal"
-                        value={bpToInput(worker.bp)}
-                        disabled={!worker.payeeId}
-                        onChange={(event) =>
-                          setWorkers((current) =>
-                            current.map((entry) =>
-                              entry.key === worker.key
-                                ? { ...entry, bp: percentToBp(event.target.value) ?? 0 }
-                                : entry,
-                            ),
-                          )
-                        }
-                      />
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        type="button"
-                        aria-label={`Remove worker ${index + 1}`}
-                        iconLeft={<TrashIcon size={14} />}
-                        disabled={workers.length <= 1}
-                        onClick={() =>
-                          setWorkers((current) => current.filter((entry) => entry.key !== worker.key))
-                        }
-                      />
-                    </div>
-                  ))}
+                  <ul className="space-y-2">
+                    {overrideEntries.map((entry, index) => (
+                      <li key={`${entry.ownerId ?? "reserve"}-${index}`} className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                          {entry.name}
+                          {entry.role ? <span className="text-muted"> · {entry.role}</span> : null}
+                        </span>
+                        <input
+                          aria-label={`${entry.name} share percentage`}
+                          data-testid={`override-percent-${index}`}
+                          className="field w-24 text-right tabular-nums"
+                          inputMode="decimal"
+                          value={bpToInput(entry.bp)}
+                          onChange={(event) => {
+                            const bp = percentToBp(event.target.value) ?? 0;
+                            setOverrideEntries((current) =>
+                              current.map((row, rowIndex) => (rowIndex === index ? { ...row, bp } : row)),
+                            );
+                          }}
+                        />
+                        <span className="text-xs text-muted">%</span>
+                      </li>
+                    ))}
+                  </ul>
+                  {splitMessage && (
+                    <p role="alert" className="text-sm text-danger" data-testid="split-error">
+                      {splitMessage}
+                    </p>
+                  )}
                 </div>
-              </div>
+              )}
 
-              {/* Live settlement preview */}
+              {canSplit && !overrideOn && (
+                <div className="flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    data-testid="split-override-on"
+                    onClick={() => {
+                      setOverrideEntries(templateEntryList.map((entry) => ({ ...entry })));
+                      setOverrideOn(true);
+                    }}
+                  >
+                    Different split for this order
+                  </Button>
+                </div>
+              )}
+
+              {!canSplit && (
+                <p className="text-xs text-muted">
+                  Only a super admin can give one order a different split.
+                </p>
+              )}
+
+              {/* Live three-owner preview */}
               <div className="overflow-x-auto rounded-xl border border-line" data-testid="split-preview">
                 <table className="w-full min-w-[320px] text-left text-sm">
-                  <caption className="sr-only">How the total of this order is shared</caption>
+                  <caption className="sr-only">How the total of this order is shared among the owners</caption>
                   <thead>
                     <tr className="border-b border-line text-xs uppercase tracking-wider text-muted">
-                      <th scope="col" className="px-3 py-2 font-semibold">Who</th>
-                      <th scope="col" className="px-3 py-2 text-right font-semibold">%</th>
+                      <th scope="col" className="px-3 py-2 font-semibold">Owner</th>
+                      <th scope="col" className="px-3 py-2 text-right font-semibold">Share</th>
                       <th scope="col" className="px-3 py-2 text-right font-semibold">Amount</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {people.length === 0 && (
-                      <tr className="table-row">
-                        <td className="px-3 py-2 text-muted" colSpan={3}>
-                          Nobody assigned yet — the whole total stays in the company box.
+                    {splitShares.map((entry, index) => (
+                      <tr key={`${entry.ownerId ?? "reserve"}-${index}`} className="table-row">
+                        <td className="px-3 py-2">
+                          {entry.name}
+                          {entry.isReserve && <span className="ml-1 text-xs text-muted">(reserve)</span>}
                         </td>
-                      </tr>
-                    )}
-                    {people.map((person) => (
-                      <tr key={person.key} className="table-row">
-                        <td className="px-3 py-2">{person.name}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{bpToPercent(person.bp)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums" data-testid={`split-amount-${person.key}`}>
-                          {formatMinor(shareOf(totalMinor, person.bp))}
+                        <td className="px-3 py-2 text-right tabular-nums">{bpToPercent(entry.bp)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums" data-testid={`split-amount-${index}`}>
+                          {formatMinor(entry.amountMinor ?? 0)}
                         </td>
                       </tr>
                     ))}
-                    <tr className="table-row bg-surface" data-testid="split-company">
-                      <td className="px-3 py-2 font-medium">Company box (Khazana)</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{bpToPercent(10000 - peopleBp)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums font-semibold">{formatMinor(companyMinor)}</td>
-                    </tr>
                   </tbody>
                   <tfoot>
-                    <tr>
-                      <td className="px-3 py-2 text-xs text-muted" colSpan={3}>
-                        Total distributed = {formatMinor(peopleMinor + companyMinor)} · order total{" "}
-                        <span className="font-medium text-foreground">{formatMinor(totalMinor)}</span>
-                        {people.length > 0 && peopleBp < 10000 && (
-                          <>
-                            {" · "}
-                            {bpToPercent(10000 - peopleBp)} stays with the company (no share assigned for it — it is
-                            never redistributed).
-                          </>
-                        )}
+                    <tr className="bg-surface">
+                      <td className="px-3 py-2 font-medium" colSpan={2}>
+                        Total distributed
+                      </td>
+                      <td className="px-3 py-2 text-right font-semibold tabular-nums" data-testid="split-total">
+                        {formatMinor(splitShares.reduce((sum, entry) => sum + (entry.amountMinor ?? 0), 0))}
                       </td>
                     </tr>
                   </tfoot>
                 </table>
               </div>
-              {overBudget && (
-                <p role="alert" className="rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm text-danger" data-testid="split-over">
-                  The shares add up to {bpToPercent(peopleBp)} — that is more than 100%. Reduce one of the shares before saving.
+              <p className="text-xs text-muted" data-testid="split-footnote">
+                Rounded to whole rupees; remainder assigned by largest fraction
+                {roundTo100
+                  ? " · shares rounded to the nearest Rs 100 (the last owner takes the leftover)"
+                  : ""}
+                . Order total <span className="font-medium text-foreground">{formatMinor(totalMinor)}</span>.
+              </p>
+              {splitInvalid && (
+                <p
+                  role="alert"
+                  className="rounded-xl border border-danger/40 bg-danger-soft px-4 py-3 text-sm text-danger"
+                  data-testid="split-over"
+                >
+                  {splitMessage}
                 </p>
               )}
             </>
@@ -842,7 +839,11 @@ export function OrderEditor({
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
           <Badge tone={overBudget ? "danger" : "neutral"}>
-            {overBudget ? "Over 100%" : `Shares total ${bpToPercent(peopleBp)}`}
+            {overBudget
+              ? `Shares total ${bpToPercent(splitBpTotal)} — must be 100%`
+              : hasTemplate
+                ? `Shares total ${bpToPercent(splitBpTotal)}`
+                : "No split template yet"}
           </Badge>
           <div className="flex justify-end gap-2">
             <Button variant="outline" type="button" onClick={onClose} disabled={busy}>

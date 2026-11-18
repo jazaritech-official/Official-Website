@@ -71,6 +71,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Business",
     items: [
       { href: "/admin/orders", label: "Orders", icon: CartIcon },
+      { href: "/admin/work-types", label: "Work Types", icon: LayersIcon },
       { href: "/admin/clients", label: "Clients", icon: UsersIcon },
       { href: "/admin/workers", label: "Workers & Referrers", icon: HandshakeIcon, superOnly: true },
       { href: "/admin/treasury", label: "Treasury", icon: ChartIcon, superOnly: true },
@@ -99,6 +100,7 @@ const TITLES: Record<string, string> = {
   "/admin/submissions": "Project Requests",
   "/admin/visitors": "Visitors",
   "/admin/orders": "Orders",
+  "/admin/work-types": "Work Types",
   "/admin/clients": "Clients",
   "/admin/workers": "Workers & Referrers",
   "/admin/treasury": "Treasury",
