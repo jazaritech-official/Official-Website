@@ -1,9 +1,12 @@
 import mongoose from "mongoose";
-import { DEFAULT_REFERRER_BP, DEFAULT_WORKER_BP } from "../utils/orderMath.js";
+import { DEFAULT_REFERRER_BP, DEFAULT_WORKER_BP, MAX_ORDER_ITEMS } from "../utils/orderMath.js";
 
 export const ORDER_STATUSES = ["new", "in_progress", "review", "delivered", "completed", "cancelled"];
 export const PAYMENT_STATUSES = ["unpaid", "partial", "paid"];
-export const MAX_ITEMS = 14;
+/** Max lines per order — one source of truth in utils/orderMath.js (40, was 14):
+ *  an order can hold a long list of work types and the bill paginates past
+ *  12 lines, so 20+ lines is a real case. */
+export const MAX_ITEMS = MAX_ORDER_ITEMS;
 
 /**
  * ORDER — a client job with money attached.
@@ -60,14 +63,39 @@ const shareSchema = new mongoose.Schema(
   { _id: false },
 );
 
+/** One owner's line of the three-owner split snapshot (see splitSnapshot). */
+const splitSnapshotEntrySchema = new mongoose.Schema(
+  {
+    ownerId: { type: mongoose.Schema.Types.ObjectId, ref: "Payee", default: null },
+    name: { type: String, trim: true, maxlength: 60, default: "" },
+    role: { type: String, trim: true, maxlength: 60, default: "" },
+    /** Basis points (10000 = 100%). */
+    bp: { type: Number, min: 0, max: 10000, default: 0 },
+    amountMinor: { type: Number, min: 0, default: 0 },
+    /** The optional company reserve line inside the same 100%. */
+    isReserve: { type: Boolean, default: false },
+    paidOutAt: { type: Date, default: null },
+  },
+  { _id: false },
+);
+
 const itemSchema = new mongoose.Schema(
   {
     catalogItemId: { type: mongoose.Schema.Types.ObjectId, ref: "CatalogItem", default: null },
+    /** The work type this line came from (null for legacy / custom lines). */
+    workTypeId: { type: mongoose.Schema.Types.ObjectId, ref: "WorkType", default: null },
+    /**
+     * SNAPSHOT fields — copied at creation so a later price or rename on the
+     * Work Types page can NEVER change an order that already exists.
+     * `name` is the name snapshot, `unitPriceMinor` the price snapshot.
+     */
     name: { type: String, required: true, trim: true, maxlength: 120 },
     unitLabel: { type: String, trim: true, maxlength: 24, default: "item" },
     quantity: { type: Number, required: true, min: 1, max: 100000 },
     unitPriceMinor: { type: Number, required: true, min: 0 },
     lineTotalMinor: { type: Number, required: true, min: 0 },
+    /** True when this line's price differs from the work type's current price. */
+    customPrice: { type: Boolean, default: false },
   },
   { _id: false },
 );
@@ -89,7 +117,7 @@ const orderSchema = new mongoose.Schema(
       type: [itemSchema],
       validate: {
         validator: (value) => Array.isArray(value) && value.length >= 1 && value.length <= MAX_ITEMS,
-        message: "An order needs between 1 and 14 items.",
+        message: "An order needs between 1 and 40 items.",
       },
     },
     subtotalMinor: { type: Number, min: 0, default: 0 },
@@ -132,6 +160,37 @@ const orderSchema = new mongoose.Schema(
       workers: { type: [shareSchema], default: () => [] },
       companyMinor: { type: Number, default: 0 },
       computedAt: { type: Date, default: () => new Date() },
+    },
+    /**
+     * THE THREE-OWNER SPLIT SNAPSHOT — written when the order is saved (or
+     * explicitly recalculated by a super admin) and never rewritten by a
+     * later template edit:
+     *   entries[] = per owner { ownerId, name, role, bp, amountMinor,
+     *                            isReserve, paidOutAt }
+     *   Σ bp = 10000, Σ amountMinor === totalMinor (utils/splitTemplate.js)
+     * Absent on legacy orders — their stored `split` above stays untouched.
+     */
+    splitSnapshot: {
+      entries: { type: [splitSnapshotEntrySchema], default: undefined },
+      roundTo100: { type: Boolean, default: false },
+      source: { type: String, enum: ["template", "override"], default: "template" },
+      computedAt: { type: Date, default: undefined },
+    },
+    /** Append-only trail of split recalculations (shown with the audit trail). */
+    splitHistory: {
+      type: [
+        new mongoose.Schema(
+          {
+            at: { type: Date, default: () => new Date() },
+            byAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "Admin", default: null },
+            source: { type: String, default: "template" },
+            totalMinor: { type: Number, default: 0 },
+            note: { type: String, trim: true, maxlength: 200, default: "" },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
     },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin", default: null },
   },

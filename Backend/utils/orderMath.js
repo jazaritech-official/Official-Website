@@ -28,6 +28,9 @@ export const BP = 10000;
 /** Maximum workers per order (spec 2.1 — N ≤ 6). */
 export const MAX_WORKERS = 6;
 
+/** Maximum line items per order (mirrored by models/Order.js MAX_ITEMS). */
+export const MAX_ORDER_ITEMS = 40;
+
 /** Default percentages, mirrored by FinanceSettings.referrerBp / workerBp. */
 export const DEFAULT_REFERRER_BP = 1000;
 export const DEFAULT_WORKER_BP = 2000;
@@ -56,8 +59,8 @@ export function computeTotals(items, discountMinor = 0) {
   if (!Array.isArray(items) || items.length === 0) {
     throw ApiError.badRequest("An order needs at least one item.", { items: "Add at least one item." });
   }
-  if (items.length > 14) {
-    throw ApiError.badRequest("An order can have at most 14 items.", { items: "Maximum 14 items per order." });
+  if (items.length > MAX_ORDER_ITEMS) {
+    throw ApiError.badRequest(`An order can have at most ${MAX_ORDER_ITEMS} items.`, { items: `Maximum ${MAX_ORDER_ITEMS} items per order.` });
   }
 
   const lineTotals = items.map((item, index) => {

@@ -1,12 +1,16 @@
 import mongoose from "mongoose";
 
 /**
- * PAYEE — a person who receives a share of an order (a worker or the referrer
- * who brought the client in).
+ * PAYEE — a person who receives a share of an order (a worker, the referrer
+ * who brought the client in, or one of the COMPANY OWNERS).
  *
  * These are NOT admin accounts: they have no login, no password and no access
- * to anything. They exist purely so the split can name a human being. The
+ * to anything. They exist purely so a split can name a human being. The
  * Admin model is deliberately not reused (spec 2.1).
+ *
+ * `isOwner` marks the three company owners: only owners can be used in the
+ * Split Template (Backend/utils/splitTemplate.js), and saving the template
+ * keeps this flag in sync — exactly the people in the template are flagged.
  */
 export const PAYEE_ROLES = ["worker", "referrer", "both"];
 
@@ -28,12 +32,15 @@ const payeeSchema = new mongoose.Schema(
     phone: { type: String, trim: true, maxlength: [40, "Phone is too long."], default: "" },
     notes: { type: String, trim: true, maxlength: [300, "Notes are too long."], default: "" },
     isActive: { type: Boolean, default: true },
+    /** Company owner: eligible for the Split Template and the owner cards. */
+    isOwner: { type: Boolean, default: false },
   },
   { timestamps: true },
 );
 
 payeeSchema.index({ name: 1 });
 payeeSchema.index({ role: 1, isActive: 1 });
+payeeSchema.index({ isOwner: 1 });
 
 export const Payee = mongoose.model("Payee", payeeSchema);
 export default Payee;

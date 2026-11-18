@@ -2,15 +2,30 @@ import mongoose from "mongoose";
 
 /**
  * FINANCE SETTINGS — the singleton (key "default") that holds:
+ *   · the SPLIT TEMPLATE — the three owners' shares in basis points (super
+ *     admin only, see utils/splitTemplate.js; empty = legacy behaviour)
  *   · the default split percentages (referrer 10%, worker 20% each)
  *   · the payment methods an admin may record
  *   · the client-facing "business block" printed on every bill
  *
- * Every ORDER snapshots these values when its split is saved, so editing the
- * settings later never rewrites history (spec 2.0a). No secrets are ever
- * stored here — it is printable business information only.
+ * Every ORDER snapshots its split when it is saved, so editing the template
+ * later never rewrites history (spec 2.0a). No secrets are ever stored here —
+ * it is printable business information only.
  */
 export const DEFAULT_PAYMENT_METHODS = ["Cash", "Bank Transfer", "JazzCash", "Easypaisa", "Card", "Other"];
+
+/** One owner's share of the split template (basis points: 3000 = 30%). */
+const splitTemplateEntrySchema = new mongoose.Schema(
+  {
+    ownerId: { type: mongoose.Schema.Types.ObjectId, ref: "Payee", default: null },
+    name: { type: String, trim: true, maxlength: 60, default: "" },
+    /** Free-form role label ("client & work owner", "work owner", …) — data, never hardcoded. */
+    role: { type: String, trim: true, maxlength: 60, default: "" },
+    bp: { type: Number, min: 0, max: 10000, default: 0 },
+  },
+  { _id: false },
+);
+
 
 const financeSettingsSchema = new mongoose.Schema(
   {
@@ -32,6 +47,22 @@ const financeSettingsSchema = new mongoose.Schema(
       },
     },
     currency: { type: String, default: "PKR", trim: true, maxlength: [8, "Currency code is too long."] },
+    /**
+     * THE SPLIT TEMPLATE — how the whole order amount is divided among the
+     * three company owners. Entries + companyReserveBp MUST total exactly
+     * 10000 basis points (validated in utils/splitTemplate.js). An EMPTY
+     * entries array means "not configured yet": orders then keep the legacy
+     * referrer/worker/company behaviour untouched (backward compatibility).
+     */
+    splitTemplate: {
+      entries: { type: [splitTemplateEntrySchema], default: () => [] },
+      /** Optional "Company reserve %" inside the same 100% (default 0). */
+      companyReserveBp: { type: Number, default: 0, min: 0, max: 10000 },
+      /** Optional WhatsApp-style rounding to the nearest Rs 100 (default OFF). */
+      roundTo100: { type: Boolean, default: false },
+      updatedAt: { type: Date, default: null },
+      updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin", default: null },
+    },
     paymentMethods: {
       type: [{ type: String, trim: true, maxlength: [40, "Payment method is too long."] }],
       default: () => [...DEFAULT_PAYMENT_METHODS],
