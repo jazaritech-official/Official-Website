@@ -1,6 +1,6 @@
 {
   "_generated": "GENERATED - NEVER HAND-EDIT. Produced by `npm run snapshot:content` from the public API. Public data only; no secrets.",
-  "generatedAt": "2026-11-18T12:55:01.799Z",
+  "generatedAt": "2026-11-18T13:21:40.807Z",
   "source": "http://localhost:5000/api",
   "counts": {
     "logos": 2,

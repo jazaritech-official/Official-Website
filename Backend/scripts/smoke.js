@@ -17,7 +17,6 @@ import env from "../config/env.js";
 import Service from "../models/Service.js";
 import Admin from "../models/Admin.js";
 import Order from "../models/Order.js";
-import Payee from "../models/Payee.js";
 import AuditLog from "../models/AuditLog.js";
 import { computeSplit, computeTotals, derivePaymentStatus } from "../utils/orderMath.js";
 import { computeOwnerSplit } from "../utils/splitTemplate.js";
