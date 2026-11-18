@@ -1,9 +1,11 @@
 import FinanceSettings from "../models/FinanceSettings.js";
+import Payee from "../models/Payee.js";
 import Order from "../models/Order.js";
 import { sendData } from "../utils/apiResponse.js";
 import { ApiError } from "../utils/errors.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ensureFinanceDefaults } from "../services/financeDefaults.js";
+import { validateSplitInput } from "../utils/splitTemplate.js";
 
 /** Whole-number casting: the aggregation can return Mongo doubles. */
 const int = (value) => Math.round(Number(value) || 0);
@@ -11,11 +13,26 @@ const int = (value) => Math.round(Number(value) || 0);
 const str = (value, max) => String(value ?? "").trim().slice(0, max);
 
 function serialiseSettings(settings) {
+  const template = settings.splitTemplate;
+  const entries = Array.isArray(template?.entries) ? template.entries : [];
   return {
     referrerBp: settings.referrerBp,
     workerBp: settings.workerBp,
     currency: settings.currency,
     paymentMethods: settings.paymentMethods,
+    /** The three-owner Split Template (super admins may edit it). */
+    splitTemplate: {
+      entries: entries.map((entry) => ({
+        ownerId: entry?.ownerId ? String(entry.ownerId) : null,
+        name: entry?.name ?? "",
+        role: entry?.role ?? "",
+        bp: Number(entry?.bp) || 0,
+      })),
+      companyReserveBp: Number(template?.companyReserveBp) || 0,
+      roundTo100: template?.roundTo100 === true,
+      updatedAt: template?.updatedAt ?? null,
+      updatedBy: template?.updatedBy ? String(template.updatedBy) : null,
+    },
     business: {
       businessName: settings.business?.businessName ?? "",
       address: settings.business?.address ?? "",
@@ -47,6 +64,70 @@ export const updateFinanceSettings = asyncHandler(async (req, res) => {
 
   if (body.referrerBp !== undefined) update.referrerBp = body.referrerBp;
   if (body.workerBp !== undefined) update.workerBp = body.workerBp;
+
+  /* --- THE SPLIT TEMPLATE (super admin only, same gate as treasury) ------- */
+  let ownerIds = null;
+  if (body.splitTemplate !== undefined) {
+    const raw = body.splitTemplate;
+    if (!raw || typeof raw !== "object" || !Array.isArray(raw.entries) || raw.entries.length === 0) {
+      throw ApiError.badRequest("Add at least one owner to the split.", {
+        "splitTemplate": "Add at least one owner to the split.",
+      });
+    }
+
+    const ids = raw.entries
+      .map((entry) => String(entry?.ownerId ?? ""))
+      .filter((id) => /^[a-f0-9]{24}$/i.test(id));
+    if (ids.length !== raw.entries.length) {
+      throw ApiError.badRequest("Every share must name one of the company owners.", {
+        "splitTemplate": "Every share must name one of the company owners.",
+      });
+    }
+    // Names + roles come from the database, never from the request body.
+    const payees = await Payee.find({ _id: { $in: ids }, isActive: true })
+      .select("_id name role")
+      .lean();
+    const byId = new Map(payees.map((payee) => [String(payee._id), payee]));
+
+    const owners = raw.entries.map((entry, index) => {
+      const ownerId = String(entry.ownerId);
+      const payee = byId.get(ownerId);
+      if (!payee) {
+        throw ApiError.badRequest("Every share must name an active owner.", {
+          [`splitTemplate.entries.${index}.ownerId`]: "Choose an active person.",
+        });
+      }
+      return {
+        ownerId,
+        name: payee.name,
+        role: String(entry?.role ?? "").trim().slice(0, 60),
+        bp: Number(entry?.bp),
+        isReserve: false,
+      };
+    });
+
+    // The ONLY hard rule: shares add up to EXACTLY 100% (reserve included).
+    const { entries, companyReserveBp } = validateSplitInput(
+      owners,
+      Number(raw.companyReserveBp) || 0,
+      "splitTemplate",
+    );
+
+    update.splitTemplate = {
+      entries: entries.map((entry) => ({
+        ownerId: entry.ownerId,
+        name: entry.name,
+        role: entry.role,
+        bp: entry.bp,
+      })),
+      companyReserveBp,
+      roundTo100: raw.roundTo100 === true,
+      updatedAt: new Date(),
+      updatedBy: req.admin?.id ?? null,
+    };
+    ownerIds = ids;
+  }
+
   if (body.currency !== undefined) update.currency = str(body.currency, 8).toUpperCase() || "PKR";
   if (Array.isArray(body.paymentMethods)) {
     const methods = body.paymentMethods.map((method) => str(method, 40)).filter(Boolean);
@@ -77,17 +158,32 @@ export const updateFinanceSettings = asyncHandler(async (req, res) => {
   );
   if (!settings) throw ApiError.notFound("Finance settings not found.");
 
+  // Saving the template KEEPS the owner flags in sync: exactly the people in
+  // the template are marked isOwner (idempotent, two plain $set operations).
+  if (ownerIds) {
+    await Payee.updateMany({ isOwner: true, _id: { $nin: ownerIds } }, { $set: { isOwner: false } });
+    if (ownerIds.length > 0) {
+      await Payee.updateMany({ _id: { $in: ownerIds } }, { $set: { isOwner: true } });
+    }
+  }
+
   sendData(res, serialiseSettings(settings));
 });
 
 /**
  * GET /api/admin/finance/treasury — super_admin only (enforced at the mount).
  *
- * Everything is computed by ONE Mongo aggregation (no per-order loop in JS):
- *   · expected  = Σ split.companyMinor over non-cancelled orders
- *   · collected = Σ floor(split.companyMinor × paidMinor / totalMinor)
+ * Everything is computed by ONE Mongo aggregation (no per-order loop in JS).
+ * Each order contributes from exactly ONE split source, so nothing is ever
+ * counted twice:
+ *   · ORDERS WITH AN OWNER SPLIT (splitSnapshot) → the reserve line is the
+ *     company's share; the owner lines are what people are owed.
+ *   · LEGACY ORDERS → split.companyMinor / referrer / workers, exactly as
+ *     before, so existing treasury figures never move (migration-tested).
+ *   · expected  = Σ company share over non-cancelled orders
+ *   · collected = Σ floor(share × paidMinor / totalMinor)
  *     — the company's share of the money actually received
- *   · people    = owed / pending / paid-out per payee
+ *   · people    = owed / pending / paid-out per payee (either split model)
  *   · months    = collected company share grouped by the Asia/Karachi month of
  *     each payment's receivedAt, for the last 12 months
  */
@@ -99,6 +195,32 @@ export const getTreasury = asyncHandler(async (_req, res) => {
 
   const [result] = await Order.aggregate([
     { $match: { status: { $ne: "cancelled" } } },
+    // One derived company-share figure per order (owner split vs legacy).
+    { $addFields: { _entries: { $ifNull: ["$splitSnapshot.entries", []] } } },
+    {
+      $addFields: {
+        _hasSnap: { $gt: [{ $size: "$_entries" }, 0] },
+        _reserveMinor: {
+          $sum: {
+            $map: {
+              input: {
+                $filter: { input: "$_entries", as: "e", cond: { $eq: ["$$e.isReserve", true] } },
+              },
+              as: "e",
+              in: "$$e.amountMinor",
+            },
+          },
+        },
+        _legacyCompany: { $ifNull: ["$split.companyMinor", 0] },
+        _total: { $ifNull: ["$totalMinor", 0] },
+        _paid: { $ifNull: ["$paidMinor", 0] },
+      },
+    },
+    {
+      $addFields: {
+        _companyShare: { $cond: ["$_hasSnap", "$_reserveMinor", "$_legacyCompany"] },
+      },
+    },
     {
       $facet: {
         totals: [
@@ -108,43 +230,70 @@ export const getTreasury = asyncHandler(async (_req, res) => {
               orders: { $sum: 1 },
               billedMinor: { $sum: "$totalMinor" },
               paidMinor: { $sum: "$paidMinor" },
-              expectedCompanyMinor: { $sum: { $ifNull: ["$split.companyMinor", 0] } },
+              expectedCompanyMinor: { $sum: "$_companyShare" },
               collectedCompanyMinor: {
                 $sum: {
                   $cond: [
-                    { $gt: ["$totalMinor", 0] },
-                    {
-                      $floor: {
-                        $divide: [
-                          { $multiply: [{ $ifNull: ["$split.companyMinor", 0] }, "$paidMinor"] },
-                          "$totalMinor",
-                        ],
-                      },
-                    },
+                    { $gt: ["$_total", 0] },
+                    { $floor: { $divide: [{ $multiply: ["$_companyShare", "$_paid"] }, "$_total"] } },
                     0,
                   ],
                 },
               },
             },
           },
+          { $project: { _id: 0 } },
         ],
         people: [
           {
             $project: {
-              shares: {
-                $concatArrays: [
-                  { $cond: ["$split.referrer", [{ share: "$split.referrer" }], []] },
+              legacy: {
+                $cond: [
+                  "$_hasSnap",
+                  [],
+                  {
+                    $concatArrays: [
+                      { $cond: ["$split.referrer", [{ share: "$split.referrer" }], []] },
+                      {
+                        $map: {
+                          input: { $ifNull: ["$split.workers", []] },
+                          as: "w",
+                          in: { share: "$$w" },
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+              owners: {
+                $cond: [
+                  "$_hasSnap",
                   {
                     $map: {
-                      input: { $ifNull: ["$split.workers", []] },
-                      as: "w",
-                      in: { share: "$$w" },
+                      input: {
+                        $filter: {
+                          input: "$_entries",
+                          as: "e",
+                          cond: { $ne: [{ $ifNull: ["$$e.isReserve", false] }, true] },
+                        },
+                      },
+                      as: "e",
+                      in: {
+                        share: {
+                          payeeId: "$$e.ownerId",
+                          name: "$$e.name",
+                          amountMinor: { $ifNull: ["$$e.amountMinor", 0] },
+                          paidOutAt: { $ifNull: ["$$e.paidOutAt", null] },
+                        },
+                      },
                     },
                   },
+                  [],
                 ],
               },
             },
           },
+          { $project: { shares: { $concatArrays: ["$legacy", "$owners"] } } },
           { $unwind: "$shares" },
           {
             $group: {
@@ -170,13 +319,10 @@ export const getTreasury = asyncHandler(async (_req, res) => {
               },
               shareOfPayment: {
                 $cond: [
-                  { $gt: ["$totalMinor", 0] },
+                  { $gt: ["$_total", 0] },
                   {
                     $floor: {
-                      $divide: [
-                        { $multiply: [{ $ifNull: ["$split.companyMinor", 0] }, "$payments.amountMinor"] },
-                        "$totalMinor",
-                      ],
+                      $divide: [{ $multiply: ["$_companyShare", "$payments.amountMinor"] }, "$_total"],
                     },
                   },
                   0,

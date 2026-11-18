@@ -8,14 +8,18 @@ import {
   KARACHI_OFFSET_MS,
   balanceMinor,
   buildSplit,
+  buildSplitSnapshot,
   canAssignSplit,
   derivePaymentStatus,
   financeSettings,
-  hasPaidOut,
+  hasOwnerSplit,
   nextInvoiceNumber,
+  orderLocked,
   recomputeOrderMoney,
+  recomputeSnapshotAmounts,
 } from "../services/orderService.js";
 import { computeSplit } from "../utils/orderMath.js";
+import { recordAudit } from "../utils/audit.js";
 
 const int = (value) => Math.round(Number(value) || 0);
 
@@ -42,10 +46,14 @@ function queryFilter(req) {
   const status = String(req.query.status ?? "").trim();
   const paymentStatus = String(req.query.paymentStatus ?? "").trim();
   const clientId = String(req.query.clientId ?? "").trim();
+  const workTypeId = String(req.query.workTypeId ?? "").trim();
 
   if (ORDER_STATUSES.includes(status)) filter.status = status;
   if (PAYMENT_STATUSES.includes(paymentStatus)) filter.paymentStatus = paymentStatus;
   if (/^[a-f0-9]{24}$/i.test(clientId)) filter.clientId = clientId;
+  // Orders-list "work type" filter — every line is checked, so an order that
+  // uses the type on ANY line matches.
+  if (/^[a-f0-9]{24}$/i.test(workTypeId)) filter["items.workTypeId"] = workTypeId;
 
   const from = Date.parse(req.query.from);
   const to = Date.parse(req.query.to);
@@ -158,13 +166,16 @@ export const createOrder = asyncHandler(async (req, res) => {
   if (!client) throw ApiError.notFound("Client not found. Choose an existing client.");
 
   const settings = await financeSettings();
-  const { items, subtotalMinor, discountMinor, totalMinor } = recomputeOrderMoney(
+  const { items, subtotalMinor, discountMinor, totalMinor } = await recomputeOrderMoney(
     body.items || [],
     Number.isInteger(body.discountMinor) ? body.discountMinor : 0,
   );
 
   const status = ORDER_STATUSES.includes(body.status) ? body.status : "new";
   const split = await buildSplit(totalMinor, body, req);
+  // The three-owner split — null until a Split Template is configured, so
+  // existing deployments keep their current behaviour (backward compatible).
+  const splitSnapshot = await buildSplitSnapshot(totalMinor, body, req);
 
   // Optional first payment — validated here so the document is written ONCE.
   let initialPayment = null;
@@ -215,6 +226,7 @@ export const createOrder = asyncHandler(async (req, res) => {
     payments: initialPayment ? [initialPayment] : [],
     deliveryDate: body.deliveryDate ? new Date(body.deliveryDate) : null,
     split,
+    ...(splitSnapshot ? { splitSnapshot, splitHistory: [] } : {}),
     createdBy: req.admin.id,
   };
 
@@ -237,7 +249,7 @@ export const updateOrder = asyncHandler(async (req, res) => {
   if (!order) throw ApiError.notFound("Order not found.");
 
   const body = req.body || {};
-  const locked = hasPaidOut(order.split);
+  const locked = orderLocked(order);
 
   // Titles, notes and delivery dates are always editable; money is not.
   if (body.title !== undefined) order.title = String(body.title).trim().slice(0, 160);
@@ -262,14 +274,17 @@ export const updateOrder = asyncHandler(async (req, res) => {
   const touchesMoney =
     body.items !== undefined || body.discountMinor !== undefined || body.clientId !== undefined;
   const touchesSplit = body.split !== undefined && canAssignSplit(req);
+  // A super admin may override the owner split for THIS order (100% rule
+  // enforced server-side); a plain admin's override is ignored.
+  const touchesOwnerSplit = body.splitOverride !== undefined && canAssignSplit(req);
 
-  if (touchesMoney || touchesSplit) {
+  if (touchesMoney || touchesSplit || touchesOwnerSplit) {
     const nextItems = body.items !== undefined ? body.items : order.items;
     const nextDiscount =
       body.discountMinor !== undefined && Number.isInteger(body.discountMinor)
         ? body.discountMinor
         : order.discountMinor;
-    const money = recomputeOrderMoney(nextItems, nextDiscount);
+    const money = await recomputeOrderMoney(nextItems, nextDiscount);
 
     if (money.totalMinor < order.paidMinor) {
       throw ApiError.conflict(
@@ -322,6 +337,19 @@ export const updateOrder = asyncHandler(async (req, res) => {
           computedAt: new Date(),
         };
       }
+
+      // Three-owner split: same owners, new amounts — unless a super admin
+      // explicitly replaced the split for this order.
+      if (hasOwnerSplit(order)) {
+        order.splitSnapshot = touchesOwnerSplit
+          ? (await buildSplitSnapshot(money.totalMinor, body, req)) ?? recomputeSnapshotAmounts(order.splitSnapshot, money.totalMinor)
+          : recomputeSnapshotAmounts(order.splitSnapshot, money.totalMinor);
+      } else if (touchesOwnerSplit) {
+        // No template at this order's birth, but an explicit override arrives
+        // now: adopt the owner model from here on.
+        const snapshot = await buildSplitSnapshot(money.totalMinor, body, req);
+        if (snapshot) order.splitSnapshot = snapshot;
+      }
     }
   }
 
@@ -333,6 +361,73 @@ export const updateOrder = asyncHandler(async (req, res) => {
   }
 
   await order.save();
+  const fresh = await Order.findById(order._id).lean();
+  return sendData(res, presentOrder(fresh, req));
+});
+
+/**
+ * PATCH /api/admin/orders/:id/split/recalculate — SUPER ADMIN ONLY (the mount
+ * behind requireRole enforces it, exactly like /payout).
+ *
+ * The ONLY way an existing order's owner split may change: template-sourced
+ * orders are re-pointed at the CURRENT Split Template, override orders keep
+ * their own shares and only re-derive the amounts. Frozen once any share has
+ * been paid out, and always recorded in the audit log + the order's own
+ * splitHistory (the trail shown on the detail page).
+ */
+export const recalculateSplit = asyncHandler(async (req, res) => {
+  const order = await Order.findById(req.params.id);
+  if (!order) throw ApiError.notFound("Order not found.");
+
+  if (!hasOwnerSplit(order)) {
+    throw ApiError.badRequest("This order predates the owner split — its stored split stays as it is.", {
+      splitSnapshot: "Only orders with an owner split can be recalculated.",
+    });
+  }
+  if (orderLocked(order)) {
+    throw ApiError.conflict("A share has already been paid out, so this split can no longer be recalculated.", {
+      splitSnapshot: "Undo the paid-out share first.",
+    });
+  }
+
+  let snapshot;
+  if (order.splitSnapshot.source === "override") {
+    // The order keeps its own shares: only the money is re-derived.
+    snapshot = recomputeSnapshotAmounts(order.splitSnapshot, order.totalMinor);
+    snapshot.source = "override";
+  } else {
+    snapshot = await buildSplitSnapshot(order.totalMinor, {}, req);
+    if (!snapshot) {
+      throw ApiError.badRequest("No Split Template is configured — set one up in Treasury first.", {
+        splitSnapshot: "Configure the split template first.",
+      });
+    }
+  }
+
+  order.splitSnapshot = snapshot;
+  order.splitHistory = [
+    ...(order.splitHistory ?? []),
+    {
+      at: new Date(),
+      byAdminId: req.admin.id,
+      source: snapshot.source,
+      totalMinor: order.totalMinor,
+      note: "Split recalculated",
+    },
+  ];
+  await order.save();
+
+  recordAudit(req, "order.split.recalculated", {
+    target: { id: String(order._id), email: order.invoiceNumber },
+    metadata: {
+      orderId: String(order._id),
+      invoiceNumber: order.invoiceNumber,
+      totalMinor: order.totalMinor,
+      source: snapshot.source,
+      entries: snapshot.entries.map((entry) => ({ bp: entry.bp, amountMinor: entry.amountMinor, isReserve: entry.isReserve })),
+    },
+  });
+
   const fresh = await Order.findById(order._id).lean();
   return sendData(res, presentOrder(fresh, req));
 });

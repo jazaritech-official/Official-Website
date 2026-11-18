@@ -3,6 +3,7 @@ import { body, param, query } from "express-validator";
 import { validate } from "../middleware/validate.js";
 import { ORDER_STATUSES, PAYMENT_STATUSES, MAX_ITEMS } from "../models/Order.js";
 import { MAX_WORKERS } from "../utils/orderMath.js";
+import { MAX_SPLIT_ENTRIES } from "../utils/splitTemplate.js";
 import {
   listClients,
   getClient,
@@ -24,6 +25,14 @@ import {
   updateOrder,
   updateOrderStatus,
 } from "../controllers/orderController.js";
+import {
+  listWorkTypes,
+  createWorkType,
+  updateWorkType,
+  deactivateWorkType,
+  deleteWorkType,
+  reorderWorkTypes,
+} from "../controllers/workTypeController.js";
 import { recordPayment, deletePayment } from "../controllers/orderPaymentsController.js";
 import { getFinanceSettings } from "../controllers/financeController.js";
 
@@ -87,6 +96,7 @@ const payeeRules = [
   body("phone").optional({ values: "falsy" }).trim().isLength({ max: 40 }),
   body("notes").optional({ values: "falsy" }).trim().isLength({ max: 300 }),
   body("isActive").optional().isBoolean().toBoolean(),
+  body("isOwner").optional().isBoolean().toBoolean(),
   validate,
 ];
 
@@ -97,6 +107,7 @@ const payeeUpdateRules = [
   body("phone").optional({ values: "falsy" }).trim().isLength({ max: 40 }),
   body("notes").optional({ values: "falsy" }).trim().isLength({ max: 300 }),
   body("isActive").optional().isBoolean().toBoolean(),
+  body("isOwner").optional().isBoolean().toBoolean(),
   validate,
 ];
 
@@ -129,6 +140,40 @@ financeRouter.get("/order-catalog", listCatalog);
 financeRouter.post("/order-catalog", catalogRules, createCatalogItem);
 financeRouter.put("/order-catalog/:id", catalogUpdateRules, updateCatalogItem);
 
+/* --- Work types (the owner's price list) ------------------------------- */
+
+const workTypeRules = [
+  body("name").trim().isLength({ min: 1, max: 60 }).withMessage("Name is required (1–60 characters)."),
+  body("unitPrice").optional().isInt({ min: 0 }).withMessage("Enter a price of zero or more (whole paisa)."),
+  body("currency").optional({ values: "falsy" }).trim().isLength({ min: 3, max: 8 }),
+  body("description").optional({ values: "falsy" }).trim().isLength({ max: 160 }),
+  body("isActive").optional().isBoolean().toBoolean(),
+  body("sortOrder").optional().isInt().toInt(),
+  validate,
+];
+
+const workTypeUpdateRules = [
+  param("id").isMongoId().withMessage("Invalid identifier."),
+  body("name").optional({ values: "falsy" }).trim().isLength({ min: 1, max: 60 }),
+  body("unitPrice").optional().isInt({ min: 0 }).withMessage("Enter a price of zero or more (whole paisa)."),
+  body("currency").optional({ values: "falsy" }).trim().isLength({ min: 3, max: 8 }),
+  body("description").optional({ values: "falsy" }).trim().isLength({ max: 160 }),
+  body("isActive").optional().isBoolean().toBoolean(),
+  body("sortOrder").optional().isInt().toInt(),
+  validate,
+];
+
+financeRouter.get("/work-types", pageRules, listWorkTypes);
+financeRouter.post("/work-types", workTypeRules, createWorkType);
+financeRouter.post("/work-types/reorder", reorderWorkTypes);
+financeRouter.put("/work-types/:id", workTypeUpdateRules, updateWorkType);
+financeRouter.patch(
+  "/work-types/:id/deactivate",
+  [param("id").isMongoId().withMessage("Invalid identifier."), body("isActive").optional().isBoolean().toBoolean(), validate],
+  deactivateWorkType,
+);
+financeRouter.delete("/work-types/:id", idRules, deleteWorkType);
+
 /* --- Orders -------------------------------------------------------------- */
 
 const orderListRules = [
@@ -145,6 +190,14 @@ const orderListRules = [
 
 const splitRules = [
   body("split").optional().isObject(),
+  // Optional per-order owner-split override (super admin only, enforced in the
+  // controller). The 100% rule itself is validated server-side in
+  // utils/splitTemplate.js so the error can point at the exact field.
+  body("splitOverride").optional().isObject(),
+  body("splitOverride.entries").optional().isArray({ min: 1, max: MAX_SPLIT_ENTRIES }),
+  body("splitOverride.entries.*.ownerId").optional({ nullable: true, values: "falsy" }).isMongoId(),
+  body("splitOverride.entries.*.bp").optional().isInt({ min: 0, max: 10000 }).withMessage("Percentages run 0–100%."),
+  body("splitOverride.companyReserveBp").optional().isInt({ min: 0, max: 10000 }).withMessage("Reserve runs 0–100%."),
   body("split.referrer.payeeId").optional({ nullable: true, values: "falsy" }).isMongoId(),
   body("split.referrer.bp").optional().isInt({ min: 0, max: 10000 }).withMessage("Percentages run 0–100%."),
   body("split.workers").optional().isArray({ max: MAX_WORKERS }),
@@ -156,13 +209,14 @@ const splitRules = [
 function itemsRules(required) {
   const opt = (rule) => (required ? rule : rule.optional({ values: "falsy" }));
   return [
-    opt(body("items")).isArray({ min: 1, max: MAX_ITEMS }).withMessage("Add between 1 and 14 items."),
+    opt(body("items")).isArray({ min: 1, max: MAX_ITEMS }).withMessage(`Add between 1 and ${MAX_ITEMS} items.`),
     opt(body("items.*.name")).trim().isLength({ min: 1, max: 120 }).withMessage("Every item needs a name."),
     body("items.*.unitLabel").optional({ values: "falsy" }).trim().isLength({ max: 24 }),
     opt(body("items.*.quantity")).isInt({ min: 1, max: 100000 }).withMessage("Quantity must be at least 1."),
     opt(body("items.*.unitPriceMinor")).isInt({ min: 0 }).withMessage("Enter a valid unit price."),
     body("items.*.lineTotalMinor").optional().isInt({ min: 0 }),
     body("items.*.catalogItemId").optional({ nullable: true, values: "falsy" }).isMongoId(),
+    body("items.*.workTypeId").optional({ nullable: true, values: "falsy" }).isMongoId(),
   ];
 }
 

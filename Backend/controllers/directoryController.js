@@ -41,27 +41,63 @@ async function clientStats(ids) {
 
 /**
  * Paid-out and still-owed totals per payee, from the split snapshots.
- * `workers.$` and the optional referrer are unfolded by the aggregation.
+ * Legacy orders (referrer + workers) and owner-split orders (splitSnapshot)
+ * are unfolded in ONE aggregation; an order has exactly one of the two, so
+ * nothing is ever counted twice.
  */
 export async function payeeMoneyMap() {
   const rows = await Order.aggregate([
     { $match: { status: { $ne: "cancelled" } } },
     {
       $project: {
-        shares: {
-          $concatArrays: [
-            { $cond: ["$split.referrer", [{ party: "referrer", share: "$split.referrer" }], []] },
+        legacy: {
+          $cond: [
+            { $gt: [{ $size: { $ifNull: ["$splitSnapshot.entries", []] } }, 0] },
+            [],
+            {
+              $concatArrays: [
+                { $cond: ["$split.referrer", [{ party: "referrer", share: "$split.referrer" }], []] },
+                {
+                  $map: {
+                    input: { $ifNull: ["$split.workers", []] },
+                    as: "w",
+                    in: { party: "worker", share: "$$w" },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        owners: {
+          $cond: [
+            { $gt: [{ $size: { $ifNull: ["$splitSnapshot.entries", []] } }, 0] },
             {
               $map: {
-                input: { $ifNull: ["$split.workers", []] },
-                as: "w",
-                in: { party: "worker", share: "$$w" },
+                input: {
+                  $filter: {
+                    input: { $ifNull: ["$splitSnapshot.entries", []] },
+                    as: "e",
+                    cond: { $ne: [{ $ifNull: ["$$e.isReserve", false] }, true] },
+                  },
+                },
+                as: "e",
+                in: {
+                  party: "owner",
+                  share: {
+                    payeeId: "$$e.ownerId",
+                    name: "$$e.name",
+                    amountMinor: { $ifNull: ["$$e.amountMinor", 0] },
+                    paidOutAt: { $ifNull: ["$$e.paidOutAt", null] },
+                  },
+                },
               },
             },
+            [],
           ],
         },
       },
     },
+    { $project: { shares: { $concatArrays: ["$legacy", "$owners"] } } },
     { $unwind: "$shares" },
     {
       $group: {
@@ -251,6 +287,7 @@ export const createPayee = asyncHandler(async (req, res) => {
     phone: str(body.phone, 40),
     notes: str(body.notes, 300),
     isActive: body.isActive === false ? false : true,
+    isOwner: body.isOwner === true,
   });
   sendData(res, payee, 201);
 });
@@ -266,6 +303,7 @@ export const updatePayee = asyncHandler(async (req, res) => {
   if (body.phone !== undefined) payee.phone = str(body.phone, 40);
   if (body.notes !== undefined) payee.notes = str(body.notes, 300);
   if (body.isActive !== undefined) payee.isActive = Boolean(body.isActive);
+  if (body.isOwner !== undefined) payee.isOwner = Boolean(body.isOwner);
 
   await payee.save();
   sendData(res, payee.toObject());
