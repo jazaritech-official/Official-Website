@@ -37,6 +37,7 @@ const productSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Logo",
       default: null,
+      index: true,
     },
     productUrl: {
       type: String,
